@@ -263,18 +263,23 @@ async def duo_summary() -> dict[str, Any]:
     return {"stat": "OK", "response": {"admin_count": 5, "integration_count": 12, "user_count": 1547}}
 
 
-@app.get("/admin/v1/logs/telephony")
-@app.get("/admin/v2/logs/telephony")
-async def duo_telephony_logs(
-    _auth: DuoAuth,
-    mintime: int | None = None,
-    maxtime: int | None = None,
-    limit: int = Query(100, le=1000),
+async def _duo_telephony_response(
+    limit: int,
+    mintime: int | None,
+    maxtime: int | None,
 ) -> dict[str, Any]:
     # Reuse auth-log generator with telephony-flavoured contexts. Real Duo telephony
     # rows include phone/voice fields; we synthesise a representative subset here.
     base = duo_auth(limit=limit, mintime=mintime, maxtime=maxtime)
-    rows = base.get("response", {}).get("authlogs", []) if isinstance(base.get("response"), dict) else []
+    resp = base.get("response", [])
+    # duo_auth returns {"response": [...]} as a flat list; older code looked for
+    # {"response": {"authlogs": [...]}} which yielded an empty telephony array.
+    if isinstance(resp, dict):
+        rows = resp.get("authlogs", [])
+    elif isinstance(resp, list):
+        rows = resp
+    else:
+        rows = []
     telephony = [
         {
             "timestamp": r.get("timestamp"),
@@ -287,6 +292,31 @@ async def duo_telephony_logs(
         for r in rows
     ]
     return {"stat": "OK", "response": telephony, "metadata": {"total_objects": len(telephony)}}
+
+
+@app.get("/admin/v1/logs/telephony")
+async def duo_telephony_logs_v1(
+    _auth: DuoAuth,
+    mintime: int | None = None,
+    maxtime: int | None = None,
+    limit: int = Query(100, le=1000),
+) -> dict[str, Any]:
+    # Duo v1 telephony API uses seconds — pass through as-is.
+    return await _duo_telephony_response(limit, mintime, maxtime)
+
+
+@app.get("/admin/v2/logs/telephony")
+async def duo_telephony_logs_v2(
+    _auth: DuoAuth,
+    mintime: int | None = None,
+    maxtime: int | None = None,
+    limit: int = Query(100, le=1000),
+) -> dict[str, Any]:
+    # Duo v2 telephony API uses milliseconds — convert before passing to the
+    # generator, which uses seconds internally (matches /admin/v2/logs/authentication).
+    mintime_s = mintime // 1000 if mintime else None
+    maxtime_s = maxtime // 1000 if maxtime else None
+    return await _duo_telephony_response(limit, mintime_s, maxtime_s)
 
 
 # =============================================================================
