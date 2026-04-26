@@ -17,8 +17,8 @@ REQUEST_TRACE: dict[str, collections.deque] = collections.defaultdict(
 _SOURCE_PATTERNS: list[tuple[str, list[str]]] = [
     ("okta",       ["/api/v1/logs"]),
     ("netskope",   ["/api/v2/"]),
-    ("entra_id",   ["/v1.0/auditLogs/", "/v2.0/token", "/oauth2/"]),
-    ("defender",   ["/v1.0/subscriptions/", "/subscriptions/"]),
+    ("entra_id",   ["/v1.0/auditLogs/", "/v1.0/identityProtection/", "/v2.0/token", "/oauth2/"]),
+    ("defender",   ["/v1.0/subscriptions/", "/subscriptions/", "/v1.0/security/", "/security/alerts", "/security/incidents", "/security/secureScores", "/security/assessments", "/auditLogs/directoryAudits", "/auditLogs/signIns"]),
     ("cisco_duo",  ["/admin/v1/", "/admin/v2/"]),
     ("gcp_audit",  ["/v2/entries"]),
     ("tenable",    ["/vulns/", "/assets/", "/audit-log/", "/api/v1/refresh-access-token"]),
