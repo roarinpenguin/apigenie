@@ -574,7 +574,7 @@ document.querySelector('#source-chips .chip')?.click();
 
 @router.get("/login", response_class=HTMLResponse)
 async def login_page():
-    return HTMLResponse(_LOGIN_HTML.format(error=""))
+    return HTMLResponse(_LOGIN_HTML.replace("{error}", ""))
 
 
 @router.post("/login")
@@ -584,7 +584,7 @@ async def login_submit(username: str = Form(...), password: str = Form(...)):
         resp = RedirectResponse("/admin/", status_code=303)
         resp.set_cookie(COOKIE, tok, httponly=True, samesite="lax", max_age=SESSION_TTL)
         return resp
-    html = _LOGIN_HTML.format(error='<p class="err">Invalid credentials.</p>')
+    html = _LOGIN_HTML.replace("{error}", '<p class="err">Invalid credentials.</p>')
     return HTMLResponse(html, status_code=401)
 
 
