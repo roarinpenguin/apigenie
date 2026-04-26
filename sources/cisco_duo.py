@@ -4,6 +4,7 @@ import random
 from typing import Any
 
 from generators import (
+    epoch_to_iso,
     generate_country_code,
     generate_email,
     generate_ip,
@@ -87,7 +88,7 @@ def _make_auth_log(mintime: int | None = None, maxtime: int | None = None) -> di
         "email": random.choice(_USERS),
         "event_type": "authentication",
         "factor": random.choice(_FACTORS),
-        "isotimestamp": f"{ts}",
+        "isotimestamp": epoch_to_iso(ts),
         "ood_software": None,
         "reason": reason,
         "result": result,
@@ -131,7 +132,7 @@ def get_admin_logs_response(limit: int = 100, mintime: int | None = None) -> dic
             {
                 "action": template["action"],
                 "description": template["description"],
-                "isotimestamp": f"{ts}",
+                "isotimestamp": epoch_to_iso(ts),
                 "object": random.choice(_USERS),
                 "timestamp": ts,
                 "username": "admin@example.com",

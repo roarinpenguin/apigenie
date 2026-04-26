@@ -78,6 +78,17 @@ def now_epoch_ms() -> int:
     return int(datetime.now(UTC).timestamp() * 1000)
 
 
+def epoch_to_iso(ts: int | float) -> str:
+    """Convert a Unix epoch (seconds, possibly fractional) to ISO 8601 with +00:00.
+
+    Output shape matches what Cisco Duo, Okta and most real APIs return,
+    e.g. '2026-04-26T13:34:05.123456+00:00'. This is what Observo's Lua
+    `iso8601_to_epoch_ms` helper expects — passing a bare epoch int causes
+    a nil-deref on the `.frac` field.
+    """
+    return datetime.fromtimestamp(float(ts), UTC).isoformat(timespec="microseconds")
+
+
 def now_minus_minutes_epoch_ms(minutes: int) -> int:
     dt = datetime.now(UTC) - timedelta(minutes=minutes)
     return int(dt.timestamp() * 1000)
