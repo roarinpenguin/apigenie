@@ -247,17 +247,20 @@ SOURCES: dict[str, dict[str, Any]] = {
     },
     "gcp_audit": {
         "name": "GCP Cloud Logging (Pub/Sub emulator)",
-        "auth_type": "PUBSUB_EMULATOR_HOST or dummy SA JSON",
+        "auth_type": "Service-account JSON (dummy) or PUBSUB_EMULATOR_HOST",
         "credentials": {
-            "Pub/Sub endpoint": "apigenie.roarinpenguin.com:8085 (plaintext gRPC)",
+            "Pub/Sub endpoint (TLS, recommended for Observo)": "apigenie.roarinpenguin.com:8443",
+            "Pub/Sub endpoint (plaintext, emulator-aware SDKs)": "apigenie.roarinpenguin.com:8085",
             "Project ID":       "obs-test",
             "Topic":            "audit-logs",
             "Subscription":     "audit-logs-sub",
-            "Preferred":        "Set PUBSUB_EMULATOR_HOST=apigenie.roarinpenguin.com:8085 — SDK skips auth",
-            "Fallback":         "Download a dummy SA JSON from /admin/gcp-sa.json and upload it in Observo",
+            "Service-account JSON": "Download from /admin/gcp-sa.json (regenerated per process; never persisted)",
+            "OAuth2 Token URI": "https://apigenie.roarinpenguin.com/oauth2/token (already baked into the SA JSON)",
         },
         "endpoints": [
-            {"method": "GRPC", "path": ":8085", "desc": "Pub/Sub emulator — no auth, plaintext gRPC"},
+            {"method": "GRPC",  "path": ":8443 (TLS)",      "desc": "TLS-terminating nginx in front of Pub/Sub emulator — use this for Observo"},
+            {"method": "GRPC",  "path": ":8085 (plaintext)", "desc": "Direct emulator port — only for clients that honour PUBSUB_EMULATOR_HOST"},
+            {"method": "POST",  "path": "/oauth2/token",    "desc": "Fake Google OAuth2 endpoint (keeps non-emulator-aware clients happy)"},
         ],
         "curl": (
             'PUBSUB_EMULATOR_HOST=apigenie.roarinpenguin.com:8085 \\\n'

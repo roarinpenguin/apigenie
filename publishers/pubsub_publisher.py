@@ -2,6 +2,9 @@
 
 import logging
 import os
+from datetime import datetime, timezone
+
+from trace import REQUEST_TRACE
 import threading
 import time
 
@@ -38,6 +41,8 @@ def _publisher_loop() -> None:
         logger.info(f"[pubsub] Publisher started → {topic_path} (interval={PUBLISH_INTERVAL}s)")
 
         while not _stop_event.is_set():
+            t0 = time.monotonic()
+            ok, err = 0, None
             try:
                 futures = []
                 for _ in range(MESSAGES_PER_BATCH):
@@ -46,9 +51,24 @@ def _publisher_loop() -> None:
                     futures.append(future)
                 for f in futures:
                     f.result(timeout=10)
-                logger.debug(f"[pubsub] Published {MESSAGES_PER_BATCH} messages")
+                    ok += 1
+                logger.debug(f"[pubsub] Published {ok} messages")
             except Exception as exc:
+                err = str(exc)
                 logger.warning(f"[pubsub] Publish error: {exc}")
+            duration_ms = int((time.monotonic() - t0) * 1000)
+            REQUEST_TRACE["gcp_audit"].appendleft({
+                "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "method": "PUBLISH",
+                "path": f"projects/{PUBSUB_PROJECT_ID}/topics/{PUBSUB_TOPIC_ID}",
+                "query": "",
+                "client": "apigenie-publisher",
+                "status": 200 if err is None else 500,
+                "duration_ms": duration_ms,
+                "req_headers": {"transport": "gRPC plaintext", "endpoint": PUBSUB_EMULATOR_HOST},
+                "req_body": (f"published {ok}/{MESSAGES_PER_BATCH} messages" if err is None
+                              else f"FAILED after {ok}/{MESSAGES_PER_BATCH}: {err}"),
+            })
             _stop_event.wait(PUBLISH_INTERVAL)
 
     except ImportError as exc:

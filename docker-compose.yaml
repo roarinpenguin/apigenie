@@ -3,9 +3,13 @@ version: "3.9"
 # ApiGenie — fully self-contained stack.
 # Starts: nginx (SSL), FastAPI mock server, Kafka + Zookeeper, GCP Pub/Sub emulator.
 #
-# Firewall: open 80, 443, 8085 (Pub/Sub), 9092 (Kafka PLAINTEXT),
-#           9093 (Kafka SASL_SSL — Azure Event Hubs emulation),
-#           9094 (Kafka SASL_PLAINTEXT — same, no TLS).
+# Firewall:
+#   80, 443                    HTTP redirect + main HTTPS API
+#   8443                       Pub/Sub gRPC over TLS (emulator behind nginx)
+#   8085                       Pub/Sub gRPC plaintext (only for emulator-aware clients)
+#   9092                       Kafka PLAINTEXT (legacy)
+#   9093                       Kafka SASL_SSL (Azure Event Hubs emulation)
+#   9094                       Kafka SASL_PLAINTEXT (lab override, no TLS)
 #
 # Deploy:
 #   docker compose up -d --build
@@ -20,6 +24,7 @@ services:
     ports:
       - "80:80"
       - "443:443"
+      - "8443:8443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro

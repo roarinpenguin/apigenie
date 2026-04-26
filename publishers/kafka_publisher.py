@@ -6,6 +6,9 @@ import os
 import random
 import threading
 import time
+from datetime import datetime, timezone
+
+from trace import REQUEST_TRACE
 
 logger = logging.getLogger(__name__)
 
@@ -102,14 +105,31 @@ def _publisher_loop() -> None:
         logger.info(f"[kafka] Publisher started → {KAFKA_TOPIC}@{KAFKA_BOOTSTRAP_SERVERS} (interval={PUBLISH_INTERVAL}s)")
 
         while not _stop_event.is_set():
+            t0 = time.monotonic()
+            ok, err = 0, None
             try:
                 for _ in range(MESSAGES_PER_BATCH):
                     event = _generate_azure_event()
                     producer.send(KAFKA_TOPIC, value=event)
+                    ok += 1
                 producer.flush(timeout=10)
-                logger.debug(f"[kafka] Published {MESSAGES_PER_BATCH} events")
+                logger.debug(f"[kafka] Published {ok} events")
             except Exception as exc:
+                err = str(exc)
                 logger.warning(f"[kafka] Publish error: {exc}")
+            duration_ms = int((time.monotonic() - t0) * 1000)
+            REQUEST_TRACE["azure_platform"].appendleft({
+                "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "method": "PRODUCE",
+                "path": f"topic={KAFKA_TOPIC}",
+                "query": "",
+                "client": "apigenie-publisher",
+                "status": 200 if err is None else 500,
+                "duration_ms": duration_ms,
+                "req_headers": {"transport": "Kafka producer", "bootstrap": KAFKA_BOOTSTRAP_SERVERS},
+                "req_body": (f"produced {ok}/{MESSAGES_PER_BATCH} events" if err is None
+                              else f"FAILED after {ok}/{MESSAGES_PER_BATCH}: {err}"),
+            })
             _stop_event.wait(PUBLISH_INTERVAL)
 
         producer.close()
