@@ -1,16 +1,43 @@
 version: "3.9"
 
-# ApiGenie runs as a single FastAPI container that joins the existing
-# test-genius_backend Docker network. nginx, Kafka, Zookeeper, and the
-# Pub/Sub emulator are all already running from the test-genius stack
-# and are reachable by service name on that network.
+# ApiGenie is fully self-contained: nginx (SSL + HTML), FastAPI, and
+# background publishers all start here.
 #
-# Deploy order:
-#   1. Start test-genius stack (provides nginx, kafka, pubsub-emulator)
-#   2. docker compose up -d   (starts the apigenie container)
-#   3. Copy nginx/nginx.conf to test-genius/nginx/nginx.conf and reload nginx
+# Kafka and Pub/Sub emulator are shared with the test-genius stack —
+# apigenie joins test-genius_backend to reach them by service name.
+#
+# When test-genius is also running:
+#   - Stop its nginx first to free ports 80/443:
+#       docker stop test-genius-nginx-1
+#   - Then: docker compose up -d
+#
+# When running standalone (test-genius down):
+#   - docker compose up -d   (nginx starts here, owns ports 80/443)
 
 services:
+
+  # ── Reverse proxy + SSL termination ────────────────────────────────────────
+  nginx:
+    image: nginx:latest
+    container_name: apigenie-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # nginx config from this repo
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Let's Encrypt certs from the host (renewed by certbot on the host)
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      # Landing page HTML served at /
+      - /var/www/html:/usr/share/nginx/html:ro
+    depends_on:
+      - apigenie
+    networks:
+      - apigenie-net
+      - test-genius-backend
+
+  # ── FastAPI mock server ─────────────────────────────────────────────────────
   apigenie:
     build: .
     container_name: apigenie
@@ -18,24 +45,28 @@ services:
     environment:
       LOG_LEVEL: INFO
       PUBLISHERS_ENABLED: "true"
-      # Pub/Sub emulator already running in test-genius stack
+      # Pub/Sub emulator — test-genius_backend network
       PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
       GCP_PROJECT_ID: obs-test
       PUBSUB_TOPIC_ID: audit-logs
       PUBSUB_SUBSCRIPTION_ID: audit-logs-sub
       PUBSUB_PUBLISH_INTERVAL: "10"
       PUBSUB_BATCH_SIZE: "5"
-      # Kafka already running in test-genius stack (internal listener)
+      # Kafka — test-genius_backend network (internal listener)
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
       KAFKA_TOPIC: azure-platform-logs
       KAFKA_PUBLISH_INTERVAL: "10"
       KAFKA_BATCH_SIZE: "5"
     networks:
+      - apigenie-net
       - test-genius-backend
-    # Port 8000 is intentionally NOT exposed to the host.
-    # All external traffic comes through the test-genius nginx on 443.
 
 networks:
+  # Internal network between nginx and the FastAPI container
+  apigenie-net:
+    driver: bridge
+
+  # Shared network with test-genius (Kafka, Pub/Sub emulator)
   test-genius-backend:
     external: true
     name: test-genius_backend
