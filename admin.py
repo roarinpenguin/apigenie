@@ -705,7 +705,10 @@ async def gcp_dummy_sa(ag_session: str | None = Cookie(None)):
         "client_email": "apigenie-emulator@obs-test.iam.gserviceaccount.com",
         "client_id": "1" + "0" * 20,
         "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
+        # token_uri intentionally points at OUR fake OAuth endpoint so
+        # collectors that do not honour PUBSUB_EMULATOR_HOST never call real
+        # Google (which would reject the unknown service account).
+        "token_uri": "https://apigenie.roarinpenguin.com/oauth2/token",
         "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
         "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/apigenie-emulator%40obs-test.iam.gserviceaccount.com",
         "universe_domain": "googleapis.com",

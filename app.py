@@ -86,6 +86,37 @@ async def health() -> dict[str, str]:
 
 
 # =============================================================================
+# Fake Google OAuth2 token endpoint
+#
+# Some collectors do not honour PUBSUB_EMULATOR_HOST and will run the full
+# RFC 7523 service-account flow: sign a JWT with the SA private key and POST
+# it to the SA JSON's "token_uri". Real Google then rejects the assertion
+# with "Invalid grant: account not found" because our mock SA does not exist.
+#
+# We point token_uri at this endpoint (in /admin/gcp-sa.json) and return a
+# synthetic access token so the collector proceeds to the data-plane Pub/Sub
+# call, which it then sends to our emulator on port 8085.
+# =============================================================================
+
+
+@app.post("/oauth2/token")
+@app.post("/token")  # alias — some clients hit /token directly
+async def oauth2_token(request: Request) -> JSONResponse:
+    # We accept anything — no JWT validation, no grant_type check. The mock's
+    # job is to keep the collector moving past the OAuth step.
+    try:
+        await request.body()  # drain
+    except Exception:
+        pass
+    return JSONResponse({
+        "access_token": "apigenie-fake-oauth-access-token",
+        "token_type":   "Bearer",
+        "expires_in":   3600,
+        "scope":        "https://www.googleapis.com/auth/pubsub https://www.googleapis.com/auth/cloud-platform",
+    })
+
+
+# =============================================================================
 # Okta  —  Bearer / SSWS token auth
 # =============================================================================
 
