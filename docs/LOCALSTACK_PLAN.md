@@ -178,6 +178,36 @@ Add the corresponding cards to the `/admin` request inspector so live AWS calls 
 
 ## 5. Implementation phases
 
+### Phase 0 — Feasibility check (gating, ~1 hour)
+
+**Do not start phase 1 until this passes.** LocalStack only helps if Observo's collector can be *told* to use a custom AWS endpoint. The whole plan rests on Observo's source catalogue exposing a **generic, endpoint-overridable** AWS source — not a vendor-specific template that hardcodes `*.amazonaws.com`.
+
+What to confirm in the Observo source-template catalogue:
+
+1. **A generic "AWS S3" source** with one of these fields exposed in the UI:
+   - `endpoint_url` / `Custom endpoint` / `S3 endpoint`
+   - `force_path_style` / `Use path-style addressing` (toggle)
+   - access-key + secret-key inputs (not just IAM role ARN)
+
+2. **A generic "AWS SQS" source** with:
+   - `endpoint_url` / `Custom endpoint` / `Queue URL` (where the queue URL hostname can be `apigenie.roarinpenguin.com:4566`, not `sqs.<region>.amazonaws.com`)
+   - access-key + secret-key inputs
+
+3. *(Optional, nice-to-have)* path-style URL addressing toggle exposed at source-config level rather than only in advanced/librdkafka-style overrides.
+
+**If both #1 and #2 exist with the override fields → proceed to phase 1.**
+
+**If they don't exist:**
+- LocalStack faces the **same wall** our FastAPI mock did — the SDK composes hardcoded `*.amazonaws.com` URLs and we have no way to receive the traffic.
+- Possible workarounds (each is a separate project, not part of this plan):
+  - **DNS hijacking** inside Observo's collector network — point `*.amazonaws.com` at `apigenie.roarinpenguin.com` via `/etc/hosts`, CoreDNS rewrite, or Route 53 Resolver. Requires collaboration with Observo's infra team and changes their collector deployment.
+  - **Mock SigV4 + wildcard cert** — re-issue our TLS cert with a `*.amazonaws.com` SAN (impossible from a public CA — that's reserved for AWS — would require a private CA installed on the collector).
+  - **Run Observo's collector on a host you control** — set local DNS, install your own CA, point all AWS calls at LocalStack. Practical only for self-hosted collectors, not SaaS.
+
+Document the result of phase 0 in this file (status table at the top) before committing further engineering effort.
+
+### Implementation phases (assumes phase 0 passed)
+
 | Phase | Deliverable | Effort |
 |-------|-------------|--------|
 | **1. Stack wiring** | `localstack` service + nginx `:4566` listener + firewall + DNS sanity test from a remote host (`aws --endpoint-url=https://apigenie.roarinpenguin.com:4566 s3 ls`) | 0.5 day |
