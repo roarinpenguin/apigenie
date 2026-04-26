@@ -147,11 +147,73 @@ def _generate_issue() -> dict[str, Any]:
 def get_issues_response(org: str | None = None, limit: int = 100, offset: int = 0) -> dict[str, Any]:
     count = min(limit, 100)
     issues = [_generate_issue() for _ in range(count)]
+    # Real Snyk v1 /org/{id}/issues returns the array under 'issues'. Some
+    # internal Snyk endpoints and older docs use 'results'. We expose both
+    # keys to keep every parser happy.
     return {
+        "issues": issues,
         "results": issues,
         "total": count + random.randint(0, 200),
         "limit": limit,
         "offset": offset,
+    }
+
+
+def get_issues_response_jsonapi(
+    org: str | None = None, limit: int = 100, starting_after: str | None = None
+) -> dict[str, Any]:
+    """Snyk REST API (JSON:API) shape for /rest/orgs/{id}/issues.
+
+    Observo's Snyk source calls the newer REST API rather than v1. The shape
+    is JSON:API: a top-level 'data' array of resource objects, each with
+    'id', 'type', and 'attributes'. 'No issue data found in Snyk response'
+    happens when the parser doesn't see this 'data' key.
+    """
+    count = min(limit, 100)
+    raw = [_generate_issue() for _ in range(count)]
+    data = []
+    for issue in raw:
+        sev = issue["severity"]
+        data.append({
+            "id": issue["id"],
+            "type": "issue",
+            "attributes": {
+                "key": issue["issueData"]["id"],
+                "title": issue["title"],
+                "type": "package_vulnerability" if issue["type"] == "vuln" else "license",
+                "status": "open",
+                "effective_severity_level": sev,
+                "ignored": issue["isIgnored"],
+                "created_at": issue["introducedDate"],
+                "updated_at": issue["introducedDate"],
+                "coordinates": [{
+                    "remedies": [],
+                    "representations": [{
+                        "dependency": {
+                            "package_name": issue["package"],
+                            "package_version": issue["version"],
+                        }
+                    }],
+                }],
+                "problems": [{
+                    "id": issue["issueData"]["id"],
+                    "source": "SNYK",
+                    "type": "vulnerability",
+                    "url": issue["url"],
+                }],
+                "risk": {"score": {"value": issue["priorityScore"]}},
+            },
+            "relationships": {
+                "organization": {"data": {"id": generate_uuid(), "type": "organization"}},
+                "scan_item": {"data": {"id": issue["project"]["id"], "type": "project"}},
+            },
+        })
+    return {
+        "jsonapi": {"version": "1.0"},
+        "data": data,
+        "links": {
+            "self": f"/rest/orgs/{org or 'my-org'}/issues",
+        },
     }
 
 

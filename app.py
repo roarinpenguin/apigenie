@@ -34,7 +34,12 @@ from sources.microsoft_defender import get_alerts_response as defender_alerts, g
 from sources.netskope import get_alerts_response as netskope_alerts, get_audit_events_response as netskope_audit
 from sources.okta import get_logs_response as okta_logs
 from sources.proofpoint import get_logs_response as proofpoint_logs
-from sources.snyk import get_audit_logs_response as snyk_audit, get_issues_response as snyk_issues, get_projects_response as snyk_projects
+from sources.snyk import (
+    get_audit_logs_response as snyk_audit,
+    get_issues_response as snyk_issues,
+    get_issues_response_jsonapi as snyk_issues_jsonapi,
+    get_projects_response as snyk_projects,
+)
 from sources.tenable import generate_asset_chunks, generate_vuln_chunks, get_audit_logs_response as tenable_audit
 from sources.wiz import get_issues_response as wiz_issues
 
@@ -538,6 +543,22 @@ async def wiz_graphql(_auth: BearerAuth, request: Request) -> dict[str, Any]:
     return wiz_issues(first=first, after=after)
 
 
+# Some collectors (Observo's Wiz source included) probe the GraphQL endpoint
+# with GET before issuing the first POST query. Real Wiz returns 405 here, but
+# the probe treats anything non-200 as 'service unreachable' and never
+# proceeds to authenticate. Return a minimal GraphQL handshake instead.
+@app.get("/graphql")
+async def wiz_graphql_probe() -> dict[str, Any]:
+    return {
+        "data": {
+            "__schema": {
+                "queryType": {"name": "Query"},
+                "types": [{"name": "Issue"}, {"name": "CloudResource"}, {"name": "User"}],
+            }
+        }
+    }
+
+
 # =============================================================================
 # Snyk  —  Bearer token auth
 # =============================================================================
@@ -572,10 +593,12 @@ async def snyk_org_audit(
 async def snyk_rest_issues(
     _auth: BearerAuth,
     org_id: str,
+    version: str | None = Query(None),     # required by real Snyk REST API
     limit: int = Query(100, le=1000),
-    offset: int = Query(0),
+    starting_after: str | None = Query(None),
 ) -> dict[str, Any]:
-    return snyk_issues(org=org_id, limit=limit, offset=offset)
+    # Snyk REST API speaks JSON:API; the response wraps issues under 'data'.
+    return snyk_issues_jsonapi(org=org_id, limit=limit, starting_after=starting_after)
 
 
 # =============================================================================

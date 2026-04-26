@@ -4,6 +4,7 @@ import random
 from typing import Any
 
 from generators import (
+    epoch_to_iso,
     generate_hostname,
     generate_ip,
     generate_uuid,
@@ -194,17 +195,27 @@ def get_audit_logs_response(limit: int = 100, offset: int = 0) -> dict[str, Any]
     ]
     for _ in range(count):
         action, description, severity = random.choice(actions)
+        ts = now_epoch() - random.randint(0, 86400)
         events.append(
             {
+                "id": generate_uuid(),
                 "action": action,
+                "cli": False,
                 "crud": random.choice(["c", "r", "u", "d"]),
                 "description": description,
-                "id": generate_uuid(),
                 "is_anonymous": False,
                 "is_failure": "failed" in action,
-                "fields": {"Severity": severity},
-                "received": now_epoch() - random.randint(0, 86400),
-                "actor": {"id": generate_uuid(), "name": f"user-{random.randint(1, 10)}@example.com"},
+                # Real Tenable returns 'fields' as a list of {key, value} objects,
+                # not a flat dict. Observo's parser unmarshals it as such.
+                "fields": [
+                    {"key": "Severity",     "value": severity},
+                    {"key": "Source",       "value": random.choice(["web-ui", "api", "scanner"])},
+                    {"key": "Source IP",    "value": generate_ip()},
+                ],
+                # Real Tenable returns 'received' as ISO 8601 string with millisecond
+                # precision and a 'Z' suffix, not an integer epoch.
+                "received": epoch_to_iso(ts).replace("+00:00", "Z"),
+                "actor":  {"id": generate_uuid(), "name": f"user-{random.randint(1, 10)}@example.com"},
                 "target": {"id": generate_uuid(), "name": "Vulnerability Scan", "type": "Scan"},
             }
         )
