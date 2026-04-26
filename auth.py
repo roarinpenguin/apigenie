@@ -53,12 +53,26 @@ ERROR_RESPONSES: dict[str, tuple[int, dict]] = {
 
 
 def _extract_bearer(authorization: str | None) -> str | None:
+    """Extract a bearer token, tolerating common collector quirks:
+    - Standard "Bearer <token>" (RFC 6750)
+    - Missing space: "Bearer<token>"
+    - Case variants: "bearer", "BEARER", "sswsXXX"
+    - Okta-style "SSWS <token>" / "token=<token>"
+    - Bare token with no prefix at all
+    Surrounding whitespace is trimmed.
+    """
     if not authorization:
         return None
-    for prefix in ("Bearer ", "SSWS ", "token="):
-        if authorization.startswith(prefix):
-            return authorization[len(prefix):]
-    return None
+    auth = authorization.strip()
+    lower = auth.lower()
+    for prefix in ("bearer", "ssws"):
+        if lower.startswith(prefix):
+            rest = auth[len(prefix):].lstrip()  # tolerate missing or extra spaces
+            return rest or None
+    if lower.startswith("token="):
+        return auth[len("token="):].strip() or None
+    # Bare token (no scheme) — accept as-is so downstream validation can decide.
+    return auth or None
 
 
 def _check_error_token(token: str) -> None:
