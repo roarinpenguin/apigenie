@@ -39,6 +39,17 @@ VALID_API_KEYS = frozenset(
     }
 )
 
+# (accessKey, secretKey) pairs accepted by the Tenable X-ApiKeys check.
+# Pre-derived from VALID_API_KEYS so adding a string above auto-extends the
+# pair set. Tenable's real API uses ';' as the separator; older collectors
+# and SDKs sometimes use '&', so we tolerate both.
+VALID_API_KEY_PAIRS = frozenset(
+    {
+        ("VALIDACCESSKEY001", "VALIDSECRETKEY001"),
+        ("apigenie-ak-001", "apigenie-sk-001"),
+    }
+)
+
 # Duo HMAC signing key for mock (real Duo uses integration key + secret key)
 DUO_IKEY = "DIXXXXXXXXXXXXXXXXXX"
 DUO_SKEY = "duo-mock-secret-key-for-testing"
@@ -150,14 +161,43 @@ async def require_basic_auth(authorization: Annotated[str | None, Header()] = No
         raise HTTPException(status_code=401, detail={"error": "unauthorized", "message": "Invalid credentials"})
 
 
+def _parse_x_apikeys(value: str) -> tuple[str | None, str | None]:
+    """Parse a Tenable X-ApiKeys header into (accessKey, secretKey).
+
+    Accepts both real-Tenable ';' and legacy '&' separators, surrounding
+    whitespace, and case-insensitive key names. Returns (None, None) if
+    either part is missing.
+    """
+    parts = value.replace("&", ";").split(";")
+    found: dict[str, str] = {}
+    for p in parts:
+        if "=" not in p:
+            continue
+        k, v = p.split("=", 1)
+        found[k.strip().lower()] = v.strip()
+    return found.get("accesskey"), found.get("secretkey")
+
+
 async def require_x_api_keys(
     x_apikeys: Annotated[str | None, Header(alias="X-ApiKeys")] = None,
 ) -> None:
     if not x_apikeys:
-        raise HTTPException(status_code=401, detail={"error": "unauthorized", "message": "X-ApiKeys header required"})
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "unauthorized", "message": "X-ApiKeys header required"},
+        )
     _check_error_token(x_apikeys)
-    if x_apikeys not in VALID_API_KEYS:
-        raise HTTPException(status_code=401, detail={"error": "unauthorized", "message": "Invalid API keys"})
+    access, secret = _parse_x_apikeys(x_apikeys)
+    if not access or not secret:
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "unauthorized", "message": "X-ApiKeys must contain accessKey=<...>;secretKey=<...>"},
+        )
+    if (access, secret) not in VALID_API_KEY_PAIRS:
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "unauthorized", "message": "Invalid API keys"},
+        )
 
 
 async def require_duo_auth(request: Request) -> None:
