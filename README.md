@@ -123,7 +123,7 @@ Use these when configuring sources in Observo (or any HTTP client):
 |-----------|--------|-------|
 | Bearer token | `Authorization: Bearer <token>` | `apigenie-valid-token-001` … `003` |
 | Basic Auth | `Authorization: Basic <b64>` | `apigenie-principal-001` / `apigenie-secret-001` |
-| X-ApiKeys (Tenable) | `X-ApiKeys` | `accessKey=VALIDACCESSKEY001;secretKey=VALIDSECRETKEY001` |
+| X-ApiKeys (Tenable) | `X-ApiKeys` | `accessKey=apigenie-ak-001;secretKey=apigenie-sk-001` |
 | Cisco Duo | HMAC-SHA1 (signature mocked) | any Authorization value accepted |
 | OAuth2 client_credentials | `POST /oauth2/v1/token` | returns valid Bearer token |
 | Microsoft tenant OAuth | `POST /{tenant}/oauth2/v2.0/token` | tenant id can be UUID or named |

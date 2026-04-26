@@ -127,7 +127,7 @@ SOURCES: dict[str, dict[str, Any]] = {
         "credentials": {
             "accessKey": "apigenie-ak-001",
             "secretKey": "apigenie-sk-001",
-            "header": "X-ApiKeys: accessKey=apigenie-ak-001&secretKey=apigenie-sk-001",
+            "header": "X-ApiKeys: accessKey=apigenie-ak-001;secretKey=apigenie-sk-001",
         },
         "endpoints": [
             {"method": "POST", "path": "/vulns/export",                      "desc": "Start vuln export → returns export_uuid"},
@@ -138,7 +138,7 @@ SOURCES: dict[str, dict[str, Any]] = {
         ],
         "curl": (
             f'curl -s \\\n'
-            f'  -H "X-ApiKeys: accessKey=apigenie-ak-001&secretKey=apigenie-sk-001" \\\n'
+            f'  -H "X-ApiKeys: accessKey=apigenie-ak-001;secretKey=apigenie-sk-001" \\\n'
             f'  "{BASE}/audit-log/v1/events?limit=5"'
         ),
     },
