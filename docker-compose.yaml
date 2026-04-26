@@ -66,7 +66,9 @@ networks:
   apigenie-net:
     driver: bridge
 
-  # Shared network with test-genius (Kafka, Pub/Sub emulator)
+  # Shared network with test-genius (Kafka, Pub/Sub emulator).
+  # Declared without external: true so Docker Compose creates it when
+  # test-genius is down, and adopts the existing network when it's up.
   test-genius-backend:
-    external: true
     name: test-genius_backend
+    driver: bridge
