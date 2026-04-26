@@ -13,10 +13,12 @@ version: "3.9"
 #
 # When running standalone (test-genius down):
 #   - docker compose up -d   (nginx starts here, owns ports 80/443)
+#
+# Firewall: open 80, 443, 9092 (Kafka), 8085 (Pub/Sub) inbound.
 
 services:
 
-  # ── Reverse proxy + SSL termination ────────────────────────────────────────
+  # ── Reverse proxy + SSL termination + TCP stream proxy ─────────────────────
   nginx:
     image: nginx:latest
     container_name: apigenie-nginx
@@ -24,13 +26,12 @@ services:
     ports:
       - "80:80"
       - "443:443"
+      - "9092:9092"    # Kafka TCP stream proxy → kafka:19092
+      - "8085:8085"    # Pub/Sub gRPC stream proxy → pubsub-emulator:8085
     volumes:
-      # nginx config from this repo
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      # Let's Encrypt certs from the host (renewed by certbot on the host)
       - /etc/letsencrypt:/etc/letsencrypt:ro
-      # Landing page HTML served at /
-      - /var/www/html:/usr/share/nginx/html:ro
+      - ./html:/usr/share/nginx/html:ro
     depends_on:
       - apigenie
     networks:
@@ -62,13 +63,10 @@ services:
       - test-genius-backend
 
 networks:
-  # Internal network between nginx and the FastAPI container
   apigenie-net:
     driver: bridge
 
-  # Shared network with test-genius (Kafka, Pub/Sub emulator).
-  # Declared without external: true so Docker Compose creates it when
-  # test-genius is down, and adopts the existing network when it's up.
+  # Created by apigenie if absent; adopted from test-genius when running.
   test-genius-backend:
     name: test-genius_backend
     driver: bridge
