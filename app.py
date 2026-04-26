@@ -524,31 +524,87 @@ async def darktrace_status_endpoint() -> dict[str, Any]:
 
 
 # =============================================================================
-# OAuth2 token endpoint  —  returns a mock access token for platforms that need it
+# OAuth2 / login / token-exchange endpoints
+# Every flow below returns a mock bearer that the rest of the API will accept.
+# Multiple field-name synonyms are emitted so different collector libraries
+# (httpx, Vector, Cribl, Azure SDK, vendor SDKs) can pick the one they expect.
 # =============================================================================
 
 
+def _token_payload(scope: str = "read:logs read:events") -> dict[str, Any]:
+    """Standard OAuth2 + vendor-synonym token payload."""
+    tok = "apigenie-valid-token-001"
+    return {
+        "access_token": tok,
+        "accessToken": tok,   # Cyera, BigID camelCase
+        "token": tok,         # Tenable, Cyera login response
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "scope": scope,
+    }
+
+
+# Generic OAuth2 client-credentials  —  used by Wiz, Cato, CyberArk EPM and any
+# collector configured with a bare /token URL.
+@app.post("/token")
+@app.post("/oauth/token")
 @app.post("/oauth2/v1/token")
 @app.post("/oauth2/token")
 @app.post("/v2.0/token")
 @app.post("/oauth2/v2.0/token")
 async def oauth_token(request: Request) -> dict[str, Any]:
-    return {
-        "access_token": "apigenie-valid-token-001",
-        "token_type": "Bearer",
-        "expires_in": 3600,
-        "scope": "read:logs read:events",
-    }
+    return _token_payload()
 
 
-# Tenant-prefixed Microsoft token endpoint: /{tenant-id}/oauth2/v2.0/token
+# Tenant-prefixed Microsoft token endpoints — Defender + Entra ID + O365 Mgmt.
+# POST is the spec; GET is what some Azure SDKs use when impersonating cached
+# refresh tokens (and what COLLECTOR_CONFIG.md §2.3 documents).
 @app.post("/{tenant_id}/oauth2/v2.0/token")
+@app.get("/{tenant_id}/oauth2/v2.0/token")
+@app.post("/{tenant_id}/oauth2/token")
+@app.get("/{tenant_id}/oauth2/token")
 async def oauth_token_tenant(tenant_id: str, request: Request) -> dict[str, Any]:
+    return _token_payload(scope="https://graph.microsoft.com/.default")
+
+
+# Tenable refresh-access-token (GET, no body) — collector calls this with its
+# X-ApiKeys credentials and uses the returned bearer for subsequent calls.
+@app.get("/api/v1/refresh-access-token")
+async def tenable_refresh_token(request: Request) -> dict[str, Any]:
+    return _token_payload(scope="tenable:read")
+
+
+# Cyera login / refresh
+@app.post("/v1/login")
+@app.post("/v1/refresh")
+async def cyera_login(request: Request) -> dict[str, Any]:
+    return _token_payload(scope="cyera:read")
+
+
+# CyberArk EPM / Cisco Duo logon — returns a session token in EPM-flavoured
+# fields plus the standard OAuth synonyms so generic collectors can extract it.
+@app.post("/epm/api/auth/epm/logon")
+async def epm_logon(request: Request) -> dict[str, Any]:
+    payload = _token_payload(scope="epm:read")
+    payload["SessionId"] = payload["access_token"]
+    payload["ManagerURL"] = "https://apigenie.roarinpenguin.com"
+    return payload
+
+
+# Mimecast discover-authentication — the gateway URI the collector should hit
+# for subsequent calls (we point it back at ourselves).
+@app.post("/api/login/discover-authentication")
+async def mimecast_discover(request: Request) -> dict[str, Any]:
     return {
-        "access_token": "apigenie-valid-token-001",
-        "token_type": "Bearer",
-        "expires_in": 3600,
-        "scope": "https://graph.microsoft.com/.default",
+        "fail": [],
+        "data": [{
+            "region": "eu",
+            "authenticate": [{
+                "uri": "https://apigenie.roarinpenguin.com",
+                "name": "TOTPAuthentication",
+            }],
+            "emailToken": "apigenie-valid-token-001",
+        }],
     }
 
 
