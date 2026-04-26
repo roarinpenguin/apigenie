@@ -1,19 +1,16 @@
 version: "3.9"
 
-# ApiGenie: nginx (SSL) + FastAPI mock server.
+# ApiGenie — fully self-contained stack.
+# Starts: nginx (SSL), FastAPI mock server, Kafka + Zookeeper, GCP Pub/Sub emulator.
 #
-# Kafka and Pub/Sub are owned by the test-genius stack.
-# When test-genius is running, apigenie joins its network so the background
-# publishers can reach kafka:19092 and pubsub-emulator:8085.
-# Kafka (9092) and Pub/Sub (8085) are already exposed to the host by
-# test-genius — open those ports in your cloud firewall to let collectors in.
+# Firewall: open 80, 443, 9092 (Kafka), 8085 (Pub/Sub) inbound.
 #
 # Deploy:
-#   docker stop test-genius-nginx-1   # free ports 80/443
 #   docker compose up -d --build
 
 services:
 
+  # ── Reverse proxy ──────────────────────────────────────────────────────────
   nginx:
     image: nginx:latest
     container_name: apigenie-nginx
@@ -30,6 +27,7 @@ services:
     networks:
       - apigenie-net
 
+  # ── FastAPI mock server ────────────────────────────────────────────────────
   apigenie:
     build: .
     container_name: apigenie
@@ -37,24 +35,133 @@ services:
     environment:
       LOG_LEVEL: INFO
       PUBLISHERS_ENABLED: "true"
+      # Pub/Sub emulator
       PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
       GCP_PROJECT_ID: obs-test
       PUBSUB_TOPIC_ID: audit-logs
       PUBSUB_SUBSCRIPTION_ID: audit-logs-sub
       PUBSUB_PUBLISH_INTERVAL: "10"
       PUBSUB_BATCH_SIZE: "5"
-      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      # Kafka — internal Docker listener
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       KAFKA_TOPIC: azure-platform-logs
       KAFKA_PUBLISH_INTERVAL: "10"
       KAFKA_BATCH_SIZE: "5"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      pubsub-emulator-seed:
+        condition: service_completed_successfully
     networks:
       - apigenie-net
-      - test-genius-backend
+
+  # ── Zookeeper ──────────────────────────────────────────────────────────────
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.6
+    container_name: apigenie-zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - apigenie-net
+
+  # ── Kafka ──────────────────────────────────────────────────────────────────
+  # External clients (Observo collector) connect on host:9092.
+  # Containers connect on kafka:29092 (internal listener).
+  kafka:
+    image: confluentinc/cp-kafka:7.6.6
+    container_name: apigenie-kafka
+    restart: unless-stopped
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: >-
+        EXTERNAL://${PUBLIC_HOSTNAME:-apigenie.roarinpenguin.com}:9092,DOCKER://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: EXTERNAL:PLAINTEXT,DOCKER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: DOCKER
+      KAFKA_LISTENERS: EXTERNAL://0.0.0.0:9092,DOCKER://0.0.0.0:29092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:29092", "--list"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks:
+      - apigenie-net
+
+  # ── GCP Pub/Sub emulator ───────────────────────────────────────────────────
+  # External clients connect on host:8085 (gRPC).
+  pubsub-emulator:
+    image: gcr.io/google.com/cloudsdktool/cloud-sdk:emulators
+    container_name: apigenie-pubsub
+    restart: unless-stopped
+    command:
+      - gcloud
+      - beta
+      - emulators
+      - pubsub
+      - start
+      - --host-port=0.0.0.0:8085
+      - --project=obs-test
+    ports:
+      - "8085:8085"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "curl -fsS http://localhost:8085 >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
+    networks:
+      - apigenie-net
+
+  # ── Pub/Sub seed (creates topic + subscription, then exits) ───────────────
+  pubsub-emulator-seed:
+    image: gcr.io/google.com/cloudsdktool/cloud-sdk:emulators
+    container_name: apigenie-pubsub-seed
+    depends_on:
+      pubsub-emulator:
+        condition: service_healthy
+    environment:
+      EMULATOR: "http://pubsub-emulator:8085"
+      PROJECT: "obs-test"
+      TOPIC: "audit-logs"
+      SUBSCRIPTION: "audit-logs-sub"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        put_ok() {
+          label=$$1; url=$$2; data=$${3:-}
+          if [ -n "$$data" ]; then
+            code=$$(curl -sS -o /tmp/body -w "%{http_code}" -X PUT "$$url" \
+              -H 'Content-Type: application/json' -d "$$data")
+          else
+            code=$$(curl -sS -o /tmp/body -w "%{http_code}" -X PUT "$$url")
+          fi
+          case "$$code" in
+            200) echo "$$label: created" ;;
+            409) echo "$$label: already exists (ok)" ;;
+            *)   echo "$$label: FAILED ($$code)"; cat /tmp/body; echo; exit 1 ;;
+          esac
+        }
+        put_ok "topic" \
+          "$$EMULATOR/v1/projects/$$PROJECT/topics/$$TOPIC"
+        put_ok "subscription" \
+          "$$EMULATOR/v1/projects/$$PROJECT/subscriptions/$$SUBSCRIPTION" \
+          "{\"topic\":\"projects/$$PROJECT/topics/$$TOPIC\",\"ackDeadlineSeconds\":30}"
+        echo "Pub/Sub seed complete."
+    networks:
+      - apigenie-net
 
 networks:
   apigenie-net:
-    driver: bridge
-
-  test-genius-backend:
-    name: test-genius_backend
     driver: bridge
