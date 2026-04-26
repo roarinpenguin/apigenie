@@ -23,9 +23,10 @@ from state import (
 )
 
 # Source data generators
-from sources.aws_cloudtrail import get_events_response as cloudtrail_events
-from sources.aws_guardduty import get_findings_response as guardduty_findings
-from sources.aws_waf import get_logs_response as waf_logs
+# NOTE: AWS sources (CloudTrail, WAF, GuardDuty) intentionally not imported here.
+# Real Observo collectors fetch them via SQS-notified S3 polling, which apigenie
+# cannot emulate with HTTP endpoints. The generators in sources/aws_*.py are
+# preserved for a future LocalStack-based stack (see docs/LOCALSTACK_PLAN.md).
 from sources.azure_ad import get_audit_logs_response as entra_audit, get_signin_logs_response as entra_signin
 from sources.cisco_duo import get_admin_logs_response as duo_admin, get_auth_logs_response as duo_auth
 from sources.darktrace import get_analyst_incidents, get_model_breaches, get_status as darktrace_status
@@ -464,69 +465,15 @@ async def proofpoint_messages_blocked(_auth: BasicAuth, sinceSeconds: int = Quer
 
 
 # =============================================================================
-# AWS CloudTrail  —  Bearer / AWS SigV4 (we accept any Bearer for simplicity)
-# =============================================================================
-
-
-@app.get("/v1/cloudtrail/events")
-async def aws_cloudtrail_events(_auth: BearerAuth, MaxResults: int = Query(50, le=50)) -> dict[str, Any]:
-    return cloudtrail_events(limit=MaxResults)
-
-
-@app.post("/v1/cloudtrail/events")
-async def aws_cloudtrail_events_post(_auth: BearerAuth, request: Request) -> dict[str, Any]:
-    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
-    limit = body.get("MaxResults", 50) if isinstance(body, dict) else 50
-    return cloudtrail_events(limit=min(limit, 50))
-
-
-# =============================================================================
-# AWS-protocol mock — REMOVED
+# AWS sources (CloudTrail, WAF, GuardDuty) — NOT EXPOSED via HTTP
 #
-# Earlier versions exposed /aws/sqs/<queue>, /<account>/<queue> and a bare
-# POST / handler that spoke the AWS Query/JSON SQS protocol. Verified via
-# nginx access logs that the Observo AWS CloudTrail source dials real
-# sqs.<region>.amazonaws.com regardless of the queue URL host, so all of
-# those routes were unreachable. Use the plain Bearer-protected endpoint
-# /v1/cloudtrail/events with a generic HTTP source instead.
-#
-# If a future collector exposes an "endpoint URL override" field, restore
-# the deleted handlers from git history (commits 8f0c05a and 022ca1c).
+# All three are delivered to customers via S3 (CloudTrail / WAF) or SQS-notified
+# S3 (GuardDuty). Real Observo collectors poll those AWS services directly using
+# the AWS SDK, with hostnames hardcoded to *.amazonaws.com and SigV4 host-header
+# binding. Without an S3-compatible mock + SQS mock (see docs/LOCALSTACK_PLAN.md)
+# there is no useful HTTP shape to expose here. The sources/aws_*.py data
+# generators remain in the tree for that future integration.
 # =============================================================================
-
-
-# =============================================================================
-# AWS WAF  —  Bearer auth
-# =============================================================================
-
-
-@app.get("/v1/waf/logs")
-async def aws_waf_logs(_auth: BearerAuth, limit: int = Query(100, le=1000)) -> list[dict[str, Any]]:
-    return waf_logs(limit=limit)
-
-
-@app.post("/v1/waf/logs")
-async def aws_waf_logs_post(_auth: BearerAuth, request: Request) -> list[dict[str, Any]]:
-    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
-    limit = body.get("limit", 100) if isinstance(body, dict) else 100
-    return waf_logs(limit=min(limit, 1000))
-
-
-# =============================================================================
-# AWS GuardDuty  —  Bearer auth
-# =============================================================================
-
-
-@app.get("/v1/guardduty/findings")
-async def aws_guardduty_findings_endpoint(_auth: BearerAuth, MaxResults: int = Query(50, le=50)) -> dict[str, Any]:
-    return guardduty_findings(limit=MaxResults)
-
-
-@app.post("/detector/{detector_id}/findings/get")
-async def aws_guardduty_get_findings(_auth: BearerAuth, detector_id: str, request: Request) -> dict[str, Any]:
-    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
-    limit = len(body.get("FindingIds", [])) or 50
-    return guardduty_findings(limit=min(limit, 50))
 
 
 # =============================================================================

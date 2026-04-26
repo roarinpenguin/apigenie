@@ -1,6 +1,6 @@
 # <img src="assets/logo.png" width="60" align="center" alt="ApiGenie logo"> ApiGenie
 
-> Self-contained mock server for **14 security platform APIs** plus **Azure Event Hubs (Kafka)** and **GCP Cloud Logging (Pub/Sub)** — built for [Observo](https://observo.ai) source-configuration testing.
+> Self-contained mock server for **11 security platform APIs** plus **Azure Event Hubs (Kafka)** and **GCP Cloud Logging (Pub/Sub)** — built for [Observo](https://observo.ai) source-configuration testing.
 
 ApiGenie exposes realistic, dynamically-varied data through the same authentication shapes the real platforms use (Bearer, Basic, X-ApiKeys, Duo HMAC, OAuth2 client-credentials, Microsoft tenant OAuth, GraphQL, Tenable async export, Kafka SASL/PLAIN, gRPC Pub/Sub). It runs as a single Docker Compose stack — nginx, FastAPI, Kafka + Zookeeper, Pub/Sub emulator — with Let's Encrypt TLS on `apigenie.roarinpenguin.com`.
 
@@ -21,12 +21,11 @@ Live at **[https://apigenie.roarinpenguin.com](https://apigenie.roarinpenguin.co
 | 5 | **Cisco Duo** | HMAC-SHA1 | `GET /admin/v1/logs/authentication`, `/admin/v2/...`, `/admin/v1/logs/administrator` |
 | 6 | **Tenable VM** | X-ApiKeys (async export) | `POST /vulns/export` → `GET /vulns/export/{uuid}/status` → `GET /vulns/export/{uuid}/chunks/{n}` · `GET /audit-log/v1/events` |
 | 7 | **Proofpoint TAP** | Basic Auth | `GET /v2/siem/all`, `/v2/siem/messages/blocked` |
-| 8 | **AWS CloudTrail** | Bearer | `GET /v1/cloudtrail/events` |
-| 9 | **AWS WAF** | Bearer | `GET /v1/waf/logs` |
-| 10 | **AWS GuardDuty** | Bearer | `GET /v1/guardduty/findings` |
-| 11 | **Wiz** | Bearer (GraphQL) | `POST /graphql` |
-| 12 | **Snyk** | Bearer | `GET /v1/org/{id}/issues`, `/projects`, `/audit` |
-| 13 | **Darktrace** | HMAC-SHA1 | `GET /modelbreaches`, `/aianalyst/incident/log`, `/status`, `/groups` |
+| 8 | **Wiz** | OAuth2 + GraphQL | `POST /oauth2/token` → `POST /graphql` |
+| 9 | **Snyk** | Bearer | `GET /v1/org/{id}/issues`, `/rest/orgs/{id}/issues` (JSON:API), `/projects`, `/audit` |
+| 10 | **Darktrace** | HMAC-SHA1 | `GET /modelbreaches`, `/aianalyst/incident/log`, `/status`, `/groups` |
+
+> **AWS sources (CloudTrail, WAF, GuardDuty)** are intentionally not exposed via HTTP. Real Observo collectors fetch them via SQS-notified S3 polling using the AWS SDK with hostnames hardcoded to `*.amazonaws.com` and SigV4 host-binding, which apigenie cannot intercept. The data generators remain at `sources/aws_cloudtrail.py`, `sources/aws_waf.py`, and `sources/aws_guardduty.py` for a planned LocalStack-based extension — see [`docs/LOCALSTACK_PLAN.md`](docs/LOCALSTACK_PLAN.md).
 
 ### Streaming sources
 
@@ -266,8 +265,8 @@ apigenie/
 ├── sources/                  # One module per platform (data generators)
 │   ├── okta.py · netskope.py · azure_ad.py · microsoft_defender.py · cisco_duo.py
 │   ├── gcp_audit.py · tenable.py · proofpoint.py
-│   ├── aws_cloudtrail.py · aws_waf.py · aws_guardduty.py
-│   └── wiz.py · snyk.py · darktrace.py
+│   ├── wiz.py · snyk.py · darktrace.py
+│   └── aws_cloudtrail.py · aws_waf.py · aws_guardduty.py    # generators only (no HTTP routes — see LocalStack plan)
 ├── publishers/
 │   ├── kafka_publisher.py    # Background thread → Kafka topic azure-platform-logs
 │   └── pubsub_publisher.py   # Background thread → Pub/Sub topic audit-logs
@@ -308,7 +307,6 @@ Each request generates fresh, randomized log entries using weighted probability 
 
 - **Okta**: 70% normal logins · 10% MFA failures · 5% suspicious activity · 5% account lockouts
 - **Tenable**: 40% critical Log4Shell · 35% high Apache vulns · 20% medium SMB · 5% low/informational
-- **GuardDuty**: 35% C2 activity · 20% crypto mining · 15% SSH brute force · 10% data exfiltration
 - **Wiz**: 40% toxic combinations · 20% critical RCE · 15% open security groups · 10% exposed secrets
 - All other sources follow similar weighted distributions anchored to `now()` timestamps
 

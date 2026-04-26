@@ -156,36 +156,10 @@ SOURCES: dict[str, dict[str, Any]] = {
         ],
         "curl": f'curl -s -u "apigenie-principal-001:apigenie-secret-001" \\\n  "{BASE}/v2/siem/all?sinceSeconds=3600"',
     },
-    "cloudtrail": {
-        "name": "AWS CloudTrail",
-        "auth_type": "Bearer token",
-        "credentials": {"token": "apigenie-valid-token-001"},
-        "endpoints": [
-            {"method": "GET",  "path": "/v1/cloudtrail/events", "desc": "CloudTrail events (GET)"},
-            {"method": "POST", "path": "/v1/cloudtrail/events", "desc": "CloudTrail events (POST)"},
-        ],
-        "curl": f'curl -s -H "Authorization: Bearer apigenie-valid-token-001" \\\n  "{BASE}/v1/cloudtrail/events"',
-    },
-    "waf": {
-        "name": "AWS WAF",
-        "auth_type": "Bearer token",
-        "credentials": {"token": "apigenie-valid-token-001"},
-        "endpoints": [
-            {"method": "GET",  "path": "/v1/waf/logs", "desc": "WAF logs (GET)"},
-            {"method": "POST", "path": "/v1/waf/logs", "desc": "WAF logs (POST)"},
-        ],
-        "curl": f'curl -s -H "Authorization: Bearer apigenie-valid-token-001" \\\n  "{BASE}/v1/waf/logs"',
-    },
-    "guardduty": {
-        "name": "AWS GuardDuty",
-        "auth_type": "Bearer token",
-        "credentials": {"token": "apigenie-valid-token-001"},
-        "endpoints": [
-            {"method": "GET",  "path": "/v1/guardduty/findings",              "desc": "Findings (GET)"},
-            {"method": "POST", "path": "/detector/{detector_id}/findings/get", "desc": "Findings (POST)"},
-        ],
-        "curl": f'curl -s -H "Authorization: Bearer apigenie-valid-token-001" \\\n  "{BASE}/v1/guardduty/findings"',
-    },
+    # AWS sources (CloudTrail, WAF, GuardDuty) intentionally omitted: real Observo
+    # collectors fetch them via SQS-notified S3 polling, which requires LocalStack
+    # (S3 + SQS) emulation rather than HTTP endpoints. Data generators remain in
+    # sources/aws_*.py for that future integration. See docs/LOCALSTACK_PLAN.md.
     "wiz": {
         "name": "Wiz",
         "auth_type": "Bearer token + OAuth2",
