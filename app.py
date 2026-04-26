@@ -462,10 +462,12 @@ async def darktrace_model_breaches(
 
 
 @app.get("/aianalyst/incident/log")
+@app.get("/aianalyst/incidentevents")
 async def darktrace_ai_analyst_log(
     request: Request,
     starttime: int | None = None,
     endtime: int | None = None,
+    includeallpinned: bool | None = None,
     limit: int = Query(20, le=100),
 ) -> list[dict[str, Any]]:
     return get_analyst_incidents(limit=limit)

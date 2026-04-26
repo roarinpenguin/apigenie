@@ -31,7 +31,10 @@ _SOURCE_PATTERNS: list[tuple[str, list[str]]] = [
     ("darktrace",  ["/modelbreaches", "/aianalyst/", "/status", "/groups", "/devices"]),
 ]
 
-_SKIP_PREFIXES = ("/admin", "/health", "/docs", "/openapi")
+# Skip the admin UI itself (login/logout/dashboard/admin API) but NOT Cisco Duo,
+# which legitimately lives under /admin/v1/... and /admin/v2/... .
+_SKIP_EXACT = {"/admin", "/admin/"}
+_SKIP_PREFIXES = ("/admin/login", "/admin/logout", "/admin/api/", "/health", "/docs", "/openapi")
 
 
 def get_source(path: str) -> str | None:
@@ -39,9 +42,10 @@ def get_source(path: str) -> str | None:
         for p in patterns:
             if path == p or path.startswith(p):
                 return source
-    # tenant-prefixed Microsoft paths: /{uuid}/oauth2/...
-    parts = path.lstrip("/").split("/", 1)
-    if len(parts) == 2 and len(parts[0]) == 36 and parts[0].count("-") == 4:
+    # Tenant-prefixed Microsoft OAuth: /{tenant}/oauth2/v2.0/token
+    # The tenant id can be a UUID or a named tenant (e.g. "my-roarin-tenant-id"),
+    # so match on the suffix rather than the tenant format.
+    if path.endswith("/oauth2/v2.0/token") or path.endswith("/oauth2/token"):
         return "entra_id"
     return None
 
@@ -57,7 +61,7 @@ def _sanitise_headers(headers: Any) -> dict[str, str]:
 class TraceMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
-        if any(path.startswith(p) for p in _SKIP_PREFIXES):
+        if path in _SKIP_EXACT or any(path.startswith(p) for p in _SKIP_PREFIXES):
             return await call_next(request)
 
         source = get_source(path)
