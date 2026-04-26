@@ -358,10 +358,10 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
 <nav class="sidebar">
   <div class="brand">⚙ ApiGenie Admin</div>
   <span class="nav-section">Monitor</span>
-  <a class="nav-item active" onclick="showTab('requests')">📋 Requests</a>
-  <a class="nav-item" onclick="showTab('logs')">📜 Container Logs</a>
+  <a class="nav-item active" onclick="showTab('requests', this)">📋 Requests</a>
+  <a class="nav-item" onclick="showTab('logs', this)">📜 Container Logs</a>
   <span class="nav-section">Reference</span>
-  <a class="nav-item" onclick="showTab('config')">🔧 Source Config</a>
+  <a class="nav-item" onclick="showTab('config', this)">🔧 Source Config</a>
   <div class="logout"><a href="/admin/logout">Sign out</a></div>
 </nav>
 
@@ -419,11 +419,11 @@ let activeTab = 'requests';
 let logES = null;
 
 // ── Tab navigation ────────────────────────────────────────────────────────────
-function showTab(tab) {
+function showTab(tab, el) {
   document.querySelectorAll('.pane').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById('pane-' + tab).classList.add('active');
-  event.target.classList.add('active');
+  if (el) el.classList.add('active');
   activeTab = tab;
   const titles = {requests:'Request Inspector', logs:'Container Logs', config:'Source Config'};
   document.getElementById('page-title').textContent = titles[tab];
@@ -461,6 +461,7 @@ async function loadRequests() {
   wrap.innerHTML = '<p class="empty">Loading…</p>';
   try {
     const r = await fetch('/admin/api/requests/' + activeSource);
+    if (!r.ok) { wrap.innerHTML = '<p class="empty">Error: ' + r.status + ' ' + r.statusText + ' — try signing in again.</p>'; return; }
     const data = await r.json();
     if (!data.length) { wrap.innerHTML = '<p class="empty">No requests recorded yet — wait for the collector to call in.</p>'; return; }
     let html = `<table><thead><tr>
@@ -479,7 +480,7 @@ async function loadRequests() {
         <td class="dur">${e.duration_ms}</td>
         <td class="ts">${e.client}</td>
         <td><details><summary>headers${body ? ' + body' : ''}</summary>
-          <pre>${escHtml(hdr)}${body ? '\n\n--- Body ---\n' + escHtml(body.substring(0,800)) : ''}</pre>
+          <pre>${escHtml(hdr)}${body ? '\\n\\n--- Body ---\\n' + escHtml(body.substring(0,800)) : ''}</pre>
         </details></td>
       </tr>`;
     });
