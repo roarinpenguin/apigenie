@@ -434,9 +434,7 @@ def _check_aws_auth(request: Request) -> None:
             )
 
 
-@app.post("/aws/sqs/{queue_name}")
-@app.get("/aws/sqs/{queue_name}")
-async def aws_sqs(queue_name: str, request: Request) -> Response:
+async def _dispatch_sqs(request: Request, queue_name: str) -> Response:
     """Dispatch SQS Query API or JSON 1.0 actions on a queue.
 
     Supported actions: ReceiveMessage, DeleteMessage, DeleteMessageBatch,
@@ -505,6 +503,53 @@ async def aws_sqs(queue_name: str, request: Request) -> Response:
         media_type="text/xml",
         status_code=400,
     )
+
+
+def _looks_like_sqs(request: Request, body: bytes) -> bool:
+    """Heuristic: is this an AWS SQS request?"""
+    if request.headers.get("x-amz-target", "").startswith("AmazonSQS."):
+        return True
+    text = body.decode("utf-8", errors="ignore")
+    return ("Action=" in text and "SQS" in text) or "Action=ReceiveMessage" in text or "QueueUrl" in text
+
+
+# Our explicit /aws/sqs/<queue> shape (what we recommend in COLLECTOR_CONFIG).
+@app.post("/aws/sqs/{queue_name}")
+@app.get("/aws/sqs/{queue_name}")
+async def aws_sqs_explicit(queue_name: str, request: Request) -> Response:
+    return await _dispatch_sqs(request, queue_name)
+
+
+# Real-AWS path-style: /<account>/<queue>  (e.g. https://sqs.us-east-1.amazonaws.com/123456789012/cloudtrail).
+# Constrained by regex so we don't shadow other routes.
+@app.post("/{account_id:int}/{queue_name}")
+@app.get("/{account_id:int}/{queue_name}")
+async def aws_sqs_path_style(account_id: int, queue_name: str, request: Request) -> Response:
+    return await _dispatch_sqs(request, queue_name)
+
+
+# AWS SDK v2 JSON-protocol mode POSTs to "/" with QueueUrl in the body.
+@app.post("/")
+async def aws_root_dispatch(request: Request) -> Response:
+    body = await request.body()
+    if not _looks_like_sqs(request, body):
+        # Not an AWS request — let the catch-all 404 handler deal with it.
+        raise HTTPException(status_code=404, detail="Not Found")
+    # Extract queue name from QueueUrl param (JSON or form-encoded).
+    queue_name = "cloudtrail"
+    text = body.decode("utf-8", errors="ignore")
+    try:
+        if text.startswith("{"):
+            data = json.loads(text)
+            url = data.get("QueueUrl", "")
+        else:
+            from urllib.parse import parse_qs
+            url = parse_qs(text).get("QueueUrl", [""])[0]
+        if url:
+            queue_name = url.rstrip("/").rsplit("/", 1)[-1]
+    except Exception:
+        pass
+    return await _dispatch_sqs(request, queue_name)
 
 
 @app.get("/aws/s3/{bucket}/{key:path}")
