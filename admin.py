@@ -660,37 +660,61 @@ async def dashboard(ag_session: str | None = Cookie(None)):
     return HTMLResponse(html)
 
 
+# Lazy, per-process disposable RSA key for the dummy GCP SA JSON.
+# Generated on first request and held in memory only — never persisted, so no
+# credential-shaped blob lives at rest in the repo or on disk.
+_DUMMY_SA_PEM: str | None = None
+
+
+def _dummy_sa_pem() -> str:
+    global _DUMMY_SA_PEM
+    if _DUMMY_SA_PEM is None:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        pem_bytes = key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+        _DUMMY_SA_PEM = pem_bytes.decode("ascii")
+    return _DUMMY_SA_PEM
+
+
 @router.get("/gcp-sa.json")
 async def gcp_dummy_sa(ag_session: str | None = Cookie(None)):
-    """Synthesize a dummy GCP service-account JSON for the Pub/Sub emulator.
+    """Generate a dummy GCP service-account JSON for the Pub/Sub emulator.
 
-    Built at request time so the credential-shaped blob never lives at rest
-    in the repo (GitHub push protection rejects it on commit, even though
-    the key material is obviously fake).
+    Observo's GCP source actually loads the private_key with OpenSSL and signs
+    JWTs with it before realising the endpoint is the emulator, so the key has
+    to be a real RSA-2048 PEM. We generate one disposable key per process,
+    keep it in memory only, and never write it to disk. The collector still
+    talks to the emulator — no real GCP traffic happens.
     """
     if not _valid(ag_session):
         return RedirectResponse("/admin/login", status_code=303)
-    # Assemble the PEM body so no contiguous BEGIN/END key block exists in source.
-    pem_body = "\\n".join(["A" * 64] * 24) + "==\\n"
-    pem = (
-        "-----" + "BEGIN PRIVATE KEY" + "-----\\n"
-        + pem_body
-        + "-----" + "END PRIVATE KEY" + "-----\\n"
-    )
-    payload = (
-        "{\n"
-        '  "type": "service_account",\n'
-        '  "project_id": "obs-test",\n'
-        '  "private_key_id": "0000000000000000000000000000000000000000",\n'
-        f'  "private_key": "{pem}",\n'
-        '  "client_email": "apigenie-emulator@obs-test.iam.gserviceaccount.com",\n'
-        '  "client_id": "100000000000000000000",\n'
-        '  "auth_uri": "https://accounts.google.com/o/oauth2/auth",\n'
-        '  "token_uri": "https://oauth2.googleapis.com/token",\n'
-        '  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",\n'
-        '  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/apigenie-emulator%40obs-test.iam.gserviceaccount.com",\n'
-        '  "universe_domain": "googleapis.com"\n'
-        "}\n"
+
+    pem_escaped = _dummy_sa_pem().replace("\n", "\\n")
+    payload = json.dumps({
+        "type": "service_account",
+        "project_id": "obs-test",
+        "private_key_id": "0" * 40,
+        # Embed the PEM with literal \n escapes (real Google JSON shape).
+        "__pem_placeholder__": "ENCODED_BELOW",
+        "client_email": "apigenie-emulator@obs-test.iam.gserviceaccount.com",
+        "client_id": "1" + "0" * 20,
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+        "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/apigenie-emulator%40obs-test.iam.gserviceaccount.com",
+        "universe_domain": "googleapis.com",
+    }, indent=2)
+    # Splice the real private_key field into the rendered JSON (avoids
+    # double-escaping the embedded PEM when serialising via json.dumps).
+    payload = payload.replace(
+        '"__pem_placeholder__": "ENCODED_BELOW",',
+        f'"private_key": "{pem_escaped}",',
     )
     return Response(
         content=payload,
