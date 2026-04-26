@@ -6,13 +6,16 @@ can connect without any URL rewriting.
 
 import logging
 import os
+import random
 from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 
+from admin import router as admin_router
 from auth import BearerAuth, BasicAuth, DuoAuth, XApiKeysAuth
+from trace import TraceMiddleware
 from state import (
     tenable_export_exists,
     tenable_get_chunks,
@@ -67,6 +70,9 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+app.add_middleware(TraceMiddleware)
+app.include_router(admin_router)
 
 
 # =============================================================================
@@ -478,6 +484,7 @@ async def darktrace_status_endpoint() -> dict[str, Any]:
 @app.post("/oauth2/v1/token")
 @app.post("/oauth2/token")
 @app.post("/v2.0/token")
+@app.post("/oauth2/v2.0/token")
 async def oauth_token(request: Request) -> dict[str, Any]:
     return {
         "access_token": "apigenie-valid-token-001",
@@ -485,3 +492,43 @@ async def oauth_token(request: Request) -> dict[str, Any]:
         "expires_in": 3600,
         "scope": "read:logs read:events",
     }
+
+
+# Tenant-prefixed Microsoft token endpoint: /{tenant-id}/oauth2/v2.0/token
+@app.post("/{tenant_id}/oauth2/v2.0/token")
+async def oauth_token_tenant(tenant_id: str, request: Request) -> dict[str, Any]:
+    return {
+        "access_token": "apigenie-valid-token-001",
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "scope": "https://graph.microsoft.com/.default",
+    }
+
+
+# =============================================================================
+# Darktrace — additional endpoints
+# =============================================================================
+
+
+@app.get("/groups")
+async def darktrace_groups(request: Request) -> list[dict[str, Any]]:
+    return [
+        {"id": i, "name": f"Device Group {i}", "size": random.randint(5, 150),
+         "type": random.choice(["Client", "Server", "IoT", "Network"]),
+         "score": round(random.uniform(0.0, 1.0), 3)}
+        for i in range(1, random.randint(4, 8))
+    ]
+
+
+@app.get("/devices")
+async def darktrace_devices(
+    request: Request,
+    count: int = Query(50, le=500),
+) -> list[dict[str, Any]]:
+    return [
+        {"did": i, "ip": f"10.0.{i // 256}.{i % 256}",
+         "hostname": f"host-{i:04d}.internal",
+         "os": random.choice(["Windows", "Linux", "macOS", "iOS", "Android"]),
+         "score": round(random.uniform(0.0, 1.0), 3)}
+        for i in range(1, min(count, 50) + 1)
+    ]
