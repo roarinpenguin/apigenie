@@ -52,27 +52,63 @@ ERROR_RESPONSES: dict[str, tuple[int, dict]] = {
 }
 
 
-def _extract_bearer(authorization: str | None) -> str | None:
-    """Extract a bearer token, tolerating common collector quirks:
-    - Standard "Bearer <token>" (RFC 6750)
-    - Missing space: "Bearer<token>"
-    - Case variants: "bearer", "BEARER", "sswsXXX"
-    - Okta-style "SSWS <token>" / "token=<token>"
-    - Bare token with no prefix at all
-    Surrounding whitespace is trimmed.
+# Prefixes that collectors sometimes prepend (with or without a separating space)
+# to a token value. Listed longest-first so partial matches don't shadow longer ones.
+_TOKEN_PREFIXES = (
+    "x-api-keys",
+    "x-api-key",
+    "x-apikey",
+    "netskope-api-token",
+    "bearer",
+    "splunk",
+    "ssws",
+    "token=",
+    "token",
+    "apikey",
+    "key",
+)
+
+# Header names that may carry the auth token, in order of precedence.
+_TOKEN_HEADERS = (
+    "authorization",
+    "netskope-api-token",
+    "x-api-key",
+    "x-apikey",
+    "x-auth-token",
+    "api-key",
+)
+
+
+def _extract_bearer(value: str | None) -> str | None:
+    """Extract a token from a header value, tolerating common collector quirks.
+
+    Handles all of the following equivalently:
+      - "Bearer apigenie-valid-token-001"      (RFC 6750, with space)
+      - "Bearerapigenie-valid-token-001"        (no space — collector bug)
+      - "X-API-KEY apigenie-valid-token-001"    (Splunk/Tenable scheme as value)
+      - "X-API-KEYapigenie-valid-token-001"     (no space — observed Observo bug)
+      - "SSWS apigenie-valid-token-001"         (Okta)
+      - "Splunk apigenie-valid-token-001"       (Splunk HEC)
+      - "Token apigenie-valid-token-001"        (Netskope/GitHub legacy)
+      - "token=apigenie-valid-token-001"        (form-style)
+      - "apigenie-valid-token-001"              (bare)
+    Comparison is case-insensitive on the prefix only; the token itself is
+    returned with its original case preserved.
     """
-    if not authorization:
+    if not value:
         return None
-    auth = authorization.strip()
-    lower = auth.lower()
-    for prefix in ("bearer", "ssws"):
+    s = value.strip()
+    # Strip leading commas/semicolons that some clients accidentally add.
+    s = s.lstrip(",;").strip()
+    lower = s.lower()
+    for prefix in _TOKEN_PREFIXES:
         if lower.startswith(prefix):
-            rest = auth[len(prefix):].lstrip()  # tolerate missing or extra spaces
-            return rest or None
-    if lower.startswith("token="):
-        return auth[len("token="):].strip() or None
-    # Bare token (no scheme) — accept as-is so downstream validation can decide.
-    return auth or None
+            rest = s[len(prefix):]
+            # Allow optional separator: space, tab, '=' or ':'.
+            rest = rest.lstrip(" \t=:")
+            if rest:
+                return rest
+    return s or None
 
 
 def _check_error_token(token: str) -> None:
@@ -81,13 +117,25 @@ def _check_error_token(token: str) -> None:
             raise HTTPException(status_code=status, detail=body)
 
 
-async def require_bearer_auth(authorization: Annotated[str | None, Header()] = None) -> None:
-    token = _extract_bearer(authorization)
+async def require_bearer_auth(request: Request) -> None:
+    """Tolerant token auth — checks every header a collector might use."""
+    token: str | None = None
+    for hdr in _TOKEN_HEADERS:
+        candidate = request.headers.get(hdr)
+        token = _extract_bearer(candidate)
+        if token:
+            break
     if not token:
-        raise HTTPException(status_code=401, detail={"error": "unauthorized", "message": "Missing Bearer token"})
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "unauthorized", "message": "Missing Bearer token"},
+        )
     _check_error_token(token)
     if token not in VALID_TOKENS:
-        raise HTTPException(status_code=401, detail={"error": "unauthorized", "message": "Invalid token"})
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "unauthorized", "message": "Invalid token"},
+        )
 
 
 async def require_basic_auth(authorization: Annotated[str | None, Header()] = None) -> None:
