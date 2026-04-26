@@ -1,83 +1,41 @@
 version: "3.9"
 
-# PUBLIC IMAGES ONLY — no internal registry dependencies.
-# Kafka listeners are configured to advertise the public hostname so
-# Observo Site collector can connect from outside Docker.
+# ApiGenie runs as a single FastAPI container that joins the existing
+# test-genius_backend Docker network. nginx, Kafka, Zookeeper, and the
+# Pub/Sub emulator are all already running from the test-genius stack
+# and are reachable by service name on that network.
+#
+# Deploy order:
+#   1. Start test-genius stack (provides nginx, kafka, pubsub-emulator)
+#   2. docker compose up -d   (starts the apigenie container)
+#   3. Copy nginx/nginx.conf to test-genius/nginx/nginx.conf and reload nginx
 
 services:
-
-  # ─── ApiGenie mock API server ──────────────────────────────────────────────
   apigenie:
     build: .
-    ports:
-      - "8000:8000"
+    container_name: apigenie
+    restart: unless-stopped
     environment:
       LOG_LEVEL: INFO
       PUBLISHERS_ENABLED: "true"
+      # Pub/Sub emulator already running in test-genius stack
       PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
-      GCP_PROJECT_ID: apigenie-project
+      GCP_PROJECT_ID: obs-test
       PUBSUB_TOPIC_ID: audit-logs
       PUBSUB_SUBSCRIPTION_ID: audit-logs-sub
-      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      PUBSUB_PUBLISH_INTERVAL: "10"
+      PUBSUB_BATCH_SIZE: "5"
+      # Kafka already running in test-genius stack (internal listener)
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
       KAFKA_TOPIC: azure-platform-logs
-    depends_on:
-      kafka:
-        condition: service_healthy
-      pubsub-emulator:
-        condition: service_started
+      KAFKA_PUBLISH_INTERVAL: "10"
+      KAFKA_BATCH_SIZE: "5"
     networks:
-      - apigenie-net
-
-  # ─── Kafka (Azure Event Hubs emulator) ────────────────────────────────────
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.6.6
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
-    networks:
-      - apigenie-net
-
-  kafka:
-    image: confluentinc/cp-kafka:7.6.6
-    depends_on:
-      - zookeeper
-    ports:
-      # 9092 is for external clients (Observo collector on the host / internet)
-      - "9092:9092"
-      # 29092 is for docker-internal clients (apigenie container)
-    environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      # EXTERNAL listener exposed on port 9092 with the server's public hostname
-      # so that Observo can reach it from outside Docker.
-      # DOCKER listener on 29092 is for same-network containers (apigenie).
-      KAFKA_ADVERTISED_LISTENERS: >-
-        EXTERNAL://${PUBLIC_HOSTNAME:-apigenie.roarinpenguin.com}:9092,DOCKER://kafka:29092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: EXTERNAL:PLAINTEXT,DOCKER:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: DOCKER
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-    healthcheck:
-      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:29092", "--list"]
-      interval: 15s
-      timeout: 10s
-      retries: 5
-    networks:
-      - apigenie-net
-
-  # ─── GCP Pub/Sub emulator ─────────────────────────────────────────────────
-  pubsub-emulator:
-    image: gcr.io/google.com/cloudsdktool/cloud-sdk:emulators
-    command: >
-      gcloud beta emulators pubsub start
-      --host-port=0.0.0.0:8085
-      --project=apigenie-project
-    ports:
-      - "8085:8085"
-    networks:
-      - apigenie-net
+      - test-genius-backend
+    # Port 8000 is intentionally NOT exposed to the host.
+    # All external traffic comes through the test-genius nginx on 443.
 
 networks:
-  apigenie-net:
-    driver: bridge
+  test-genius-backend:
+    external: true
+    name: test-genius_backend
