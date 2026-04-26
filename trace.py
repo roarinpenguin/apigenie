@@ -24,7 +24,7 @@ _SOURCE_PATTERNS: list[tuple[str, list[str]]] = [
     ("tenable",    ["/vulns/", "/assets/", "/audit-log/", "/api/v1/refresh-access-token"]),
     ("proofpoint", ["/v2/siem/"]),
     ("cisco_duo",  ["/epm/api/auth/epm/logon"]),  # Duo logon flow per §2.3
-    ("cloudtrail", ["/v1/cloudtrail/", "/aws/sqs/", "/aws/s3/", "/aws/"]),
+    ("cloudtrail", ["/v1/cloudtrail/"]),
     ("waf",        ["/v1/waf/"]),
     ("guardduty",  ["/v1/guardduty/", "/detector/"]),
     ("wiz",        ["/graphql"]),
