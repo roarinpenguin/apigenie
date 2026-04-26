@@ -19,6 +19,12 @@ VALID_TOKENS = frozenset(
         "imaas-valid-token-003",
         "imaas-valid-token-004",
         "imaas-valid-token-005",
+        # Tokens minted by our /oauth2/token, /oauth/token, /{tenant}/oauth2/v2.0/token
+        # endpoints. Collectors that do the OAuth2 client_credentials flow (Wiz,
+        # Microsoft tenant OAuth, generic OAuth2) receive one of these and then
+        # use it as the Bearer for downstream API calls. Without this set the
+        # second hop 401s.
+        "apigenie-fake-oauth-access-token",
     }
 )
 
