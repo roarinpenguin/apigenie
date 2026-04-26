@@ -357,9 +357,18 @@ async def tenable_assets_export_chunk(_auth: XApiKeysAuth, export_uuid: str, chu
 @app.get("/audit-log/v1/events")
 async def tenable_audit_logs(
     _auth: XApiKeysAuth,
-    limit: int = Query(100, le=5000),
-    offset: int = Query(0),
+    limit: int = Query(100, ge=1, le=10000),
+    offset: int = Query(0, ge=0),
+    f: str | None = Query(None),       # Tenable filter, e.g. f=date.gt:2026-04-08T00:44:33.000Z
+    next: str | None = Query(None),    # Tenable cursor pagination token
 ) -> dict[str, Any]:
+    # Real Tenable supports cursor pagination via 'next'; for the mock we treat
+    # 'next' as a numeric offset when parseable, otherwise ignore.
+    if next:
+        try:
+            offset = max(offset, int(next))
+        except (TypeError, ValueError):
+            pass
     return tenable_audit(limit=limit, offset=offset)
 
 
