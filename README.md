@@ -2,7 +2,9 @@
 
 > Standalone HTTP mock server for **14 security platform APIs** — built for [Observo](https://observo.ai) Site telemetry collector source-configuration testing.
 
-ApiGenie exposes realistic, dynamically-varied API endpoints that mimic the authentication methods and log formats of real security platforms. No Kafka consumer, no LLM pipeline, no database — just a lean FastAPI app you can `docker compose up` anywhere.
+ApiGenie exposes realistic, dynamically-varied API endpoints that mimic the authentication methods and log formats of real security platforms. It runs as a single FastAPI container that slots into the existing **test-genius** Docker stack, sharing its nginx (SSL on 443), Kafka, and Pub/Sub emulator.
+
+Live at **[https://apigenie.roarinpenguin.com](https://apigenie.roarinpenguin.com)**
 
 ---
 
@@ -14,10 +16,10 @@ ApiGenie exposes realistic, dynamically-varied API endpoints that mimic the auth
 | 2 | **Netskope** | Bearer | `GET /api/v2/events/data/alert`, `/audit` |
 | 3 | **Microsoft Entra ID** | Bearer | `GET /v1.0/auditLogs/directoryAudits`, `/signIns` |
 | 4 | **Microsoft Defender for Cloud** | Bearer | `GET /v1.0/subscriptions/{id}/providers/Microsoft.Security/alerts` |
-| 5 | **Cisco Duo** | HMAC-SHA1 | `GET /admin/v1/logs/authentication`, `/admin/v2/logs/authentication`, `/administrator` |
+| 5 | **Cisco Duo** | HMAC-SHA1 | `GET /admin/v1/logs/authentication`, `/admin/v2/logs/authentication`, `/admin/v1/logs/administrator` |
 | 6 | **GCP Audit Logs** | Bearer + Pub/Sub gRPC | `POST /v2/entries:list` + emulator on `:8085` |
 | 7 | **Tenable VM** | X-ApiKeys | `POST /vulns/export` → `GET /vulns/export/{uuid}/status` → `GET /vulns/export/{uuid}/chunks/{n}` |
-| 8 | **Proofpoint TAP** | Basic Auth | `GET /v2/siem/all`, `/messages/blocked` |
+| 8 | **Proofpoint TAP** | Basic Auth | `GET /v2/siem/all`, `/v2/siem/messages/blocked` |
 | 9 | **AWS CloudTrail** | Bearer | `GET /v1/cloudtrail/events` |
 | 10 | **AWS WAF** | Bearer | `GET /v1/waf/logs` |
 | 11 | **AWS GuardDuty** | Bearer | `GET /v1/guardduty/findings` |
@@ -27,21 +29,83 @@ ApiGenie exposes realistic, dynamically-varied API endpoints that mimic the auth
 
 ---
 
-## Quick start
+## Architecture
 
-```bash
-# Clone
-git clone https://github.com/roarinpenguin/apigenie.git
-cd apigenie
-
-# Copy env config
-cp .env.example .env
-
-# Start everything (API server + Kafka + Pub/Sub emulator)
-docker compose up --build
+```
+Internet
+    │  HTTPS :443
+    ▼
+┌─────────────────────────────────────────────────┐
+│          test-genius-nginx-1 (nginx:latest)      │
+│   SSL termination · Let's Encrypt certs          │
+│   Static HTML at /                               │
+│                                                  │
+│  location /api/v1/logs          → apigenie:8000  │
+│  location /api/v2/              → apigenie:8000  │
+│  location /v1.0/auditLogs/      → apigenie:8000  │
+│  location /vulns/               → apigenie:8000  │
+│  location /graphql              → apigenie:8000  │
+│  ... (all 14 source paths)      → apigenie:8000  │
+│  location / (catch-all)         → api:5050       │  ← test-genius
+└─────────────────────────────────────────────────┘
+         │                              │
+         ▼                              ▼
+  ┌─────────────┐              ┌──────────────────┐
+  │   apigenie  │              │  test-genius-api  │
+  │  FastAPI    │              │  Gunicorn :5050   │
+  │   :8000     │              └──────────────────┘
+  └─────────────┘
+         │
+    ┌────┴─────────────────────────┐
+    │    test-genius_backend net   │
+    │  kafka:19092  pubsub:8085    │
+    └──────────────────────────────┘
 ```
 
-The API server listens on **`:8000`**, the Pub/Sub emulator on **`:8085`**, and Kafka on **`:9092`**.
+All containers share the `test-genius_backend` Docker network. ApiGenie's publishers push events to the existing Kafka and Pub/Sub emulator containers.
+
+---
+
+## Deployment
+
+### Prerequisites
+
+The **test-genius** stack must be running first (provides nginx, Kafka, Pub/Sub emulator):
+
+```bash
+# On apigenie.roarinpenguin.com
+cd ~/test-genius
+docker compose --profile app --profile imaas-pubsub up -d
+```
+
+### 1. Clone and build apigenie
+
+```bash
+cd ~
+git clone https://github.com/roarinpenguin/apigenie.git
+cd apigenie/apigenie
+docker build -t apigenie .
+```
+
+### 2. Start the apigenie container
+
+```bash
+docker compose up -d
+```
+
+The container joins `test-genius_backend` automatically and is reachable as `apigenie:8000` from within the network.
+
+### 3. Update nginx to route apigenie paths
+
+```bash
+# Replace test-genius nginx config with the one from this repo
+cp ~/apigenie/apigenie/nginx/nginx.conf ~/test-genius/nginx/nginx.conf
+
+# Reload nginx without downtime
+docker exec test-genius-nginx-1 nginx -s reload
+```
+
+That's it — all 14 source APIs are now live on `https://apigenie.roarinpenguin.com`.
 
 ---
 
@@ -60,7 +124,7 @@ A mock OAuth2 token endpoint is available at `POST /oauth2/v1/token` — returns
 
 ### Error simulation
 
-Substitute the token with one of these to trigger specific HTTP error responses:
+Substitute the Bearer token to trigger specific HTTP errors:
 
 | Token | Response |
 |-------|----------|
@@ -74,7 +138,7 @@ Substitute the token with one of these to trigger specific HTTP error responses:
 
 ## Tenable async export flow
 
-Tenable uses a 3-step stateful export API. ApiGenie implements it fully in-memory:
+Tenable uses a 3-step stateful export API — implemented fully in-memory with TTL eviction:
 
 ```
 POST  /vulns/export                          → { "export_uuid": "..." }
@@ -88,27 +152,25 @@ Same pattern for `/assets/export`. Exports are cached for 1 hour then auto-evict
 
 ## GCP Pub/Sub
 
-The `pubsub-emulator` container runs on port `8085` (gRPC). On startup, ApiGenie's background publisher:
+The Pub/Sub emulator runs on port `8085` (gRPC), started by the test-genius stack. On startup, ApiGenie's background publisher:
 
-1. Creates topic `audit-logs` in project `apigenie-project` if it doesn't exist
+1. Creates topic `audit-logs` in project `obs-test` if it doesn't exist
 2. Publishes 5 GCP audit log events every 10 seconds
 
-Configure your Observo GCP Audit Logs source to use:
-- **Emulator host**: `<your-host>:8085`
-- **Project ID**: `apigenie-project`
+Configure your Observo GCP Audit Logs source:
+- **Emulator host**: `apigenie.roarinpenguin.com:8085`
+- **Project ID**: `obs-test`
 - **Subscription**: `audit-logs-sub`
 
 ---
 
 ## Azure Event Hubs (Kafka)
 
-Kafka runs on port `9092` and is advertised externally as `apigenie.roarinpenguin.com:9092`. The background publisher produces 5 Azure Platform activity log events to topic `azure-platform-logs` every 10 seconds.
+Kafka runs on port `9092` (test-genius stack). ApiGenie's background publisher produces 5 Azure Platform activity log events to topic `azure-platform-logs` every 10 seconds.
 
-Configure your Observo Azure source to use:
+Configure your Observo Azure source:
 - **Bootstrap server**: `apigenie.roarinpenguin.com:9092`
 - **Topic**: `azure-platform-logs`
-
-> **Local testing**: set `PUBLIC_HOSTNAME=localhost` in `.env` to advertise `localhost:9092` instead.
 
 ---
 
@@ -120,6 +182,8 @@ apigenie/
 ├── auth.py                   # Bearer / Basic / X-ApiKeys / Duo HMAC auth
 ├── generators.py             # Shared random data helpers
 ├── state.py                  # Thread-safe Tenable export cache
+├── nginx/
+│   └── nginx.conf            # Drop-in replacement for test-genius nginx config
 ├── sources/                  # One file per platform
 │   ├── okta.py
 │   ├── netskope.py
@@ -136,10 +200,10 @@ apigenie/
 │   ├── snyk.py
 │   └── darktrace.py
 ├── publishers/
-│   ├── kafka_publisher.py    # Background → Azure Event Hubs
-│   └── pubsub_publisher.py   # Background → GCP Pub/Sub
-├── Dockerfile                # python:3.13-slim (public only)
-├── docker-compose.yaml
+│   ├── kafka_publisher.py    # Background thread → Kafka (azure-platform-logs)
+│   └── pubsub_publisher.py   # Background thread → Pub/Sub (audit-logs)
+├── Dockerfile                # python:3.13-slim
+├── docker-compose.yaml       # Single apigenie service, joins test-genius_backend
 ├── pyproject.toml
 └── .env.example
 ```
@@ -152,16 +216,15 @@ apigenie/
 |----------|---------|-------------|
 | `LOG_LEVEL` | `INFO` | Uvicorn log level |
 | `PUBLISHERS_ENABLED` | `true` | Enable background Kafka + Pub/Sub publishers |
-| `PUBSUB_EMULATOR_HOST` | `pubsub-emulator:8085` | Pub/Sub emulator address |
-| `GCP_PROJECT_ID` | `apigenie-project` | GCP project for Pub/Sub |
+| `PUBSUB_EMULATOR_HOST` | `pubsub-emulator:8085` | Pub/Sub emulator (test-genius container) |
+| `GCP_PROJECT_ID` | `obs-test` | GCP project for Pub/Sub |
 | `PUBSUB_TOPIC_ID` | `audit-logs` | Pub/Sub topic name |
 | `PUBSUB_PUBLISH_INTERVAL` | `10` | Seconds between Pub/Sub batches |
 | `PUBSUB_BATCH_SIZE` | `5` | Messages per Pub/Sub batch |
-| `KAFKA_BOOTSTRAP_SERVERS` | `kafka:9092` | Kafka broker (internal Docker address) |
-| `KAFKA_TOPIC` | `azure-platform-logs` | Kafka topic name |
+| `KAFKA_BOOTSTRAP_SERVERS` | `kafka:19092` | Kafka internal listener (test-genius container) |
+| `KAFKA_TOPIC` | `azure-platform-logs` | Kafka topic for Azure Platform logs |
 | `KAFKA_PUBLISH_INTERVAL` | `10` | Seconds between Kafka batches |
 | `KAFKA_BATCH_SIZE` | `5` | Messages per Kafka batch |
-| `PUBLIC_HOSTNAME` | `apigenie.roarinpenguin.com` | Public hostname for Kafka advertised listener |
 
 ---
 
@@ -169,21 +232,11 @@ apigenie/
 
 Each request generates fresh, randomized log entries using weighted probability templates:
 
-- **Okta**: 70% normal session starts, 10% MFA failures, 5% suspicious activity, 5% account lockouts
-- **Tenable**: 40% critical Log4Shell CVE-2021-44228, 35% high Apache vulns, 20% medium SMB misconfig
-- **GuardDuty**: 35% C2 activity, 20% crypto mining, 15% SSH brute force, 10% data exfiltration
-- **Wiz**: 40% toxic combinations, 20% critical RCE vulns, 15% open security groups, 10% exposed secrets
-- ...and so on for all 14 sources
-
-Timestamps are always anchored to `now()` so log freshness checks pass automatically.
-
----
-
-## Requirements
-
-- Docker + Docker Compose (no local Python needed)
-- Public internet access to pull images from Docker Hub and `gcr.io`
-- Port `8000`, `8085`, `9092` open on the host
+- **Okta**: 70% normal logins · 10% MFA failures · 5% suspicious activity · 5% account lockouts
+- **Tenable**: 40% critical Log4Shell · 35% high Apache vulns · 20% medium SMB · 5% low/informational
+- **GuardDuty**: 35% C2 activity · 20% crypto mining · 15% SSH brute force · 10% data exfiltration
+- **Wiz**: 40% toxic combinations · 20% critical RCE · 15% open security groups · 10% exposed secrets
+- All other sources follow similar weighted distributions anchored to `now()` timestamps
 
 ---
 
