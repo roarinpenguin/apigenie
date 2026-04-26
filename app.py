@@ -168,6 +168,25 @@ async def defender_recommendations_v2(_auth: BearerAuth, subscription_id: str, t
     return defender_recs(limit=top)
 
 
+# Microsoft Defender XDR / Graph Security API paths.
+# Many collectors integrate with Defender via graph.microsoft.com/v1.0/security/...
+# rather than the Azure Resource Manager /subscriptions/... routes.
+@app.get("/v1.0/security/alerts_v2")
+@app.get("/v1.0/security/alerts")
+async def defender_graph_alerts(_auth: BearerAuth, top: int = Query(50, alias="$top", le=500)) -> dict[str, Any]:
+    return defender_alerts(limit=top)
+
+
+@app.get("/v1.0/security/incidents")
+async def defender_graph_incidents(_auth: BearerAuth, top: int = Query(50, alias="$top", le=500)) -> dict[str, Any]:
+    return defender_alerts(limit=top)
+
+
+@app.get("/v1.0/security/recommendations")
+async def defender_graph_recommendations(_auth: BearerAuth, top: int = Query(25, alias="$top", le=500)) -> dict[str, Any]:
+    return defender_recs(limit=top)
+
+
 # =============================================================================
 # Cisco Duo  —  HMAC auth
 # =============================================================================
@@ -207,6 +226,32 @@ async def duo_admin_logs_endpoint(
 @app.get("/admin/v1/info/summary")
 async def duo_summary() -> dict[str, Any]:
     return {"stat": "OK", "response": {"admin_count": 5, "integration_count": 12, "user_count": 1547}}
+
+
+@app.get("/admin/v1/logs/telephony")
+@app.get("/admin/v2/logs/telephony")
+async def duo_telephony_logs(
+    _auth: DuoAuth,
+    mintime: int | None = None,
+    maxtime: int | None = None,
+    limit: int = Query(100, le=1000),
+) -> dict[str, Any]:
+    # Reuse auth-log generator with telephony-flavoured contexts. Real Duo telephony
+    # rows include phone/voice fields; we synthesise a representative subset here.
+    base = duo_auth(limit=limit, mintime=mintime, maxtime=maxtime)
+    rows = base.get("response", {}).get("authlogs", []) if isinstance(base.get("response"), dict) else []
+    telephony = [
+        {
+            "timestamp": r.get("timestamp"),
+            "context": random.choice(["administrator login", "authentication", "enrollment"]),
+            "credits": random.randint(1, 5),
+            "phone": f"+1555{random.randint(1000000, 9999999)}",
+            "type": random.choice(["sms", "phone"]),
+            "eventtype": "telephony",
+        }
+        for r in rows
+    ]
+    return {"stat": "OK", "response": telephony, "metadata": {"total_objects": len(telephony)}}
 
 
 # =============================================================================

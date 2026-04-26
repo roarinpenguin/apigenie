@@ -113,9 +113,16 @@ async def require_x_api_keys(
 
 
 async def require_duo_auth(request: Request) -> None:
-    """Validate Duo HMAC-SHA1 signature."""
+    """Mock Duo authentication.
+
+    Real Duo uses HMAC-SHA1 signing of canonical request strings, but this is
+    a mock service intended for collector integration testing. We accept any
+    well-formed Basic auth header so collectors can use whatever ikey/skey pair
+    they have configured in their secrets manager. The presence of *some*
+    credential is required so we still exercise the auth code path.
+    """
     authorization = request.headers.get("Authorization", "")
-    if not authorization.startswith("Basic "):
+    if not authorization.lower().startswith("basic "):
         raise HTTPException(status_code=401, detail={"stat": "FAIL", "message": "Missing Basic auth"})
 
     try:
@@ -124,20 +131,10 @@ async def require_duo_auth(request: Request) -> None:
     except Exception:
         raise HTTPException(status_code=401, detail={"stat": "FAIL", "message": "Invalid auth header"})
 
-    # Accept test ikey directly, or verify HMAC signature
-    if ikey == DUO_IKEY:
-        return
-
-    # Try HMAC verification for callers that compute it properly
-    date_header = request.headers.get("Date", formatdate())
-    method = request.method.upper()
-    host = request.headers.get("Host", "api.duosecurity.com")
-    path = request.url.path
-    params_str = "&".join(f"{k}={v}" for k, v in sorted(request.query_params.items()))
-    canon = "\n".join([date_header, method, host.lower(), path, params_str])
-    expected = hmac.new(DUO_SKEY.encode(), canon.encode(), hashlib.sha1).hexdigest()
-    if not hmac.compare_digest(sig, expected):
-        raise HTTPException(status_code=401, detail={"stat": "FAIL", "message": "Invalid signature"})
+    if not ikey:
+        raise HTTPException(status_code=401, detail={"stat": "FAIL", "message": "Empty integration key"})
+    # Any non-empty ikey is accepted for the mock.
+    return
 
 
 BearerAuth = Annotated[None, Depends(require_bearer_auth)]
