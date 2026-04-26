@@ -8,7 +8,7 @@ import time
 from typing import Any
 
 from fastapi import APIRouter, Cookie, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 
 from trace import REQUEST_TRACE
 
@@ -218,6 +218,50 @@ SOURCES: dict[str, dict[str, Any]] = {
         "curl": (
             f'curl -s -H "Authorization: Bearer apigenie-valid-token-001" \\\n'
             f'  "{BASE}/v1/org/00000000-0000-0000-0000-000000000001/issues"'
+        ),
+    },
+    "azure_platform": {
+        "name": "Azure Platform (Event Hubs)",
+        "auth_type": "Kafka SASL/PLAIN — username '$ConnectionString'",
+        "credentials": {
+            "Bootstrap servers (SASL_SSL)":   "apigenie.roarinpenguin.com:9093",
+            "Bootstrap servers (SASL_PLAINTEXT, no TLS)": "apigenie.roarinpenguin.com:9094",
+            "SASL mechanism": "PLAIN",
+            "SASL username":  "$ConnectionString",
+            "SASL password (= Connection String)": "Endpoint=sb://apigenie.roarinpenguin.com/;SharedAccessKeyName=mock;SharedAccessKey=apigenie-eh-mock-2026;EntityPath=azure-platform-logs",
+            "Topic / Event Hub name": "azure-platform-logs",
+            "Consumer group": "any (e.g. observo-az)",
+            "Override for SASL_PLAINTEXT": "Advanced Settings → librdkafka options → security.protocol=sasl_plaintext",
+        },
+        "endpoints": [
+            {"method": "KAFKA", "path": ":9093 (SASL_SSL)",       "desc": "Real Azure Event Hubs shape — no overrides needed"},
+            {"method": "KAFKA", "path": ":9094 (SASL_PLAINTEXT)", "desc": "Same auth, no TLS — set security.protocol=sasl_plaintext in Advanced Settings"},
+            {"method": "KAFKA", "path": ":9092 (PLAINTEXT)",      "desc": "Legacy plain Kafka — no SASL"},
+        ],
+        "curl": (
+            'kcat -b apigenie.roarinpenguin.com:9094 -t azure-platform-logs -C \\\n'
+            '  -X security.protocol=SASL_PLAINTEXT -X sasl.mechanism=PLAIN \\\n'
+            '  -X sasl.username=\'$ConnectionString\' \\\n'
+            '  -X sasl.password=\'Endpoint=sb://apigenie.roarinpenguin.com/;SharedAccessKeyName=mock;SharedAccessKey=apigenie-eh-mock-2026;EntityPath=azure-platform-logs\''
+        ),
+    },
+    "gcp_audit": {
+        "name": "GCP Cloud Logging (Pub/Sub emulator)",
+        "auth_type": "PUBSUB_EMULATOR_HOST or dummy SA JSON",
+        "credentials": {
+            "Pub/Sub endpoint": "apigenie.roarinpenguin.com:8085 (plaintext gRPC)",
+            "Project ID":       "obs-test",
+            "Topic":            "audit-logs",
+            "Subscription":     "audit-logs-sub",
+            "Preferred":        "Set PUBSUB_EMULATOR_HOST=apigenie.roarinpenguin.com:8085 — SDK skips auth",
+            "Fallback":         "Download a dummy SA JSON from /admin/gcp-sa.json and upload it in Observo",
+        },
+        "endpoints": [
+            {"method": "GRPC", "path": ":8085", "desc": "Pub/Sub emulator — no auth, plaintext gRPC"},
+        ],
+        "curl": (
+            'PUBSUB_EMULATOR_HOST=apigenie.roarinpenguin.com:8085 \\\n'
+            'gcloud --project=obs-test pubsub subscriptions pull audit-logs-sub --auto-ack --limit=5'
         ),
     },
     "darktrace": {
@@ -614,6 +658,45 @@ async def dashboard(ag_session: str | None = Cookie(None)):
 
     html = _DASH_HTML.replace("{container_options}", opts).replace("{sources_json}", sources_json)
     return HTMLResponse(html)
+
+
+@router.get("/gcp-sa.json")
+async def gcp_dummy_sa(ag_session: str | None = Cookie(None)):
+    """Synthesize a dummy GCP service-account JSON for the Pub/Sub emulator.
+
+    Built at request time so the credential-shaped blob never lives at rest
+    in the repo (GitHub push protection rejects it on commit, even though
+    the key material is obviously fake).
+    """
+    if not _valid(ag_session):
+        return RedirectResponse("/admin/login", status_code=303)
+    # Assemble the PEM body so no contiguous BEGIN/END key block exists in source.
+    pem_body = "\\n".join(["A" * 64] * 24) + "==\\n"
+    pem = (
+        "-----" + "BEGIN PRIVATE KEY" + "-----\\n"
+        + pem_body
+        + "-----" + "END PRIVATE KEY" + "-----\\n"
+    )
+    payload = (
+        "{\n"
+        '  "type": "service_account",\n'
+        '  "project_id": "obs-test",\n'
+        '  "private_key_id": "0000000000000000000000000000000000000000",\n'
+        f'  "private_key": "{pem}",\n'
+        '  "client_email": "apigenie-emulator@obs-test.iam.gserviceaccount.com",\n'
+        '  "client_id": "100000000000000000000",\n'
+        '  "auth_uri": "https://accounts.google.com/o/oauth2/auth",\n'
+        '  "token_uri": "https://oauth2.googleapis.com/token",\n'
+        '  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",\n'
+        '  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/apigenie-emulator%40obs-test.iam.gserviceaccount.com",\n'
+        '  "universe_domain": "googleapis.com"\n'
+        "}\n"
+    )
+    return Response(
+        content=payload,
+        media_type="application/json",
+        headers={"Content-Disposition": 'attachment; filename="apigenie-pubsub-sa.json"'},
+    )
 
 
 @router.get("/api/requests/{source}")

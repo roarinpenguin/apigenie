@@ -3,7 +3,9 @@ version: "3.9"
 # ApiGenie — fully self-contained stack.
 # Starts: nginx (SSL), FastAPI mock server, Kafka + Zookeeper, GCP Pub/Sub emulator.
 #
-# Firewall: open 80, 443, 9092 (Kafka), 8085 (Pub/Sub) inbound.
+# Firewall: open 80, 443, 8085 (Pub/Sub), 9092 (Kafka PLAINTEXT),
+#           9093 (Kafka SASL_SSL — Azure Event Hubs emulation),
+#           9094 (Kafka SASL_PLAINTEXT — same, no TLS).
 #
 # Deploy:
 #   docker compose up -d --build
@@ -70,29 +72,112 @@ services:
     networks:
       - apigenie-net
 
+  # ── Kafka cert init (one-shot) ─────────────────────────────────────────────
+  # Builds a combined PEM (private key + cert chain) from the Let's Encrypt
+  # certs already mounted into nginx, so the Kafka SASL_SSL listener (9093)
+  # can present a publicly-trusted certificate matching apigenie hostname.
+  kafka-cert-init:
+    image: alpine:3.19
+    container_name: apigenie-kafka-cert-init
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - kafka-certs:/secrets
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        DOMAIN="${PUBLIC_HOSTNAME:-apigenie.roarinpenguin.com}"
+        SRC="/etc/letsencrypt/live/$$DOMAIN"
+        if [ ! -f "$$SRC/privkey.pem" ] || [ ! -f "$$SRC/fullchain.pem" ]; then
+          echo "kafka-cert-init: $$SRC missing privkey.pem or fullchain.pem; SASL_SSL on 9093 will fail TLS"
+          # write a self-signed fallback so the broker still boots
+          apk add --no-cache openssl >/dev/null
+          openssl req -x509 -newkey rsa:2048 -nodes -days 30 \
+            -keyout /tmp/k.pem -out /tmp/c.pem \
+            -subj "/CN=$$DOMAIN" \
+            -addext "subjectAltName=DNS:$$DOMAIN,DNS:localhost"
+          cat /tmp/k.pem /tmp/c.pem > /secrets/kafka-combined.pem
+        else
+          cat "$$SRC/privkey.pem" "$$SRC/fullchain.pem" > /secrets/kafka-combined.pem
+        fi
+        chmod 644 /secrets/kafka-combined.pem
+        echo "dummy" > /secrets/kafka_keystore_creds
+        chmod 644 /secrets/kafka_keystore_creds
+        echo "kafka-cert-init: wrote /secrets/kafka-combined.pem ($$(wc -c < /secrets/kafka-combined.pem) bytes) + kafka_keystore_creds"
+    networks:
+      - apigenie-net
+
   # ── Kafka ──────────────────────────────────────────────────────────────────
-  # External clients (Observo collector) connect on host:9092.
-  # Containers connect on kafka:29092 (internal listener).
+  # Listener layout:
+  #   9092 PLAINTEXT  — legacy plain Kafka clients (kept for backward compat)
+  #   9093 SASL_SSL   — Azure Event Hubs emulation (real Azure shape)
+  #   9094 SASL_PLAINTEXT — Azure Event Hubs emulation, no TLS (lab override)
+  #   29092 PLAINTEXT — in-Docker internal listener (apigenie publisher)
+  #
+  # SASL/PLAIN credentials accepted on 9093 and 9094:
+  #   admin               / apigenie-eh-admin-2026     (broker admin)
+  #   $$ConnectionString  / Endpoint=sb://apigenie.roarinpenguin.com/;SharedAccessKeyName=mock;SharedAccessKey=apigenie-eh-mock-2026;EntityPath=azure-platform-logs
   kafka:
     image: confluentinc/cp-kafka:7.6.6
     container_name: apigenie-kafka
     restart: unless-stopped
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_started
+      kafka-cert-init:
+        condition: service_completed_successfully
     ports:
       - "9092:9092"
+      - "9093:9093"
+      - "9094:9094"
+    volumes:
+      - kafka-certs:/etc/kafka/secrets:ro
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: >-
+        EXTERNAL://0.0.0.0:9092,SASLSSL://0.0.0.0:9093,SASLPLAIN://0.0.0.0:9094,DOCKER://0.0.0.0:29092
       KAFKA_ADVERTISED_LISTENERS: >-
-        EXTERNAL://${PUBLIC_HOSTNAME:-apigenie.roarinpenguin.com}:9092,DOCKER://kafka:29092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: EXTERNAL:PLAINTEXT,DOCKER:PLAINTEXT
+        EXTERNAL://${PUBLIC_HOSTNAME:-apigenie.roarinpenguin.com}:9092,SASLSSL://${PUBLIC_HOSTNAME:-apigenie.roarinpenguin.com}:9093,SASLPLAIN://${PUBLIC_HOSTNAME:-apigenie.roarinpenguin.com}:9094,DOCKER://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: >-
+        EXTERNAL:PLAINTEXT,SASLSSL:SASL_SSL,SASLPLAIN:SASL_PLAINTEXT,DOCKER:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: DOCKER
-      KAFKA_LISTENERS: EXTERNAL://0.0.0.0:9092,DOCKER://0.0.0.0:29092
+      # SASL/PLAIN on the two SASL listeners
+      KAFKA_SASL_ENABLED_MECHANISMS: PLAIN
+      KAFKA_LISTENER_NAME_SASLSSL_SASL_ENABLED_MECHANISMS: PLAIN
+      KAFKA_LISTENER_NAME_SASLPLAIN_SASL_ENABLED_MECHANISMS: PLAIN
+      KAFKA_LISTENER_NAME_SASLSSL_PLAIN_SASL_JAAS_CONFIG: >-
+        org.apache.kafka.common.security.plain.PlainLoginModule required username="admin" password="apigenie-eh-admin-2026" user_admin="apigenie-eh-admin-2026" user_$$ConnectionString="Endpoint=sb://apigenie.roarinpenguin.com/;SharedAccessKeyName=mock;SharedAccessKey=apigenie-eh-mock-2026;EntityPath=azure-platform-logs";
+      KAFKA_LISTENER_NAME_SASLPLAIN_PLAIN_SASL_JAAS_CONFIG: >-
+        org.apache.kafka.common.security.plain.PlainLoginModule required username="admin" password="apigenie-eh-admin-2026" user_admin="apigenie-eh-admin-2026" user_$$ConnectionString="Endpoint=sb://apigenie.roarinpenguin.com/;SharedAccessKeyName=mock;SharedAccessKey=apigenie-eh-mock-2026;EntityPath=azure-platform-logs";
+      # TLS — combined PEM produced by kafka-cert-init from Let's Encrypt.
+      # cp-kafka image uses *_FILENAME (relative to /etc/kafka/secrets) and a
+      # *_CREDENTIALS file (required by preflight even though Kafka ignores
+      # the password for PEM keystores).
+      KAFKA_SSL_KEYSTORE_TYPE: PEM
+      KAFKA_SSL_KEYSTORE_FILENAME: kafka-combined.pem
+      KAFKA_SSL_KEYSTORE_CREDENTIALS: kafka_keystore_creds
+      KAFKA_SSL_KEY_CREDENTIALS: kafka_keystore_creds
+      KAFKA_SSL_CLIENT_AUTH: none
+      KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM: ""
+      # Cluster basics
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    # The cp-kafka image's preflight requires KAFKA_SSL_KEYSTORE_CREDENTIALS
+    # and writes ssl.keystore.password / ssl.key.password into the broker
+    # config. Kafka then rejects those properties because we use PEM keystore
+    # type. Override the entrypoint to run configure, strip those two lines,
+    # then launch normally.
+    entrypoint:
+      - sh
+      - -c
+      - |
+        /etc/confluent/docker/configure
+        sed -i -E '/^ssl\.(keystore|key)\.password=/d' /etc/kafka/kafka.properties
+        exec /etc/confluent/docker/launch
     healthcheck:
       test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:29092", "--list"]
       interval: 15s
@@ -169,3 +254,6 @@ services:
 networks:
   apigenie-net:
     driver: bridge
+
+volumes:
+  kafka-certs:
