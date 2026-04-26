@@ -4,9 +4,11 @@ Routes mirror the real platform API paths so Observo Site telemetry collector
 can connect without any URL rewriting.
 """
 
+import json
 import logging
 import os
 import random
+import secrets
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -25,6 +27,15 @@ from state import (
 # Source data generators
 from sources.aws_cloudtrail import get_events_response as cloudtrail_events
 from sources.aws_guardduty import get_findings_response as guardduty_findings
+from sources.aws_native import (
+    cloudtrail_blob_gz,
+    delete_message_batch_xml,
+    delete_message_xml,
+    get_queue_attributes_xml,
+    get_queue_url_xml,
+    receive_message_json,
+    receive_message_xml,
+)
 from sources.aws_waf import get_logs_response as waf_logs
 from sources.azure_ad import get_audit_logs_response as entra_audit, get_signin_logs_response as entra_signin
 from sources.cisco_duo import get_admin_logs_response as duo_admin, get_auth_logs_response as duo_auth
@@ -399,6 +410,137 @@ async def aws_cloudtrail_events_post(_auth: BearerAuth, request: Request) -> dic
     body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
     limit = body.get("MaxResults", 50) if isinstance(body, dict) else 50
     return cloudtrail_events(limit=min(limit, 50))
+
+
+# =============================================================================
+# AWS-protocol mock  —  SQS + S3 for CloudTrail-via-S3-via-SQS collectors
+#
+# Authentication: we accept any request whose Authorization header starts with
+# "AWS4-HMAC-SHA256" (SigV4) — the signature itself is *not* verified. Real
+# AWS-compatible collectors will sign with whatever access_key / secret_key
+# pair is configured locally; the mock just needs to return AWS-shaped data.
+# =============================================================================
+
+
+def _check_aws_auth(request: Request) -> None:
+    """Permissive SigV4 check — header must look AWS-shaped, signature ignored."""
+    auth = request.headers.get("authorization", "")
+    if not auth.lower().startswith("aws4-hmac-sha256"):
+        # Some clients put the credential in the query string instead.
+        if "X-Amz-Credential" not in request.query_params:
+            raise HTTPException(
+                status_code=401,
+                detail={"Error": {"Code": "InvalidSignature", "Message": "Missing AWS SigV4 credential"}},
+            )
+
+
+@app.post("/aws/sqs/{queue_name}")
+@app.get("/aws/sqs/{queue_name}")
+async def aws_sqs(queue_name: str, request: Request) -> Response:
+    """Dispatch SQS Query API or JSON 1.0 actions on a queue.
+
+    Supported actions: ReceiveMessage, DeleteMessage, DeleteMessageBatch,
+    GetQueueAttributes, GetQueueUrl. Unknown actions return an XML error.
+    """
+    _check_aws_auth(request)
+
+    body = (await request.body()).decode("utf-8", errors="replace")
+    ctype = request.headers.get("content-type", "")
+    target = request.headers.get("x-amz-target", "")  # JSON protocol uses this
+
+    # ---- JSON 1.0 protocol (newer AWS SDKs) ---------------------------------
+    if "json" in ctype or target.startswith("AmazonSQS."):
+        action = target.split(".")[-1] if target else ""
+        try:
+            payload = json.loads(body) if body else {}
+        except json.JSONDecodeError:
+            payload = {}
+        if action == "ReceiveMessage":
+            n = int(payload.get("MaxNumberOfMessages", 1))
+            return JSONResponse(receive_message_json(n))
+        if action in ("DeleteMessage", "DeleteMessageBatch"):
+            return JSONResponse({})
+        if action == "GetQueueUrl":
+            return JSONResponse({"QueueUrl": f"https://{request.url.hostname}/aws/sqs/{queue_name}"})
+        if action == "GetQueueAttributes":
+            return JSONResponse(
+                {
+                    "Attributes": {
+                        "ApproximateNumberOfMessages": str(random.randint(50, 500)),
+                        "QueueArn": f"arn:aws:sqs:us-east-1:123456789012:{queue_name}",
+                    }
+                }
+            )
+        return JSONResponse(
+            {"__type": "InvalidAction", "message": f"Unsupported action: {action}"},
+            status_code=400,
+        )
+
+    # ---- Query API (form-encoded, XML response) -----------------------------
+    from urllib.parse import parse_qs
+
+    params = {k: v[0] for k, v in parse_qs(body).items()} if body else {}
+    # Some SDKs put params in the query string (GET) instead of body.
+    for k, v in request.query_params.items():
+        params.setdefault(k, v)
+    action = params.get("Action", "ReceiveMessage")
+
+    if action == "ReceiveMessage":
+        n = int(params.get("MaxNumberOfMessages", "1"))
+        return Response(receive_message_xml(n), media_type="text/xml")
+    if action == "DeleteMessage":
+        return Response(delete_message_xml(), media_type="text/xml")
+    if action == "DeleteMessageBatch":
+        ids = [v for k, v in params.items() if k.endswith(".Id")]
+        return Response(delete_message_batch_xml(ids or ["msg-1"]), media_type="text/xml")
+    if action == "GetQueueAttributes":
+        return Response(get_queue_attributes_xml(queue_name), media_type="text/xml")
+    if action == "GetQueueUrl":
+        host = request.url.hostname or "apigenie.roarinpenguin.com"
+        return Response(get_queue_url_xml(queue_name, host), media_type="text/xml")
+
+    return Response(
+        f'<?xml version="1.0"?><ErrorResponse><Error><Code>InvalidAction</Code>'
+        f'<Message>Unsupported SQS action: {action}</Message></Error></ErrorResponse>',
+        media_type="text/xml",
+        status_code=400,
+    )
+
+
+@app.get("/aws/s3/{bucket}/{key:path}")
+async def aws_s3_get(bucket: str, key: str, request: Request) -> Response:
+    """Return a gzipped CloudTrail JSON blob — the file the SQS notification points at."""
+    _check_aws_auth(request)
+    blob = cloudtrail_blob_gz(num_events=25)
+    return Response(
+        content=blob,
+        media_type="application/x-gzip",
+        headers={
+            "Content-Encoding": "gzip",
+            "x-amz-request-id": secrets.token_hex(16).upper()[:16],
+            "ETag": f'"{secrets.token_hex(16)}"',
+            "Last-Modified": _now_http_date(),
+        },
+    )
+
+
+def _now_http_date() -> str:
+    from email.utils import formatdate
+
+    return formatdate(usegmt=True)
+
+
+@app.get("/aws/")
+@app.get("/aws")
+async def aws_service_discovery() -> dict[str, Any]:
+    """Minimal AWS service discovery so collectors that probe the endpoint don't 404."""
+    return {
+        "services": ["sqs", "s3"],
+        "endpoints": {
+            "sqs": "/aws/sqs/<queue_name>",
+            "s3": "/aws/s3/<bucket>/<key>",
+        },
+    }
 
 
 # =============================================================================
