@@ -1,24 +1,19 @@
 version: "3.9"
 
-# ApiGenie is fully self-contained: nginx (SSL + HTML), FastAPI, and
-# background publishers all start here.
+# ApiGenie: nginx (SSL) + FastAPI mock server.
 #
-# Kafka and Pub/Sub emulator are shared with the test-genius stack —
-# apigenie joins test-genius_backend to reach them by service name.
+# Kafka and Pub/Sub are owned by the test-genius stack.
+# When test-genius is running, apigenie joins its network so the background
+# publishers can reach kafka:19092 and pubsub-emulator:8085.
+# Kafka (9092) and Pub/Sub (8085) are already exposed to the host by
+# test-genius — open those ports in your cloud firewall to let collectors in.
 #
-# When test-genius is also running:
-#   - Stop its nginx first to free ports 80/443:
-#       docker stop test-genius-nginx-1
-#   - Then: docker compose up -d
-#
-# When running standalone (test-genius down):
-#   - docker compose up -d   (nginx starts here, owns ports 80/443)
-#
-# Firewall: open 80, 443, 9092 (Kafka), 8085 (Pub/Sub) inbound.
+# Deploy:
+#   docker stop test-genius-nginx-1   # free ports 80/443
+#   docker compose up -d --build
 
 services:
 
-  # ── Reverse proxy + SSL termination + TCP stream proxy ─────────────────────
   nginx:
     image: nginx:latest
     container_name: apigenie-nginx
@@ -26,8 +21,6 @@ services:
     ports:
       - "80:80"
       - "443:443"
-      - "9092:9092"    # Kafka TCP stream proxy → kafka:19092
-      - "8085:8085"    # Pub/Sub gRPC stream proxy → pubsub-emulator:8085
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
@@ -36,9 +29,7 @@ services:
       - apigenie
     networks:
       - apigenie-net
-      - test-genius-backend
 
-  # ── FastAPI mock server ─────────────────────────────────────────────────────
   apigenie:
     build: .
     container_name: apigenie
@@ -46,14 +37,12 @@ services:
     environment:
       LOG_LEVEL: INFO
       PUBLISHERS_ENABLED: "true"
-      # Pub/Sub emulator — test-genius_backend network
       PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
       GCP_PROJECT_ID: obs-test
       PUBSUB_TOPIC_ID: audit-logs
       PUBSUB_SUBSCRIPTION_ID: audit-logs-sub
       PUBSUB_PUBLISH_INTERVAL: "10"
       PUBSUB_BATCH_SIZE: "5"
-      # Kafka — test-genius_backend network (internal listener)
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
       KAFKA_TOPIC: azure-platform-logs
       KAFKA_PUBLISH_INTERVAL: "10"
@@ -66,7 +55,6 @@ networks:
   apigenie-net:
     driver: bridge
 
-  # Created by apigenie if absent; adopted from test-genius when running.
   test-genius-backend:
     name: test-genius_backend
     driver: bridge
