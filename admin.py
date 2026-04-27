@@ -263,35 +263,91 @@ _LOGIN_HTML = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>ApiGenie · Admin Login</title>
+<title>API Genie · Admin Login</title>
+<link rel="icon" type="image/png" href="/logo.png"/>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
 <style>
-:root{--deep:#10002b;--violet:#5a189a;--purple:#7b2cbf;--orchid:#9d4edd;--lilac:#c77dff;--mist:#e0aaff;--glow:rgba(199,125,255,.55)}
+:root{
+  --primary:#854EF3;--primary-deep:#7947D7;--primary-light:#A986FD;
+  --surface:#ece6fa;--shadow-dark:rgba(105,70,184,.28);--shadow-light:rgba(255,255,255,.95);
+  --text:#2a1d52;--text-soft:#5b4a8e;--text-mute:#8479ad;
+}
 *{box-sizing:border-box;margin:0;padding:0}
-body{min-height:100vh;display:flex;align-items:center;justify-content:center;background:radial-gradient(circle at 20% 20%,#3c096c,transparent 55%),radial-gradient(circle at 80% 80%,#7b2cbf,transparent 50%),#10002b;font-family:"Segoe UI",system-ui,sans-serif;color:var(--mist)}
-.card{background:rgba(36,0,70,.7);border:1px solid rgba(199,125,255,.3);border-radius:20px;padding:40px 36px;width:100%;max-width:380px;backdrop-filter:blur(12px);box-shadow:0 20px 60px rgba(0,0,0,.5)}
-h1{font-size:1.6rem;font-weight:700;text-align:center;margin-bottom:6px;background:linear-gradient(90deg,#e0aaff,#c77dff 40%,#9d4edd);-webkit-background-clip:text;background-clip:text;color:transparent}
-.sub{text-align:center;font-size:.85rem;color:rgba(224,170,255,.6);margin-bottom:28px}
-label{display:block;font-size:.82rem;color:rgba(224,170,255,.7);margin-bottom:6px;margin-top:16px}
-input{width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:10px;padding:10px 14px;color:var(--mist);font-size:.95rem;outline:none;transition:border-color .2s}
-input:focus{border-color:var(--lilac)}
-button{width:100%;margin-top:24px;padding:12px;background:linear-gradient(135deg,#7b2cbf,#9d4edd);border:none;border-radius:12px;color:#fff;font-size:1rem;font-weight:600;cursor:pointer;box-shadow:0 0 20px var(--glow);transition:filter .2s}
-button:hover{filter:brightness(1.15)}
-.err{color:#ff7f7f;font-size:.85rem;text-align:center;margin-top:12px}
+body{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:var(--surface);
+  background-image:radial-gradient(circle at 12% 10%,rgba(169,134,253,.35),transparent 45%),
+                   radial-gradient(circle at 88% 90%,rgba(133,78,243,.22),transparent 45%);
+  background-attachment:fixed;
+  font-family:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--text);
+  -webkit-font-smoothing:antialiased;padding:32px 20px}
+.brand{display:flex;align-items:center;gap:12px;margin-bottom:28px;text-decoration:none;color:var(--text)}
+.brand-logo{width:56px;height:56px;border-radius:18px;background:var(--surface);
+  box-shadow:7px 7px 14px var(--shadow-dark),-7px -7px 14px var(--shadow-light);
+  display:grid;place-items:center;padding:6px}
+.brand-logo img{width:100%;height:100%;object-fit:contain;mix-blend-mode:multiply}
+.brand-name{font-size:1.15rem;font-weight:700;letter-spacing:-.01em;
+  background:linear-gradient(135deg,var(--primary-deep),var(--primary),var(--primary-light));
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.brand-name small{display:block;font-size:.7rem;font-weight:500;color:var(--text-mute);
+  letter-spacing:.06em;text-transform:uppercase;-webkit-text-fill-color:var(--text-mute)}
+.card{background:var(--surface);border-radius:24px;padding:36px 32px;width:100%;max-width:400px;
+  box-shadow:12px 12px 28px var(--shadow-dark),-12px -12px 28px var(--shadow-light)}
+h1{font-size:1.4rem;font-weight:700;text-align:center;margin-bottom:6px;letter-spacing:-.01em;
+  background:linear-gradient(135deg,var(--primary-deep),var(--primary) 50%,var(--primary-light));
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.sub{text-align:center;font-size:.88rem;color:var(--text-mute);margin-bottom:28px}
+label{display:block;font-size:.78rem;font-weight:600;color:var(--text-soft);
+  margin-bottom:8px;margin-top:18px;letter-spacing:.02em}
+input{width:100%;background:var(--surface);border:none;border-radius:14px;padding:12px 16px;
+  color:var(--text);font-family:inherit;font-size:.95rem;outline:none;transition:box-shadow .2s;
+  box-shadow:inset 4px 4px 8px var(--shadow-dark),inset -4px -4px 8px var(--shadow-light)}
+input:focus{box-shadow:inset 5px 5px 10px var(--shadow-dark),inset -5px -5px 10px var(--shadow-light),
+  0 0 0 2px rgba(133,78,243,.25)}
+button{width:100%;margin-top:28px;padding:13px;font-family:inherit;font-size:.98rem;font-weight:600;
+  color:#fff;background:linear-gradient(135deg,var(--primary),var(--primary-deep));
+  border:none;border-radius:14px;cursor:pointer;letter-spacing:.01em;
+  box-shadow:6px 6px 14px var(--shadow-dark),-6px -6px 14px var(--shadow-light);
+  transition:transform .15s,box-shadow .15s}
+button:hover{transform:translateY(-1px);
+  box-shadow:8px 8px 18px var(--shadow-dark),-8px -8px 18px var(--shadow-light),0 0 22px rgba(133,78,243,.35)}
+button:active{transform:translateY(0);
+  box-shadow:inset 4px 4px 8px rgba(105,70,184,.55),inset -4px -4px 8px rgba(255,255,255,.25)}
+.err{color:#c0392b;background:rgba(192,57,43,.08);border-radius:10px;padding:10px 14px;
+  font-size:.85rem;text-align:center;margin-top:14px}
+footer{margin-top:32px;font-size:.85rem;color:var(--text-mute);text-align:center;letter-spacing:.02em}
+footer .heart{display:inline-block;width:1em;height:1em;vertical-align:-0.15em;margin:0 .2em;
+  color:var(--primary);animation:beat 1.6s ease-in-out infinite}
+footer .brand-text{color:var(--primary-deep);font-weight:600}
+@keyframes beat{0%,100%{transform:scale(1)}50%{transform:scale(1.18)}}
+@media (prefers-reduced-motion:reduce){footer .heart{animation:none}}
 </style>
 </head>
 <body>
+<a class="brand" href="/" aria-label="Back to API Genie home">
+  <span class="brand-logo"><img src="/logo.png" alt=""/></span>
+  <span class="brand-name">API Genie<small>Admin Console</small></span>
+</a>
 <div class="card">
-  <h1>⚙ ApiGenie Admin</h1>
-  <p class="sub">Restricted access</p>
+  <h1>Sign in</h1>
+  <p class="sub">Restricted access · authorised operators only</p>
   <form method="post" action="/admin/login">
-    <label>Username</label>
-    <input name="username" type="text" autocomplete="username" autofocus/>
-    <label>Password</label>
-    <input name="password" type="password" autocomplete="current-password"/>
-    <button type="submit">Sign in</button>
+    <label for="u">Username</label>
+    <input id="u" name="username" type="text" autocomplete="username" autofocus/>
+    <label for="p">Password</label>
+    <input id="p" name="password" type="password" autocomplete="current-password"/>
+    <button type="submit">Continue</button>
     {error}
   </form>
 </div>
+<footer>
+  Crafted with
+  <svg class="heart" viewBox="0 0 24 24" fill="currentColor" aria-label="love" role="img">
+    <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+  </svg>
+  by the <span class="brand-text">RoarinPenguin</span>
+</footer>
 </body>
 </html>"""
 
@@ -310,9 +366,14 @@ body{display:flex;min-height:100vh;background:var(--deep);color:var(--mist);font
 .nav-item{display:block;padding:11px 20px;color:rgba(224,170,255,.7);text-decoration:none;cursor:pointer;border-left:3px solid transparent;transition:all .15s}
 .nav-item:hover,.nav-item.active{color:var(--mist);background:rgba(123,44,191,.2);border-left-color:var(--lilac)}
 .nav-section{padding:16px 20px 6px;font-size:.72rem;color:rgba(224,170,255,.35);text-transform:uppercase;letter-spacing:.08em}
-.sidebar .logout{margin-top:auto;padding:0 12px 12px}
+.sidebar .footer{margin-top:auto;padding:0 12px 12px;display:flex;flex-direction:column;gap:14px}
 .logout a{display:block;padding:9px 14px;text-align:center;border-radius:10px;background:rgba(90,24,154,.3);color:rgba(224,170,255,.6);text-decoration:none;font-size:.85rem;transition:all .15s}
 .logout a:hover{background:rgba(123,44,191,.4);color:var(--mist)}
+.tagline{text-align:center;font-size:.72rem;color:rgba(224,170,255,.35);letter-spacing:.02em;line-height:1.5}
+.tagline .heart{display:inline-block;width:.85em;height:.85em;vertical-align:-.1em;margin:0 .15em;color:#A986FD;animation:beat 1.6s ease-in-out infinite}
+.tagline .brand-text{color:rgba(224,170,255,.6);font-weight:600}
+@keyframes beat{0%,100%{transform:scale(1)}50%{transform:scale(1.18)}}
+@media (prefers-reduced-motion:reduce){.tagline .heart{animation:none}}
 /* Main */
 .main{margin-left:var(--sidebar);flex:1;display:flex;flex-direction:column;min-height:100vh}
 .topbar{padding:16px 24px;border-bottom:1px solid rgba(199,125,255,.1);display:flex;align-items:center;gap:12px;background:rgba(16,0,43,.6);backdrop-filter:blur(8px)}
@@ -383,7 +444,14 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
   <a class="nav-item" onclick="showTab('logs', this)">📜 Container Logs</a>
   <span class="nav-section">Reference</span>
   <a class="nav-item" onclick="showTab('config', this)">🔧 Source Config</a>
-  <div class="logout"><a href="/admin/logout">Sign out</a></div>
+  <div class="footer">
+    <div class="logout"><a href="/admin/logout">Sign out</a></div>
+    <div class="tagline">
+      Crafted with
+      <svg class="heart" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+      by the<br/><span class="brand-text">RoarinPenguin</span>
+    </div>
+  </div>
 </nav>
 
 <div class="main">

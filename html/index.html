@@ -3,18 +3,36 @@
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>API Genie &middot; apigenie.roarinpenguin.com</title>
+    <title>API Genie · apigenie.roarinpenguin.com</title>
     <link rel="icon" type="image/png" href="/logo.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <style>
         :root {
-            --deep:     #1a0033;
-            --mid:      #2d0a57;
-            --violet:   #5a189a;
-            --purple:   #7b2cbf;
-            --orchid:   #9d4edd;
-            --lilac:    #c77dff;
-            --mist:     #e0aaff;
-            --glow:     rgba(199, 125, 255, 0.55);
+            /* brand palette */
+            --primary:       #854EF3;
+            --primary-deep:  #7947D7;
+            --primary-light: #A986FD;
+            --primary-50:    #f4eefe;
+            --primary-100:   #e8defc;
+
+            /* neumorphic surface */
+            --surface:       #ece6fa;
+            --surface-alt:   #e3dbf6;
+            --shadow-dark:   rgba(105, 70, 184, 0.28);
+            --shadow-light:  rgba(255, 255, 255, 0.95);
+
+            /* text */
+            --text:          #2a1d52;
+            --text-soft:     #5b4a8e;
+            --text-mute:     #8479ad;
+
+            /* radii */
+            --r-sm: 12px;
+            --r-md: 18px;
+            --r-lg: 24px;
+            --r-xl: 32px;
         }
 
         * { box-sizing: border-box; }
@@ -23,155 +41,328 @@
             margin: 0;
             padding: 0;
             min-height: 100%;
-            font-family: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
-            color: var(--mist);
-            background: radial-gradient(circle at 20% 15%, #3c096c 0%, transparent 55%),
-                                    radial-gradient(circle at 80% 85%, #7b2cbf 0%, transparent 50%),
-                                    radial-gradient(circle at 50% 50%, #240046 0%, #10002b 75%);
+            font-family: "Inter", system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+            color: var(--text);
+            background: var(--surface);
+            background-image:
+                radial-gradient(circle at 12% 10%, rgba(169, 134, 253, 0.35), transparent 45%),
+                radial-gradient(circle at 88% 90%, rgba(133, 78, 243, 0.22), transparent 45%);
             background-attachment: fixed;
-            overflow-x: hidden;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
         }
 
-        body::before {
-            content: "";
-            position: fixed;
-            inset: 0;
-            background:
-                radial-gradient(2px 2px at 10% 20%, #e0aaff 50%, transparent 51%),
-                radial-gradient(1.5px 1.5px at 70% 30%, #c77dff 50%, transparent 51%),
-                radial-gradient(1px 1px at 40% 80%, #9d4edd 50%, transparent 51%),
-                radial-gradient(1.5px 1.5px at 90% 60%, #e0aaff 50%, transparent 51%),
-                radial-gradient(1px 1px at 25% 60%, #c77dff 50%, transparent 51%),
-                radial-gradient(2px 2px at 60% 10%, #e0aaff 50%, transparent 51%);
-            opacity: 0.35;
-            pointer-events: none;
-            z-index: 0;
-        }
-
-        main {
-            position: relative;
-            z-index: 1;
-            max-width: 860px;
-            margin: 0 auto;
-            padding: 64px 28px 80px;
-            text-align: center;
-        }
-
-        h1 {
-            margin: 0 0 8px;
-            font-size: clamp(1.8rem, 4vw, 2.8rem);
-            font-weight: 700;
-            background: linear-gradient(90deg, #e0aaff, #c77dff 40%, #9d4edd);
-            -webkit-background-clip: text;
-            background-clip: text;
-            color: transparent;
-            letter-spacing: 0.5px;
-        }
-
-        .domain {
-            display: inline-block;
-            font-family: "JetBrains Mono", "Fira Code", ui-monospace, Menlo, Consolas, monospace;
-            font-size: 0.95rem;
-            padding: 4px 12px;
-            border-radius: 999px;
-            color: var(--mist);
-            background: rgba(123, 44, 191, 0.25);
-            border: 1px solid rgba(199, 125, 255, 0.4);
-            margin-bottom: 36px;
-        }
-
-        .logo-wrap {
-            margin: 24px auto 36px;
-            width: clamp(240px, 46vw, 400px);
-            aspect-ratio: 1 / 1;
-            border-radius: 32px;
-            padding: 6px;
-            background: conic-gradient(from 0deg, #c77dff, #7b2cbf, #e0aaff, #5a189a, #c77dff);
-            box-shadow: 0 0 60px var(--glow), 0 0 120px rgba(123, 44, 191, 0.35);
-            animation: hue 12s ease-in-out infinite alternate;
-        }
-
-        .logo-wrap .inner {
-            width: 100%;
-            height: 100%;
-            border-radius: 26px;
-            background: #10002b;
+        /* ── Top navigation ────────────────────────────────────────────────── */
+        .topnav {
             display: flex;
             align-items: center;
-            justify-content: center;
-            overflow: hidden;
+            justify-content: space-between;
+            padding: 18px clamp(20px, 4vw, 48px);
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            background: var(--surface);
+            background-image:
+                linear-gradient(180deg, var(--surface) 70%, rgba(236, 230, 250, 0));
         }
 
-        .logo-wrap img {
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            text-decoration: none;
+            color: var(--text);
+        }
+
+        .brand-logo {
+            width: 56px;
+            height: 56px;
+            border-radius: var(--r-md);
+            background: var(--surface);
+            box-shadow:
+                7px 7px 14px var(--shadow-dark),
+                -7px -7px 14px var(--shadow-light);
+            display: grid;
+            place-items: center;
+            padding: 6px;
+        }
+
+        .brand-logo img {
             width: 100%;
             height: 100%;
             object-fit: contain;
+            /* Drops white background visually, even if PNG has white fill */
+            mix-blend-mode: multiply;
+        }
+
+        .brand-name {
+            font-size: 1.15rem;
+            font-weight: 700;
+            letter-spacing: -0.01em;
+            background: linear-gradient(135deg, var(--primary-deep), var(--primary), var(--primary-light));
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+        }
+
+        .brand-name small {
             display: block;
+            font-size: 0.7rem;
+            font-weight: 500;
+            color: var(--text-mute);
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            -webkit-text-fill-color: var(--text-mute);
         }
 
-        @keyframes hue {
-            from { filter: hue-rotate(0deg); }
-            to   { filter: hue-rotate(25deg); }
+        .btn-admin {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 22px;
+            border-radius: var(--r-md);
+            font-family: inherit;
+            font-size: 0.92rem;
+            font-weight: 600;
+            text-decoration: none;
+            color: var(--primary-deep);
+            background: var(--surface);
+            box-shadow:
+                6px 6px 12px var(--shadow-dark),
+                -6px -6px 12px var(--shadow-light);
+            transition: all 0.18s ease;
+            border: none;
+            cursor: pointer;
+        }
+        .btn-admin:hover {
+            color: #fff;
+            background: linear-gradient(135deg, var(--primary), var(--primary-deep));
+            box-shadow:
+                4px 4px 10px var(--shadow-dark),
+                -4px -4px 10px var(--shadow-light),
+                0 0 24px rgba(133, 78, 243, 0.35);
+            transform: translateY(-1px);
+        }
+        .btn-admin:active {
+            transform: translateY(0);
+            box-shadow:
+                inset 4px 4px 8px var(--shadow-dark),
+                inset -4px -4px 8px var(--shadow-light);
+        }
+        .btn-admin svg { width: 16px; height: 16px; }
+
+        /* ── Layout ────────────────────────────────────────────────────────── */
+        main {
+            max-width: 880px;
+            margin: 0 auto;
+            padding: 32px clamp(20px, 4vw, 48px) 60px;
         }
 
+        .hero {
+            text-align: center;
+            padding: 24px 0 12px;
+        }
+
+        h1 {
+            margin: 0 0 12px;
+            font-size: clamp(1.35rem, 5.6vw, 2.75rem);
+            font-weight: 700;
+            letter-spacing: -0.025em;
+            line-height: 1.1;
+            white-space: nowrap;
+            background: linear-gradient(135deg, var(--primary-deep), var(--primary) 50%, var(--primary-light));
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+        }
+
+        .lede {
+            margin: 0 auto 28px;
+            max-width: 640px;
+            font-size: 1.08rem;
+            line-height: 1.6;
+            color: var(--text-soft);
+        }
+
+        .domain {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+            font-size: 0.82rem;
+            font-weight: 500;
+            padding: 7px 14px;
+            border-radius: 999px;
+            color: var(--primary-deep);
+            background: var(--surface);
+            box-shadow:
+                inset 3px 3px 6px var(--shadow-dark),
+                inset -3px -3px 6px var(--shadow-light);
+        }
+        .domain::before {
+            content: "";
+            display: block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #2ecc71;
+            box-shadow: 0 0 10px rgba(46, 204, 113, 0.7);
+            animation: pulse 2.4s ease-in-out infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { box-shadow: 0 0 10px rgba(46, 204, 113, 0.7); }
+            50%      { box-shadow: 0 0 14px rgba(46, 204, 113, 1); }
+        }
         @media (prefers-reduced-motion: reduce) {
-            .logo-wrap { animation: none; }
+            .domain::before { animation: none; }
         }
 
+        /* ── Cards ─────────────────────────────────────────────────────────── */
         .card {
-            background: rgba(36, 0, 70, 0.55);
-            border: 1px solid rgba(199, 125, 255, 0.25);
-            border-radius: 20px;
+            background: var(--surface);
+            border-radius: var(--r-lg);
             padding: 28px 32px;
-            margin: 18px auto;
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
-            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
-            text-align: left;
-        }
-
-        .card p {
-            margin: 0 0 10px;
+            margin: 18px 0;
+            box-shadow:
+                10px 10px 24px var(--shadow-dark),
+                -10px -10px 24px var(--shadow-light);
             line-height: 1.65;
-            font-size: 1.05rem;
         }
 
+        .card.feature {
+            background: linear-gradient(135deg, var(--primary), var(--primary-deep));
+            color: #fff;
+            box-shadow:
+                10px 10px 24px rgba(105, 70, 184, 0.42),
+                -10px -10px 24px var(--shadow-light);
+        }
+        .card.feature p { color: rgba(255, 255, 255, 0.94); }
+        .card.feature strong { color: #fff; }
+
+        .card p { margin: 0 0 10px; font-size: 1rem; }
         .card p:last-child { margin-bottom: 0; }
-
-        .warn {
-            border-color: rgba(255, 100, 100, 0.35);
-            background: rgba(74, 0, 70, 0.55);
+        .card strong { color: var(--primary-deep); font-weight: 600; }
+        .card.feature h2,
+        .card h2 {
+            margin: 0 0 14px;
+            font-size: 1.15rem;
+            font-weight: 600;
+            letter-spacing: -0.01em;
         }
 
-        .welcome {
-            border-color: rgba(199, 125, 255, 0.55);
-            background: linear-gradient(135deg, rgba(90, 24, 154, 0.55), rgba(36, 0, 70, 0.7));
+        /* stats row inside the feature card */
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 18px;
+            text-align: center;
         }
 
-        .salute {
+        /* "What this is" sub-bar (flat trigger + neumorphic popover) */
+        .subbar {
+            padding: 10px clamp(20px, 4vw, 48px) 0;
+            display: flex;
+            justify-content: flex-start;
+            position: sticky;
+            top: 92px; /* sits just under the topnav */
+            z-index: 9;
+            background: var(--surface);
+        }
+        .expandable {
+            position: relative;
+        }
+        .expandable > summary {
+            list-style: none;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: 8px;
+            font-size: 0.72rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--primary-deep);
+            background: transparent;
+            border: 1px solid rgba(133, 78, 243, 0.22);
+            user-select: none;
+            transition: background 0.15s, border-color 0.15s;
+        }
+        .expandable > summary:hover {
+            background: rgba(133, 78, 243, 0.08);
+            border-color: rgba(133, 78, 243, 0.45);
+        }
+        .expandable[open] > summary {
+            background: rgba(133, 78, 243, 0.10);
+            border-color: var(--primary);
+        }
+        .expandable > summary::-webkit-details-marker { display: none; }
+        .expandable > summary .chev {
+            width: 12px; height: 12px;
+            transition: transform 0.25s ease;
+            flex-shrink: 0;
+        }
+        .expandable[open] > summary .chev { transform: rotate(180deg); }
+        .expandable .body {
+            position: absolute;
+            top: calc(100% + 10px);
+            left: 0;
+            width: min(420px, 80vw);
+            padding: 16px 20px;
+            border-radius: var(--r-md);
+            background: var(--surface);
+            box-shadow:
+                10px 10px 24px var(--shadow-dark),
+                -10px -10px 24px var(--shadow-light);
+            color: var(--text-soft);
+            font-size: 0.92rem;
+            line-height: 1.6;
+            z-index: 20;
+            animation: pop 0.18s ease;
+        }
+        @keyframes pop {
+            from { opacity: 0; transform: translateY(-6px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+        .stat-num {
             font-size: 1.6rem;
-            vertical-align: middle;
-            display: inline-block;
-            transform: translateY(-2px);
-            filter: drop-shadow(0 0 6px var(--glow));
+            font-weight: 700;
+            font-family: "JetBrains Mono", monospace;
+            line-height: 1;
         }
-
-        strong.highlight {
-            color: var(--lilac);
+        .stat-lbl {
+            font-size: 0.78rem;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            opacity: 0.85;
+            margin-top: 6px;
         }
 
         a.link {
-            color: var(--lilac);
+            color: var(--primary-deep);
             text-decoration: none;
-            border-bottom: 1px dashed rgba(199, 125, 255, 0.6);
+            font-weight: 600;
+            border-bottom: 2px solid var(--primary-light);
+            padding-bottom: 1px;
+            transition: color 0.15s;
         }
-        a.link:hover { color: var(--mist); }
+        a.link:hover { color: var(--primary); }
 
+        .salute {
+            font-size: 1.35rem;
+            vertical-align: middle;
+            margin-left: 4px;
+        }
+
+        /* ── Footer (tagline) ──────────────────────────────────────────────── */
         footer {
-            margin-top: 40px;
+            margin-top: 48px;
+            padding: 24px 0 8px;
+            text-align: center;
             font-size: 0.85rem;
-            color: rgba(224, 170, 255, 0.7);
-            letter-spacing: 0.5px;
+            color: var(--text-mute);
+            letter-spacing: 0.02em;
         }
 
         footer .heart {
@@ -179,66 +370,123 @@
             width: 1em;
             height: 1em;
             vertical-align: -0.15em;
-            margin: 0 0.15em;
-            color: var(--lilac);
-            filter: drop-shadow(0 0 4px var(--glow));
+            margin: 0 0.2em;
+            color: var(--primary);
             animation: beat 1.6s ease-in-out infinite;
+        }
+
+        footer .brand-text {
+            color: var(--primary-deep);
+            font-weight: 600;
         }
 
         @keyframes beat {
             0%, 100% { transform: scale(1); }
-            50%      { transform: scale(1.15); }
+            50%      { transform: scale(1.18); }
         }
-
         @media (prefers-reduced-motion: reduce) {
             footer .heart { animation: none; }
         }
 
-        footer .brand {
-            color: var(--mist);
-            font-weight: 600;
+        /* ── Responsive ────────────────────────────────────────────────────── */
+        @media (max-width: 720px) {
+            .topnav .domain { display: none; }
+        }
+        @media (max-width: 540px) {
+            .brand-name small { display: none; }
+            .btn-admin { padding: 10px 16px; }
+            .card { padding: 22px 22px; }
+            .expandable > summary { font-size: 0.66rem; padding: 5px 10px; }
         }
     </style>
 </head>
 <body>
-    <main>
-        <h1>Welcome to API Genie</h1>
-        <div class="domain">https://apigenie.roarinpenguin.com</div>
+    <header class="topnav">
+        <a class="brand" href="/" aria-label="API Genie home">
+            <span class="brand-logo">
+                <img src="/logo.png" alt="" />
+            </span>
+            <span class="brand-name">
+                API Genie
+                <small>Mock API Server</small>
+            </span>
+        </a>
+        <div class="domain" title="Service status">apigenie.roarinpenguin.com</div>
+        <a class="btn-admin" href="/admin/login">
+            Admin
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M5 12h14M13 5l7 7-7 7"/>
+            </svg>
+        </a>
+    </header>
 
-        <div class="logo-wrap" aria-hidden="true">
-            <div class="inner">
-                <img src="/logo.png" alt="API Genie logo" />
+    <div class="subbar">
+        <details class="expandable">
+            <summary>
+                <span>What this is</span>
+                <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M6 9l6 6 6-6"/>
+                </svg>
+            </summary>
+            <div class="body">
+                API Genie speaks the same authentication shapes the real platforms use — Bearer,
+                Basic, X-ApiKeys, Duo HMAC-SHA1, OAuth2 client-credentials, Microsoft tenant OAuth,
+                GraphQL, Tenable async export, Kafka SASL, gRPC over TLS — and returns dynamically
+                generated, weighted-realistic events anchored to the current timestamp.
             </div>
-        </div>
+        </details>
+    </div>
 
-        <section class="card welcome">
-            <p>
-                Welcome to <a class="link" href="https://apigenie.roarinpenguin.com">https://apigenie.roarinpenguin.com</a>,
-                your <strong class="highlight">mock API server</strong> to empower your demo, POC, testing, and more.
+    <main>
+        <section class="hero">
+            <h1>Realistic Security Telemetry</h1>
+            <p class="lede">
+                A self-contained mock API server that emulates eleven security platforms — plus
+                Azure Event Hubs over Kafka and GCP Cloud Logging over Pub/Sub — for collector
+                development, integration testing, and demos.
             </p>
         </section>
 
-        <section class="card warn">
-            <p>
-                If this is something you don&rsquo;t understand&hellip; this is not the place where you should be,
-                and as we speak you are <strong class="highlight">raytraced</strong> and we&rsquo;re notifying
-                the <strong class="highlight">Federation of Galaxies</strong> of your presence.
-            </p>
+        <section class="card feature">
+            <div class="stats">
+                <div>
+                    <div class="stat-num">11</div>
+                    <div class="stat-lbl">HTTP sources</div>
+                </div>
+                <div>
+                    <div class="stat-num">2</div>
+                    <div class="stat-lbl">Streaming sources</div>
+                </div>
+                <div>
+                    <div class="stat-num">5</div>
+                    <div class="stat-lbl">Auth schemes</div>
+                </div>
+                <div>
+                    <div class="stat-num">100%</div>
+                    <div class="stat-lbl">Synthetic data</div>
+                </div>
+            </div>
         </section>
 
         <section class="card">
+            <h2>You landed here from outer space?</h2>
             <p>
-                Otherwise welcome &mdash; <strong class="highlight">live long and prosper</strong>
-                <span class="salute" role="img" aria-label="Vulcan salute">&#x1F596;</span>
+                Nothing on this host returns real data. Every endpoint is synthetic and every
+                credential is a placeholder. You're welcome to look around — but if you were
+                looking for something else, this is probably not it.
+            </p>
+            <p style="margin-top: 14px;">
+                Otherwise — welcome aboard. Live long and prosper
+                <span class="salute" role="img" aria-label="Vulcan salute">🖖</span>
             </p>
         </section>
 
         <footer>
             Crafted with
-            <svg class="heart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="love" role="img">
+            <svg class="heart" viewBox="0 0 24 24" fill="currentColor" aria-label="love" role="img">
                 <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
             </svg>
-            by the <span class="brand">RoarinPenguin</span>
+            by the <span class="brand-text">RoarinPenguin</span>
         </footer>
     </main>
 </body>
