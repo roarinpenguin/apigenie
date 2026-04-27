@@ -808,7 +808,7 @@ async function showRenewCmd() {
   const j = await r.json();
   const pre = document.getElementById('renew-cmd');
   pre.style.display = 'block';
-  pre.textContent = j.note + '\n\n' + j.command;
+  pre.textContent = j.note + '\\n\\n' + j.command;
 }
 
 async function changePassword() {
