@@ -72,6 +72,8 @@ if [ -f "$ENV_FILE" ]; then
     EXISTING_TLS_MODE=$(awk -F= '/^APIGENIE_TLS_MODE=/ {print $2; exit}' "$ENV_FILE")
     EXISTING_TLS_EMAIL=$(awk -F= '/^APIGENIE_TLS_EMAIL=/ {print $2; exit}' "$ENV_FILE")
     EXISTING_ADMIN_HASH=$(awk -F= '/^ADMIN_PASSWORD_HASH=/ {print $2; exit}' "$ENV_FILE")
+    # Un-escape '$$' -> '$' so the in-memory hash is canonical; we re-escape on write.
+    EXISTING_ADMIN_HASH="${EXISTING_ADMIN_HASH//\$\$/\$}"
     EXISTING_ADMIN_PASS=$(awk -F= '/^ADMIN_PASSWORD=/ {print $2; exit}' "$ENV_FILE")
 fi
 
@@ -145,6 +147,13 @@ if [ -z "$ADMIN_HASH" ] && [ -n "$EXISTING_ADMIN_PASS" ]; then
     ADMIN_PASS_FALLBACK="$EXISTING_ADMIN_PASS"
 fi
 
+# Escape '$' as '$$' for docker-compose variable-substitution rules.
+# The PBKDF2 hash format pbkdf2_sha256$<iters>$<salt>$<digest> contains
+# three literal '$' that Compose would otherwise treat as ${iters} etc.
+# and silently expand to empty strings, breaking login. See:
+# https://docs.docker.com/compose/compose-file/12-interpolation/
+ADMIN_HASH_ENV="${ADMIN_HASH//\$/\$\$}"
+
 # COMPOSE_PROFILES drives which docker-compose profile-gated services start by
 # default. For letsencrypt mode we want the in-stack certbot manager active.
 if [ "$TLS_MODE" = "letsencrypt" ]; then
@@ -169,7 +178,7 @@ ${COMPOSE_PROFILES_LINE}
 # ── Admin credentials ──
 ADMIN_USERNAME=${ADMIN_USER}
 ADMIN_PASSWORD=${ADMIN_PASS_FALLBACK}
-ADMIN_PASSWORD_HASH=${ADMIN_HASH}
+ADMIN_PASSWORD_HASH=${ADMIN_HASH_ENV}
 
 # ── FastAPI server ──
 LOG_LEVEL=INFO
