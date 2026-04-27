@@ -16,18 +16,26 @@ version: "3.9"
 
 services:
 
-  # ── Reverse proxy ──────────────────────────────────────────────────────────
+  # ── Reverse proxy ─────────────────────────────────────────────────────
+  # nginx.conf is generated at start by entrypoint.sh which runs envsubst on
+  # nginx.conf.template using APIGENIE_DOMAIN. Certs are mounted from
+  # ./certs/<domain>/ which bootstrap.sh populates regardless of TLS mode
+  # (self-signed | letsencrypt | provided).
   nginx:
     image: nginx:latest
     container_name: apigenie-nginx
     restart: unless-stopped
+    environment:
+      APIGENIE_DOMAIN: ${APIGENIE_DOMAIN:-apigenie.example.com}
     ports:
       - "80:80"
       - "443:443"
       - "8443:8443"
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - ./nginx/nginx.conf.template:/etc/nginx/nginx.conf.template:ro
+      - ./nginx/entrypoint.sh:/docker-entrypoint.d/00-apigenie-render.sh:ro
+      - ./certs:/etc/nginx/certs:ro
+      - ./certbot/www:/var/www/certbot:ro
       - ./html:/usr/share/nginx/html:ro
     depends_on:
       - apigenie
@@ -41,11 +49,20 @@ services:
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./certs:/certs:ro
+      - ./data:/var/lib/apigenie
     environment:
-      LOG_LEVEL: INFO
-      PUBLISHERS_ENABLED: "true"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      ADMIN_PASSWORD_FILE: /var/lib/apigenie/admin_pass
+      APIGENIE_TLS_MODE: ${APIGENIE_TLS_MODE:-self-signed}
+      APIGENIE_TLS_EMAIL: ${APIGENIE_TLS_EMAIL:-}
+      APIGENIE_KAFKA_ADVERTISED_HOST: ${APIGENIE_KAFKA_ADVERTISED_HOST:-${APIGENIE_DOMAIN:-apigenie.example.com}}
+      APIGENIE_CERT_DIR: /certs/${APIGENIE_DOMAIN:-apigenie.example.com}
+      PUBLISHERS_ENABLED: ${PUBLISHERS_ENABLED:-true}
+      APIGENIE_DOMAIN: ${APIGENIE_DOMAIN:-apigenie.example.com}
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-apigenie}
+      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:-}
       # Pub/Sub emulator
       PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
       GCP_PROJECT_ID: obs-test
@@ -78,30 +95,33 @@ services:
       - apigenie-net
 
   # ── Kafka cert init (one-shot) ─────────────────────────────────────────────
-  # Builds a combined PEM (private key + cert chain) from the Let's Encrypt
-  # certs already mounted into nginx, so the Kafka SASL_SSL listener (9093)
-  # can present a publicly-trusted certificate matching apigenie hostname.
+  # Reads the unified ./certs/<domain>/ tree (populated by bootstrap.sh from
+  # whichever TLS mode was chosen) and writes a combined PEM into the
+  # kafka-certs volume so cp-kafka can serve SASL_SSL on 9093 with the same
+  # certificate as nginx.
   kafka-cert-init:
     image: alpine:3.19
     container_name: apigenie-kafka-cert-init
+    environment:
+      APIGENIE_DOMAIN: ${APIGENIE_DOMAIN:-apigenie.example.com}
     volumes:
-      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - ./certs:/certs:ro
       - kafka-certs:/secrets
     command:
       - sh
       - -c
       - |
         set -eu
-        DOMAIN="${PUBLIC_HOSTNAME:-apigenie.roarinpenguin.com}"
-        SRC="/etc/letsencrypt/live/$$DOMAIN"
+        SRC="/certs/$$APIGENIE_DOMAIN"
         if [ ! -f "$$SRC/privkey.pem" ] || [ ! -f "$$SRC/fullchain.pem" ]; then
           echo "kafka-cert-init: $$SRC missing privkey.pem or fullchain.pem; SASL_SSL on 9093 will fail TLS"
-          # write a self-signed fallback so the broker still boots
+          # Write a self-signed fallback so the broker still boots and the
+          # rest of the stack remains usable.
           apk add --no-cache openssl >/dev/null
           openssl req -x509 -newkey rsa:2048 -nodes -days 30 \
             -keyout /tmp/k.pem -out /tmp/c.pem \
-            -subj "/CN=$$DOMAIN" \
-            -addext "subjectAltName=DNS:$$DOMAIN,DNS:localhost"
+            -subj "/CN=$$APIGENIE_DOMAIN" \
+            -addext "subjectAltName=DNS:$$APIGENIE_DOMAIN,DNS:localhost"
           cat /tmp/k.pem /tmp/c.pem > /secrets/kafka-combined.pem
         else
           cat "$$SRC/privkey.pem" "$$SRC/fullchain.pem" > /secrets/kafka-combined.pem
@@ -109,7 +129,7 @@ services:
         chmod 644 /secrets/kafka-combined.pem
         echo "dummy" > /secrets/kafka_keystore_creds
         chmod 644 /secrets/kafka_keystore_creds
-        echo "kafka-cert-init: wrote /secrets/kafka-combined.pem ($$(wc -c < /secrets/kafka-combined.pem) bytes) + kafka_keystore_creds"
+        echo "kafka-cert-init: wrote /secrets/kafka-combined.pem ($$(wc -c < /secrets/kafka-combined.pem) bytes) for $$APIGENIE_DOMAIN"
     networks:
       - apigenie-net
 
@@ -122,7 +142,7 @@ services:
   #
   # SASL/PLAIN credentials accepted on 9093 and 9094:
   #   admin               / apigenie-eh-admin-2026     (broker admin)
-  #   $$ConnectionString  / Endpoint=sb://apigenie.roarinpenguin.com/;SharedAccessKeyName=mock;SharedAccessKey=apigenie-eh-mock-2026;EntityPath=azure-platform-logs
+  #   $$ConnectionString  / Endpoint=sb://${APIGENIE_DOMAIN}/;SharedAccessKeyName=mock;SharedAccessKey=apigenie-eh-mock-2026;EntityPath=azure-platform-logs
   kafka:
     image: confluentinc/cp-kafka:7.6.6
     container_name: apigenie-kafka
@@ -144,7 +164,7 @@ services:
       KAFKA_LISTENERS: >-
         EXTERNAL://0.0.0.0:9092,SASLSSL://0.0.0.0:9093,SASLPLAIN://0.0.0.0:9094,DOCKER://0.0.0.0:29092
       KAFKA_ADVERTISED_LISTENERS: >-
-        EXTERNAL://${PUBLIC_HOSTNAME:-apigenie.roarinpenguin.com}:9092,SASLSSL://${PUBLIC_HOSTNAME:-apigenie.roarinpenguin.com}:9093,SASLPLAIN://${PUBLIC_HOSTNAME:-apigenie.roarinpenguin.com}:9094,DOCKER://kafka:29092
+        EXTERNAL://${APIGENIE_KAFKA_ADVERTISED_HOST:-apigenie.example.com}:9092,SASLSSL://${APIGENIE_KAFKA_ADVERTISED_HOST:-apigenie.example.com}:9093,SASLPLAIN://${APIGENIE_KAFKA_ADVERTISED_HOST:-apigenie.example.com}:9094,DOCKER://kafka:29092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: >-
         EXTERNAL:PLAINTEXT,SASLSSL:SASL_SSL,SASLPLAIN:SASL_PLAINTEXT,DOCKER:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: DOCKER
@@ -153,9 +173,9 @@ services:
       KAFKA_LISTENER_NAME_SASLSSL_SASL_ENABLED_MECHANISMS: PLAIN
       KAFKA_LISTENER_NAME_SASLPLAIN_SASL_ENABLED_MECHANISMS: PLAIN
       KAFKA_LISTENER_NAME_SASLSSL_PLAIN_SASL_JAAS_CONFIG: >-
-        org.apache.kafka.common.security.plain.PlainLoginModule required username="admin" password="apigenie-eh-admin-2026" user_admin="apigenie-eh-admin-2026" user_$$ConnectionString="Endpoint=sb://apigenie.roarinpenguin.com/;SharedAccessKeyName=mock;SharedAccessKey=apigenie-eh-mock-2026;EntityPath=azure-platform-logs";
+        org.apache.kafka.common.security.plain.PlainLoginModule required username="admin" password="apigenie-eh-admin-2026" user_admin="apigenie-eh-admin-2026" user_$$ConnectionString="Endpoint=sb://${APIGENIE_KAFKA_ADVERTISED_HOST:-apigenie.example.com}/;SharedAccessKeyName=mock;SharedAccessKey=apigenie-eh-mock-2026;EntityPath=azure-platform-logs";
       KAFKA_LISTENER_NAME_SASLPLAIN_PLAIN_SASL_JAAS_CONFIG: >-
-        org.apache.kafka.common.security.plain.PlainLoginModule required username="admin" password="apigenie-eh-admin-2026" user_admin="apigenie-eh-admin-2026" user_$$ConnectionString="Endpoint=sb://apigenie.roarinpenguin.com/;SharedAccessKeyName=mock;SharedAccessKey=apigenie-eh-mock-2026;EntityPath=azure-platform-logs";
+        org.apache.kafka.common.security.plain.PlainLoginModule required username="admin" password="apigenie-eh-admin-2026" user_admin="apigenie-eh-admin-2026" user_$$ConnectionString="Endpoint=sb://${APIGENIE_KAFKA_ADVERTISED_HOST:-apigenie.example.com}/;SharedAccessKeyName=mock;SharedAccessKey=apigenie-eh-mock-2026;EntityPath=azure-platform-logs";
       # TLS — combined PEM produced by kafka-cert-init from Let's Encrypt.
       # cp-kafka image uses *_FILENAME (relative to /etc/kafka/secrets) and a
       # *_CREDENTIALS file (required by preflight even though Kafka ignores
@@ -255,6 +275,105 @@ services:
         echo "Pub/Sub seed complete."
     networks:
       - apigenie-net
+
+  # ── certbot manager (active only when COMPOSE_PROFILES=letsencrypt) ────────
+  # Long-running container that:
+  #   1. On first start: issues a Let's Encrypt cert if /etc/letsencrypt/live/
+  #      doesn't already have one for the domain (HTTP-01 via nginx :80).
+  #   2. Every 12 h: runs `certbot renew --keep-until-expiring`. Certbot itself
+  #      no-ops unless the cert is within 30 days of expiry, so this is cheap.
+  #   3. On every renewal (or first issuance): flattens certbot's archive layout
+  #      into ./certs/<domain>/ (the path nginx + kafka-cert-init read from),
+  #      then SIGHUPs nginx for a zero-downtime reload and restarts the kafka
+  #      cert-init + kafka container so Kafka serves the new SASL_SSL cert.
+  #
+  # bootstrap.sh writes COMPOSE_PROFILES=letsencrypt into .env when you pick
+  # letsencrypt mode, so plain `docker compose up -d` includes this service.
+  # For self-signed / provided modes it's not started.
+  certbot:
+    image: certbot/certbot:latest
+    container_name: apigenie-certbot
+    profiles: ["letsencrypt"]
+    restart: unless-stopped
+    environment:
+      APIGENIE_DOMAIN: ${APIGENIE_DOMAIN:-apigenie.example.com}
+      APIGENIE_TLS_EMAIL: ${APIGENIE_TLS_EMAIL:-admin@example.com}
+    volumes:
+      - ./certs:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
+      # Mounted so the post-renewal hook can reload nginx and restart kafka
+      # without pulling in a separate Docker-CLI image.
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        DOMAIN="$$APIGENIE_DOMAIN"
+        TARGET="/etc/letsencrypt/$$DOMAIN"
+        LIVE="/etc/letsencrypt/live/$$DOMAIN"
+
+        # Tiny Docker API client — certbot/certbot is Python-based so we use
+        # http.client with a UNIX socket connection. No extra deps, no docker
+        # CLI install, no shell-quoting madness.
+        docker_api() {
+          # $$1 = path (e.g. /containers/apigenie-nginx/kill?signal=HUP)
+          python3 -c "
+        import http.client, socket, sys
+        class UDS(http.client.HTTPConnection):
+            def connect(self):
+                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                s.connect('/var/run/docker.sock')
+                self.sock = s
+        c = UDS('localhost'); c.request('POST', sys.argv[1])
+        r = c.getresponse()
+        print(f'[certbot] docker API {sys.argv[1]} -> {r.status}')
+        " "$$1" || true
+        }
+
+        flatten_and_reload() {
+          mkdir -p "$$TARGET"
+          if [ -f "$$LIVE/fullchain.pem" ] && [ -f "$$LIVE/privkey.pem" ]; then
+            cp -L "$$LIVE/fullchain.pem" "$$TARGET/fullchain.pem"
+            cp -L "$$LIVE/privkey.pem"   "$$TARGET/privkey.pem"
+            chmod 644 "$$TARGET/fullchain.pem"
+            chmod 600 "$$TARGET/privkey.pem"
+            echo "[certbot] flattened certs into $$TARGET/"
+            # nginx graceful reload (zero-downtime). The kafka path needs a
+            # full container restart since the SASL_SSL listener reads the
+            # keystore once at startup. Renewals are rare (~60–90 d) so the
+            # ~10 s blip is acceptable.
+            echo "[certbot] reloading nginx + restarting kafka stack"
+            docker_api "/containers/apigenie-nginx/kill?signal=HUP"
+            docker_api "/containers/apigenie-kafka-cert-init/restart"
+            docker_api "/containers/apigenie-kafka/restart"
+          else
+            echo "[certbot] no live cert at $$LIVE yet"
+          fi
+        }
+
+        issue_or_renew() {
+          if [ -d "$$LIVE" ]; then
+            echo "[certbot] running certbot renew (no-op unless within 30 d of expiry)"
+            certbot renew --webroot --webroot-path=/var/www/certbot \
+              --keep-until-expiring --deploy-hook "echo deployed" || true
+          else
+            echo "[certbot] no existing cert — issuing one for $$DOMAIN"
+            certbot certonly \
+              --webroot --webroot-path=/var/www/certbot \
+              --email "$$APIGENIE_TLS_EMAIL" --agree-tos --no-eff-email \
+              --keep-until-expiring \
+              -d "$$DOMAIN" || { echo "[certbot] issuance failed; will retry next cycle"; return; }
+          fi
+          flatten_and_reload
+        }
+
+        # Wait briefly for nginx to come up so HTTP-01 succeeds on first boot.
+        sleep 10
+        while :; do
+          issue_or_renew
+          # 12 h between attempts. Recommended by EFF / Let's Encrypt.
+          sleep 43200
+        done
 
 networks:
   apigenie-net:

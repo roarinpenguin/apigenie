@@ -49,6 +49,9 @@ logger = logging.getLogger(__name__)
 
 _publishers_enabled = os.environ.get("PUBLISHERS_ENABLED", "true").lower() == "true"
 
+# Public-facing hostname for URLs returned in payloads (e.g. EPM ManagerURL).
+DOMAIN = os.environ.get("APIGENIE_DOMAIN", "apigenie.example.com")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -646,7 +649,7 @@ async def cyera_login(request: Request) -> dict[str, Any]:
 async def epm_logon(request: Request) -> dict[str, Any]:
     payload = _token_payload(scope="epm:read")
     payload["SessionId"] = payload["access_token"]
-    payload["ManagerURL"] = "https://apigenie.roarinpenguin.com"
+    payload["ManagerURL"] = f"https://{DOMAIN}"
     return payload
 
 
@@ -659,7 +662,7 @@ async def mimecast_discover(request: Request) -> dict[str, Any]:
         "data": [{
             "region": "eu",
             "authenticate": [{
-                "uri": "https://apigenie.roarinpenguin.com",
+                "uri": f"https://{DOMAIN}",
                 "name": "TOTPAuthentication",
             }],
             "emailToken": "apigenie-valid-token-001",

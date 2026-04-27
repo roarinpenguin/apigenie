@@ -19,11 +19,19 @@ http {
     proxy_buffering off;
 
     # ── HTTP → HTTPS redirect ──────────────────────────────────────────────────
+    # Also serves /.well-known/acme-challenge/ for Let's Encrypt HTTP-01.
     server {
         listen 80;
         listen [::]:80;
-        server_name apigenie.roarinpenguin.com;
-        return 301 https://$host$request_uri;
+        server_name ${APIGENIE_DOMAIN};
+
+        location /.well-known/acme-challenge/ {
+            root /var/www/certbot;
+        }
+
+        location / {
+            return 301 https://$host$request_uri;
+        }
     }
 
     # ── HTTPS ─────────────────────────────────────────────────────────────────
@@ -31,10 +39,10 @@ http {
         listen 443 ssl;
         listen [::]:443 ssl;
         http2 on;
-        server_name apigenie.roarinpenguin.com;
+        server_name ${APIGENIE_DOMAIN};
 
-        ssl_certificate     /etc/letsencrypt/live/apigenie.roarinpenguin.com/fullchain.pem;
-        ssl_certificate_key /etc/letsencrypt/live/apigenie.roarinpenguin.com/privkey.pem;
+        ssl_certificate     /etc/nginx/certs/${APIGENIE_DOMAIN}/fullchain.pem;
+        ssl_certificate_key /etc/nginx/certs/${APIGENIE_DOMAIN}/privkey.pem;
         ssl_protocols TLSv1.2 TLSv1.3;
         ssl_prefer_server_ciphers on;
         ssl_session_cache shared:SSL:10m;
@@ -71,8 +79,8 @@ http {
     # ── Pub/Sub emulator behind TLS ────────────────────────────────────────────
     # Production GCP client libraries default to gRPC-over-TLS and will refuse
     # to negotiate plaintext h2c against the raw emulator port (8085). nginx
-    # terminates TLS here on 8443 (using the same Let's Encrypt cert) and
-    # forwards plaintext gRPC to the emulator container.
+    # terminates TLS here on 8443 (using the same cert) and forwards plaintext
+    # gRPC to the emulator container.
     #
     # Collectors that DO honour PUBSUB_EMULATOR_HOST should still use 8085
     # directly (no TLS, lower overhead). Collectors that don't, point at 8443.
@@ -80,10 +88,10 @@ http {
         listen 8443 ssl;
         listen [::]:8443 ssl;
         http2 on;
-        server_name apigenie.roarinpenguin.com;
+        server_name ${APIGENIE_DOMAIN};
 
-        ssl_certificate     /etc/letsencrypt/live/apigenie.roarinpenguin.com/fullchain.pem;
-        ssl_certificate_key /etc/letsencrypt/live/apigenie.roarinpenguin.com/privkey.pem;
+        ssl_certificate     /etc/nginx/certs/${APIGENIE_DOMAIN}/fullchain.pem;
+        ssl_certificate_key /etc/nginx/certs/${APIGENIE_DOMAIN}/privkey.pem;
         ssl_protocols TLSv1.2 TLSv1.3;
 
         # gRPC needs unbounded message size and long-lived connections.

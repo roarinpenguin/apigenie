@@ -2,9 +2,9 @@
 
 > Self-contained mock server for **11 security platform APIs** plus **Azure Event Hubs (Kafka)** and **GCP Cloud Logging (Pub/Sub)** — built for [Observo](https://observo.ai) source-configuration testing.
 
-ApiGenie exposes realistic, dynamically-varied data through the same authentication shapes the real platforms use (Bearer, Basic, X-ApiKeys, Duo HMAC, OAuth2 client-credentials, Microsoft tenant OAuth, GraphQL, Tenable async export, Kafka SASL/PLAIN, gRPC Pub/Sub). It runs as a single Docker Compose stack — nginx, FastAPI, Kafka + Zookeeper, Pub/Sub emulator — with Let's Encrypt TLS on `apigenie.roarinpenguin.com`.
+ApiGenie exposes realistic, dynamically-varied data through the same authentication shapes the real platforms use (Bearer, Basic, X-ApiKeys, Duo HMAC, OAuth2 client-credentials, Microsoft tenant OAuth, GraphQL, Tenable async export, Kafka SASL/PLAIN, gRPC Pub/Sub). It runs as a single Docker Compose stack — nginx, FastAPI, Kafka + Zookeeper, Pub/Sub emulator — with TLS via Let's Encrypt, a self-signed cert, or your own files.
 
-Live at **[https://apigenie.roarinpenguin.com](https://apigenie.roarinpenguin.com)** · admin UI at **[/admin](https://apigenie.roarinpenguin.com/admin)**.
+The deployment hostname is fully parameterised: pick any domain, run `./scripts/bootstrap.sh`, and the whole stack (nginx server names, TLS certs, Kafka advertised listeners, admin UI source-config examples) is rebuilt around it.
 
 ---
 
@@ -70,14 +70,16 @@ All containers join the `apigenie-net` Docker network. Two one-shot init service
 
 ### Prerequisites
 
-- Docker + Docker Compose v2 on a host with the public DNS name `apigenie.roarinpenguin.com` resolving to it
-- Let's Encrypt cert at `/etc/letsencrypt/live/apigenie.roarinpenguin.com/{fullchain,privkey}.pem` (managed by certbot on the host)
+- Docker + Docker Compose v2 on a host with a public DNS name resolving to it (or just use `localhost` for a lab)
+- `python3` and `openssl` on the host (used only by `scripts/bootstrap.sh`; not needed at runtime)
 - Inbound firewall (e.g. UFW on Ubuntu) allowing the ports listed below
+
+That's it. Cert issuance, renewal, and the entire lifecycle live inside the stack — no host-side certbot, no cron jobs, no `/etc/letsencrypt`.
 
 ### Firewall
 
 ```bash
-sudo ufw allow 80/tcp        # HTTP → HTTPS redirect
+sudo ufw allow 80/tcp        # HTTP → HTTPS redirect (and Let's Encrypt HTTP-01)
 sudo ufw allow 443/tcp       # Main HTTPS API + admin UI
 sudo ufw allow 8443/tcp      # Pub/Sub gRPC over TLS
 sudo ufw allow 8085/tcp      # Pub/Sub gRPC plaintext (optional)
@@ -86,21 +88,35 @@ sudo ufw allow 9093/tcp      # Kafka SASL_SSL (Event Hubs)
 sudo ufw allow 9094/tcp      # Kafka SASL_PLAINTEXT
 ```
 
-### Deploy
+### Deploy (first time)
 
 ```bash
 git clone https://github.com/roarinpenguin/apigenie.git
 cd apigenie
+./scripts/bootstrap.sh                # interactive: domain, admin pwd, TLS mode
 docker compose up -d --build
 ```
 
-That brings up the entire stack. Verify:
+The bootstrap script writes a `.env` file and populates `./certs/<domain>/` with either:
+- a **self-signed** 825-day cert (lab default — browsers warn, collectors need TLS verify off),
+- a **Let's Encrypt** cert via certbot HTTP-01 on port 80 (production), or
+- **provided** files you place yourself.
+
+For Let's Encrypt mode, bootstrap puts `COMPOSE_PROFILES=letsencrypt` in your `.env` so plain `docker compose up -d` includes the **`apigenie-certbot`** sidecar. That container:
+
+1. On first start, issues a real Let's Encrypt cert via HTTP-01 on port 80 (~10 s after nginx is up).
+2. Wakes up every 12 h and runs `certbot renew --keep-until-expiring` (no-op until within 30 days of expiry).
+3. After every renewal, copies the new cert into `./certs/<domain>/`, sends nginx `SIGHUP` for a zero-downtime reload, and restarts kafka so the SASL_SSL listener picks up the new cert.
+
+Watch it with `docker logs -f apigenie-certbot`.
+
+### Verify
 
 ```bash
-curl -s https://apigenie.roarinpenguin.com/health
+curl -sk https://${APIGENIE_DOMAIN}/health
 # {"status":"ok","service":"apigenie"}
 
-docker logs apigenie-kafka-cert-init   # cert init wrote /secrets/kafka-combined.pem
+docker logs apigenie-kafka-cert-init   # wrote /secrets/kafka-combined.pem
 docker logs apigenie-pubsub-seed       # topic + subscription created
 docker compose ps                      # all containers up
 ```
@@ -108,8 +124,38 @@ docker compose ps                      # all containers up
 ### Update
 
 ```bash
+docker compose down
 git pull
 docker compose up -d --build
+```
+
+`.env` and `./certs/` are gitignored and persist across pulls. If a future commit adds a new env var, copy the new line over from `.env.example` manually — or just re-run `./scripts/bootstrap.sh` (it loads existing values as prompt defaults; press enter to keep them).
+
+### Migrating from a pre-portable deployment
+
+If you're upgrading from an earlier apigenie that mounted `/etc/letsencrypt:ro` into nginx, do this once:
+
+```bash
+docker compose down
+git pull
+./scripts/bootstrap.sh                            # detects existing cert, offers to import
+# OR, if you already have .env:
+./scripts/migrate-certs.sh apigenie.example.com   # explicit import
+docker compose up -d --build
+```
+
+The imported cert lets nginx boot. The in-stack certbot manager re-issues it once (one-time duplicate, well under the rate limit) and from then on owns the renewal lifecycle. You can then disable the host-side certbot.
+
+### Change the domain later
+
+Edit `APIGENIE_DOMAIN` in `.env`, then:
+
+```bash
+# Self-signed lab: regenerate the cert
+./scripts/gen-self-signed.sh <new-domain>
+# Let's Encrypt: nothing to do — apigenie-certbot will issue on next cycle
+docker compose up -d              # nginx re-renders its config from the template
+docker compose restart kafka-cert-init kafka   # rewrite advertised listeners + SASL JAAS
 ```
 
 ---
@@ -143,7 +189,15 @@ Substitute the Bearer token to trigger specific HTTP errors:
 
 ## Admin UI — `/admin`
 
-Login: `admin` / `apigenie` (override with `ADMIN_USERNAME` / `ADMIN_PASSWORD` env vars).
+Login: `admin` / *(password set during `bootstrap.sh`)*.
+
+Passwords are stored as PBKDF2-HMAC-SHA256 hashes (600k iterations) in either the `ADMIN_PASSWORD_HASH` env var or, after the first in-app change, the override file at `./data/admin_pass`. The plaintext `ADMIN_PASSWORD` env var only acts as a first-boot fallback when no hash is present.
+
+The **Settings** tab (under *System*) exposes:
+- the resolved domain, Kafka advertised host, TLS mode, and where the active password is coming from;
+- the live TLS cert: subject, issuer, SAN list, validity window, days remaining, self-signed flag;
+- a one-click **Renew certificate** button that prints the exact host-side command for your TLS mode;
+- a **Change password** form (verifies current password, writes new hash atomically, persists across restarts).
 
 ### Dashboard tabs
 

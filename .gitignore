@@ -1,1 +1,16 @@
 .DS_Store
+
+# Local environment + secrets
+.env
+.env.bak
+
+# Generated TLS material (per-deployment)
+certs/*/
+!certs/.gitkeep
+
+# certbot HTTP-01 challenge dir
+certbot/www/*
+!certbot/www/.gitkeep
+
+# Persisted admin password override file (Phase 2)
+data/
