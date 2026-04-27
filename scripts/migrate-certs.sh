@@ -22,8 +22,18 @@ DOMAIN="${1:?usage: $0 <domain>}"
 LE_LIVE="/etc/letsencrypt/live/${DOMAIN}"
 TARGET="${ROOT}/certs/${DOMAIN}"
 
-if [ ! -d "${LE_LIVE}" ]; then
-    echo "✗ ${LE_LIVE} not found." >&2
+# /etc/letsencrypt is typically drwx------ root, so a plain `test -d` from a
+# non-root user returns false even when the cert is actually present. Use
+# sudo for existence + readability checks too, falling back to plain test if
+# sudo isn't available (e.g. running as root already).
+if command -v sudo >/dev/null 2>&1 && [ "$(id -u)" -ne 0 ]; then
+    LE_TEST="sudo test"
+else
+    LE_TEST="test"
+fi
+
+if ! $LE_TEST -d "${LE_LIVE}"; then
+    echo "✗ ${LE_LIVE} not found (or not readable even with sudo)." >&2
     echo "  No existing Let's Encrypt cert to migrate. Either:" >&2
     echo "    1. Use ./scripts/bootstrap.sh to start fresh, or" >&2
     echo "    2. Place fullchain.pem + privkey.pem manually in ${TARGET}/" >&2
