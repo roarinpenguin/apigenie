@@ -205,7 +205,26 @@ The **Settings** tab (under *System*) exposes:
 |-----|---------------|
 | **Sources** | One reference card per platform with copy-pasteable endpoint URLs, auth values, and an example `curl` / `kcat` command |
 | **Requests** | Live trace of every inbound HTTP request, grouped by source. Includes Pub/Sub publish heartbeats (under `gcp_audit`) and Kafka produce heartbeats (under `azure_platform`) so you can confirm streaming sources are flowing even though gRPC/Kafka traffic bypasses FastAPI |
+| **Flows** | Sankey diagram of source IPs (left) → log-source names (right) with click-to-filter per IP and a min-volume slider |
+| **GeoMap** | World map with one bubble per source IP (size ∝ volume); click a bubble to drill down into its per-source breakdown |
 | **Container logs** | Tail logs of any container in the stack via `docker logs --follow` (apigenie, nginx, kafka, zookeeper, pubsub-emulator) |
+
+### GeoMap data source
+
+The GeoMap tab uses a hybrid resolver:
+
+1. If `./data/geoip/GeoLite2-City.mmdb` is present → offline lookup via the bundled file (fast, no rate limit).
+2. Otherwise → on-demand calls to `ip-api.com/json/<ip>` (free, 45 req/min, requires outbound HTTPS).
+
+To enable offline lookups, get a free MaxMind license key at <https://www.maxmind.com/en/geolite2/signup> and either run the bootstrap (it will prompt for the key and download the DB) or refresh manually:
+
+```bash
+echo 'MAXMIND_LICENSE_KEY=your_key_here' >> .env
+./scripts/refresh-geoip.sh         # writes ./data/geoip/GeoLite2-City.mmdb
+docker compose restart apigenie
+```
+
+MaxMind ships weekly updates; re-running the script (or scheduling it via cron) keeps the DB current.
 
 ### Useful endpoints under `/admin`
 
@@ -215,6 +234,8 @@ The **Settings** tab (under *System*) exposes:
 | `/admin/` | Dashboard |
 | `/admin/gcp-sa.json` | Generates a fresh, parseable RSA-2048 GCP service-account JSON for collectors that need a credentials file. Generated per process and held only in memory — never persisted. The `token_uri` field points back at our fake OAuth endpoint so the collector never reaches real Google. |
 | `/admin/api/requests/{source}` | JSON request trace for a source (used by the dashboard) |
+| `/admin/api/flows[?ip=…]` | Sankey feed: nodes (IPs + sources) and weighted links |
+| `/admin/api/geo` | GeoMap feed: per-IP totals + lat/lon + per-source breakdown |
 | `/admin/api/logs/{container}` | SSE stream of container logs |
 
 ---

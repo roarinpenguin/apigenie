@@ -63,6 +63,7 @@ EXISTING_TLS_MODE=""
 EXISTING_TLS_EMAIL=""
 EXISTING_ADMIN_HASH=""
 EXISTING_ADMIN_PASS=""
+EXISTING_MAXMIND_KEY=""
 if [ -f "$ENV_FILE" ]; then
     # Source in a subshell to avoid polluting the namespace, then read each value
     # back via grep (avoids set -u tripping over quoting in the .env).
@@ -75,6 +76,7 @@ if [ -f "$ENV_FILE" ]; then
     # Un-escape '$$' -> '$' so the in-memory hash is canonical; we re-escape on write.
     EXISTING_ADMIN_HASH="${EXISTING_ADMIN_HASH//\$\$/\$}"
     EXISTING_ADMIN_PASS=$(awk -F= '/^ADMIN_PASSWORD=/ {print $2; exit}' "$ENV_FILE")
+    EXISTING_MAXMIND_KEY=$(awk -F= '/^MAXMIND_LICENSE_KEY=/ {print $2; exit}' "$ENV_FILE")
 fi
 
 say
@@ -124,6 +126,14 @@ case "$TLS_CHOICE" in
     3|provided)     TLS_MODE="provided";    TLS_EMAIL="" ;;
     *)              err "Unrecognised TLS choice: $TLS_CHOICE"; exit 1 ;;
 esac
+
+# ─── 1b. Optional MaxMind key (powers the admin GeoMap tab) ──────────────────
+say
+say "GeoMap data source (admin tab):"
+say "  Leave empty to use the free ip-api.com fallback (45 req/min)."
+say "  Or paste a free MaxMind GeoLite2 key for offline lookups."
+say "  Get one at: ${DIM}https://www.maxmind.com/en/geolite2/signup${RESET}"
+ask "MaxMind license key (optional)" "${EXISTING_MAXMIND_KEY}" MAXMIND_LICENSE_KEY
 
 # ─── 2. Hash password (only if user supplied a new plaintext) ─────────────────
 if [ -n "$ADMIN_PASS_PLAIN" ]; then
@@ -179,6 +189,10 @@ ${COMPOSE_PROFILES_LINE}
 ADMIN_USERNAME=${ADMIN_USER}
 ADMIN_PASSWORD=${ADMIN_PASS_FALLBACK}
 ADMIN_PASSWORD_HASH=${ADMIN_HASH_ENV}
+
+# ── Admin GeoMap (optional) ──
+MAXMIND_LICENSE_KEY=${MAXMIND_LICENSE_KEY}
+APIGENIE_AGG_CAP=5000
 
 # ── FastAPI server ──
 LOG_LEVEL=INFO
@@ -259,6 +273,17 @@ case "$TLS_MODE" in
         fi
         ;;
 esac
+
+# ─── 4b. GeoIP DB (optional, only if user supplied a key) ────────────────────
+if [ -n "${MAXMIND_LICENSE_KEY:-}" ]; then
+    say
+    say "Fetching MaxMind GeoLite2-City database…"
+    if "$ROOT/scripts/refresh-geoip.sh" "$MAXMIND_LICENSE_KEY"; then
+        ok "GeoIP DB installed at ./data/geoip/GeoLite2-City.mmdb"
+    else
+        warn "GeoIP DB download failed — admin GeoMap will fall back to ip-api.com."
+    fi
+fi
 
 # ─── 5. Done ────────────────────────────────────────────────────────────────
 say

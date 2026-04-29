@@ -13,7 +13,8 @@ from typing import Any
 from fastapi import APIRouter, Cookie, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 
-from trace import REQUEST_TRACE
+from trace import AGG, REQUEST_TRACE
+import geoip
 
 # ── Config ────────────────────────────────────────────────────────────────────
 ADMIN_USER   = os.environ.get("ADMIN_USERNAME", "admin")
@@ -424,6 +425,7 @@ _DASH_HTML = """<!doctype html>
 <head>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>ApiGenie · Admin</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js" defer></script>
 <style>
 :root{--deep:#10002b;--violet:#5a189a;--purple:#7b2cbf;--orchid:#9d4edd;--lilac:#c77dff;--mist:#e0aaff;--glow:rgba(199,125,255,.45);--sidebar:220px}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -501,6 +503,19 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
 .source-chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px}
 .chip{padding:4px 12px;border-radius:999px;font-size:.75rem;border:1px solid rgba(199,125,255,.25);background:rgba(90,24,154,.2);color:rgba(224,170,255,.6);cursor:pointer;transition:all .15s}
 .chip.active,.chip:hover{background:rgba(123,44,191,.4);color:var(--mist);border-color:var(--lilac)}
+/* Viz canvases */
+.viz{width:100%;height:560px;background:rgba(0,0,0,.25);border-radius:10px;border:1px solid rgba(199,125,255,.12)}
+.viz-toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:14px}
+.viz-toolbar input[type=range]{accent-color:var(--lilac)}
+.viz-toolbar .meta{margin-left:auto;font-size:.75rem;color:rgba(224,170,255,.45)}
+.geo-split{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:16px}
+@media(max-width:1100px){.geo-split{grid-template-columns:1fr}}
+.geo-side{background:rgba(36,0,70,.55);border:1px solid rgba(199,125,255,.2);border-radius:10px;padding:14px;max-height:560px;overflow-y:auto}
+.geo-side h4{font-size:.78rem;color:var(--orchid);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px}
+.geo-side .ip-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid rgba(199,125,255,.08);font-size:.78rem;cursor:pointer}
+.geo-side .ip-row:hover{color:var(--mist)}
+.geo-side .ip-row.active{color:var(--lilac);font-weight:600}
+.geo-side .pill{font-family:monospace;font-size:.72rem;color:rgba(224,170,255,.5)}
 </style>
 </head>
 <body>
@@ -509,6 +524,8 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
   <div class="brand">⚙ ApiGenie Admin</div>
   <span class="nav-section">Monitor</span>
   <a class="nav-item active" onclick="showTab('requests', this)">📋 Requests</a>
+  <a class="nav-item" onclick="showTab('flows', this); loadFlows()">🔀 Flows</a>
+  <a class="nav-item" onclick="showTab('geo', this); loadGeo()">🌍 GeoMap</a>
   <a class="nav-item" onclick="showTab('logs', this)">📜 Container Logs</a>
   <span class="nav-section">Reference</span>
   <a class="nav-item" onclick="showTab('config', this)">🔧 Source Config</a>
@@ -539,6 +556,47 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
           Recent calls <button class="btn-sm" onclick="loadRequests()">↺ Refresh</button>
         </div>
         <div id="req-table-wrap"><p class="empty">Select a source above</p></div>
+      </div>
+    </div>
+
+    <!-- FLOWS TAB (Sankey) -->
+    <div class="pane" id="pane-flows">
+      <div class="card">
+        <div class="card-title">Source IP → Log source flow</div>
+        <div class="viz-toolbar">
+          <button class="btn-sm" onclick="loadFlows()">↺ Refresh</button>
+          <label style="font-size:.78rem;color:rgba(224,170,255,.6)">Filter IP
+            <select id="flow-ip" onchange="loadFlows(this.value || null)" style="margin-left:6px"></select>
+          </label>
+          <button class="btn-sm" onclick="loadFlows(null)" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2)">Clear filter</button>
+          <label style="font-size:.78rem;color:rgba(224,170,255,.6)">Min volume
+            <input id="flow-min" type="range" min="1" max="50" value="1" oninput="document.getElementById('flow-min-v').textContent=this.value;renderSankey()" style="vertical-align:middle"/>
+            <span id="flow-min-v" style="font-family:monospace">1</span>
+          </label>
+          <span class="meta" id="flow-meta"></span>
+        </div>
+        <div id="sankey" class="viz"></div>
+        <p style="font-size:.75rem;color:rgba(224,170,255,.45);margin-top:10px">
+          Click any node to focus on that IP / source. Click outside or "Clear filter" to reset.
+        </p>
+      </div>
+    </div>
+
+    <!-- GEOMAP TAB -->
+    <div class="pane" id="pane-geo">
+      <div class="card">
+        <div class="card-title">Geo distribution of source IPs</div>
+        <div class="viz-toolbar">
+          <button class="btn-sm" onclick="loadGeo()">↺ Refresh</button>
+          <span class="meta" id="geo-meta"></span>
+        </div>
+        <div class="geo-split">
+          <div id="geomap" class="viz"></div>
+          <aside class="geo-side" id="geo-side">
+            <h4>Top sources</h4>
+            <div id="geo-list"><p class="empty">Loading…</p></div>
+          </aside>
+        </div>
       </div>
     </div>
 
@@ -623,7 +681,11 @@ function showTab(tab, el) {
   document.getElementById('pane-' + tab).classList.add('active');
   if (el) el.classList.add('active');
   activeTab = tab;
-  const titles = {requests:'Request Inspector', logs:'Container Logs', config:'Source Config', settings:'Settings'};
+  const titles = {requests:'Request Inspector', flows:'Flow Sankey', geo:'Geo Distribution', logs:'Container Logs', config:'Source Config', settings:'Settings'};
+  // Resize viz canvases — ECharts can't measure a hidden element correctly,
+  // so we trigger a resize when its pane becomes active.
+  if (tab === 'flows' && window._sankey) window._sankey.resize();
+  if (tab === 'geo'   && window._geomap) window._geomap.resize();
   document.getElementById('page-title').textContent = titles[tab];
 }
 
@@ -840,11 +902,253 @@ async function changePassword() {
   }
 }
 
+// ── Flows tab (Sankey) ────────────────────────────────────────────────────────
+// We keep the most-recent server response in flowsRaw so the slider can
+// re-filter without a network round-trip.
+let flowsRaw = null;
+let flowFilter = null;
+
+async function loadFlows(ip) {
+  if (ip !== undefined) flowFilter = ip;            // null → clear, undefined → keep
+  const url = '/admin/api/flows' + (flowFilter ? ('?ip=' + encodeURIComponent(flowFilter)) : '');
+  try {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(r.status);
+    flowsRaw = await r.json();
+  } catch(e) {
+    document.getElementById('flow-meta').textContent = 'Error: ' + e;
+    return;
+  }
+  // Populate the IP filter dropdown from the unfiltered set on first load,
+  // or every time the filter is cleared.
+  if (!flowFilter) {
+    const sel = document.getElementById('flow-ip');
+    const ips = flowsRaw.nodes.filter(n => n.type === 'ip').map(n => n.label).sort();
+    sel.innerHTML = '<option value="">— all —</option>' + ips.map(i => `<option>${escHtml(i)}</option>`).join('');
+  }
+  renderSankey();
+}
+
+function renderSankey() {
+  if (!flowsRaw) return;
+  if (typeof echarts === 'undefined') {
+    // CDN still loading; retry in 200 ms — happens on the very first tab open.
+    setTimeout(renderSankey, 200);
+    return;
+  }
+  const minV = parseInt(document.getElementById('flow-min').value, 10) || 1;
+  const links = flowsRaw.links.filter(l => l.value >= minV);
+  const used  = new Set();
+  links.forEach(l => { used.add(l.source); used.add(l.target); });
+  const nodes = flowsRaw.nodes.filter(n => used.has(n.name)).map(n => ({
+    name: n.name,
+    // ECharts uses `name` as the rendered label by default; override so users
+    // see the bare IP / source name without our internal prefix.
+    label: { show: true, formatter: () => n.label },
+    itemStyle: { color: n.type === 'ip' ? '#9d4edd' : '#7b2cbf' },
+  }));
+  const meta = `${nodes.filter(n => flowsRaw.nodes.find(x => x.name===n.name && x.type==='ip')).length} IPs · ${links.length} flows`
+             + (flowFilter ? ` · filter: ${flowFilter}` : '');
+  document.getElementById('flow-meta').textContent = meta;
+
+  const dom = document.getElementById('sankey');
+  if (!window._sankey) window._sankey = echarts.init(dom, null, { renderer: 'canvas' });
+  window._sankey.setOption({
+    backgroundColor: 'transparent',
+    tooltip: { trigger: 'item', triggerOn: 'mousemove' },
+    series: [{
+      type: 'sankey',
+      data: nodes,
+      links: links,
+      emphasis: { focus: 'adjacency' },
+      lineStyle: { color: 'gradient', curveness: 0.5, opacity: 0.55 },
+      label: { color: '#e0aaff', fontSize: 11 },
+      nodeAlign: 'justify',
+      nodeWidth: 14,
+      nodeGap: 10,
+    }],
+  }, true);
+  window._sankey.off('click');
+  window._sankey.on('click', (params) => {
+    if (params.dataType === 'node' && params.data.name.startsWith('ip:')) {
+      const ip = params.data.name.slice(3);
+      document.getElementById('flow-ip').value = ip;
+      loadFlows(ip);
+    }
+  });
+}
+
+// ── GeoMap tab ────────────────────────────────────────────────────────────────
+let geoRaw = null;
+let geoMapLoaded = false;
+
+async function loadGeo() {
+  document.getElementById('geo-list').innerHTML = '<p class="empty">Loading…</p>';
+  try {
+    const r = await fetch('/admin/api/geo');
+    if (!r.ok) throw new Error(r.status);
+    geoRaw = await r.json();
+  } catch(e) {
+    document.getElementById('geo-list').innerHTML = '<p class="empty">Error: ' + e + '</p>';
+    return;
+  }
+  document.getElementById('geo-meta').textContent =
+    `${geoRaw.rows.length} unique IPs · resolver: ${geoRaw.geoip_source}`;
+  renderGeoSidebar(null);
+  try {
+    await ensureGeoMap();
+    renderGeoMap();
+  } catch (e) {
+    document.getElementById('geomap').innerHTML =
+      `<div style="padding:30px;color:#ff7f7f;font-size:.85rem">` +
+      `Failed to load world map: ${escHtml(String(e))}<br/>` +
+      `Check network access to cdn.jsdelivr.net.</div>`;
+  }
+}
+
+async function ensureGeoMap() {
+  if (geoMapLoaded) return;
+  // ECharts 5 dropped the bundled world map JS — we have to fetch a GeoJSON
+  // and register it ourselves. Apache's old 4.9 mirror still serves the
+  // canonical world.json, kept on jsDelivr under the GitHub-tag namespace.
+  // ~600 KB, downloaded once per session and cached by the browser thereafter.
+  const r = await fetch('https://cdn.jsdelivr.net/gh/apache/echarts@4.9.0/map/json/world.json');
+  if (!r.ok) throw new Error('world.json HTTP ' + r.status);
+  const geoJson = await r.json();
+  echarts.registerMap('world', geoJson);
+  geoMapLoaded = true;
+}
+
+function renderGeoMap(focusIp) {
+  if (!geoRaw) { console.warn('[geomap] no geoRaw'); return; }
+  if (typeof echarts === 'undefined') { console.warn('[geomap] echarts not loaded'); return; }
+  const dom = document.getElementById('geomap');
+  // If the pane was hidden when init() first ran, the canvas would be 0×0.
+  // Force a fresh dispose+init when the offsetWidth is suspiciously small.
+  if (window._geomap && dom.offsetWidth > 0 && window._geomap.getWidth() === 0) {
+    window._geomap.dispose();
+    window._geomap = null;
+  }
+  if (!window._geomap) {
+    try { window._geomap = echarts.init(dom, null, { renderer: 'canvas' }); }
+    catch (e) { console.error('[geomap] init failed', e); dom.innerHTML = '<div style="padding:20px;color:#ff7f7f">Init failed: ' + e + '</div>'; return; }
+  }
+  console.log('[geomap] rendering — dom size', dom.offsetWidth, '×', dom.offsetHeight,
+              '· registered maps:', echarts.getMap ? Object.keys(echarts.getMap('world') || {}) : 'n/a');
+
+  const points = geoRaw.rows
+    .filter(r => r.geo && r.geo.status === 'ok')
+    .map(r => ({
+      name: r.ip,
+      value: [r.geo.lon, r.geo.lat, r.total],
+      ip: r.ip,
+      city: r.geo.city || '?',
+      country: r.geo.country || '?',
+      by_source: r.by_source,
+    }));
+  const max = points.reduce((m,p) => Math.max(m, p.value[2]), 1);
+
+  try {
+    window._geomap.setOption({
+      backgroundColor: 'transparent',
+      tooltip: {
+        trigger: 'item',
+        formatter: (p) => {
+          if (!p.data || !p.data.ip) return '';
+          const bs = Object.entries(p.data.by_source || {}).map(([k,v]) => `${k}: ${v}`).join('<br/>');
+          return `<b>${p.data.ip}</b><br/>${p.data.city}, ${p.data.country}<br/>Total: ${p.value[2]}<br/><br/>${bs}`;
+        },
+      },
+      geo: {
+        map: 'world',
+        roam: true,
+        itemStyle: { areaColor: 'rgba(36,0,70,.6)', borderColor: 'rgba(199,125,255,.18)' },
+        emphasis: { itemStyle: { areaColor: 'rgba(90,24,154,.6)' }, label: { show: false } },
+      },
+      series: [{
+        type: 'effectScatter',
+        coordinateSystem: 'geo',
+        data: points,
+        symbolSize: (val) => 6 + (val[2] / max) * 28,
+        rippleEffect: { brushType: 'stroke', scale: 2.5 },
+        itemStyle: {
+          color: (p) => (focusIp && p.data.ip === focusIp) ? '#ffd166' : '#c77dff',
+          shadowBlur: 8, shadowColor: 'rgba(199,125,255,.6)',
+        },
+        emphasis: { scale: 1.4 },
+      }],
+    }, true);
+    window._geomap.resize();   // force layout pass after setOption
+  } catch (e) {
+    console.error('[geomap] setOption failed', e);
+    dom.innerHTML = '<div style="padding:20px;color:#ff7f7f">setOption failed: ' + e + '</div>';
+    return;
+  }
+
+  window._geomap.off('click');
+  window._geomap.on('click', (params) => {
+    if (params.componentType === 'series' && params.data && params.data.ip) {
+      renderGeoSidebar(params.data.ip);
+      renderGeoMap(params.data.ip);
+    }
+  });
+}
+
+function renderGeoSidebar(focusIp) {
+  if (!geoRaw) return;
+  const wrap = document.getElementById('geo-list');
+  if (!geoRaw.rows.length) { wrap.innerHTML = '<p class="empty">No traffic recorded yet.</p>'; return; }
+
+  if (focusIp) {
+    const row = geoRaw.rows.find(r => r.ip === focusIp);
+    if (!row) { renderGeoSidebar(null); return; }
+    const bs = Object.entries(row.by_source).sort((a,b) => b[1]-a[1]);
+    const tot = row.total;
+    const bars = bs.map(([k,v]) => `
+      <div style="margin-bottom:8px">
+        <div style="display:flex;justify-content:space-between;font-size:.75rem;color:rgba(224,170,255,.7)">
+          <span>${escHtml(k)}</span><span class="pill">${v}</span>
+        </div>
+        <div style="height:6px;background:rgba(90,24,154,.25);border-radius:3px;overflow:hidden;margin-top:3px">
+          <div style="height:100%;width:${(v/tot*100).toFixed(1)}%;background:linear-gradient(90deg,#7b2cbf,#c77dff)"></div>
+        </div>
+      </div>`).join('');
+    wrap.innerHTML = `
+      <div style="margin-bottom:14px">
+        <div style="font-family:monospace;color:var(--mist);font-size:.95rem">${escHtml(row.ip)}</div>
+        <div style="font-size:.75rem;color:rgba(224,170,255,.5)">${escHtml((row.geo && (row.geo.city||row.geo.country)) ? (row.geo.city||'?') + ', ' + (row.geo.country||'?') : (row.geo && row.geo.status) || 'unknown')}</div>
+        <div style="font-size:.75rem;color:rgba(224,170,255,.5)">Total: ${tot}</div>
+      </div>
+      <h4>Per-source breakdown</h4>
+      ${bars}
+      <button class="btn-sm" onclick="renderGeoSidebar(null);renderGeoMap()" style="margin-top:10px;background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2)">← Back to all</button>`;
+    return;
+  }
+
+  // Default list: top IPs by volume.
+  const rows = geoRaw.rows.slice(0, 50).map(r => {
+    const loc = r.geo && r.geo.status === 'ok' ? `${r.geo.city||'?'}, ${r.geo.country_code||'?'}` :
+                 r.geo && r.geo.status === 'private' ? 'private/loopback' : 'unknown';
+    return `<div class="ip-row" onclick="renderGeoSidebar('${escHtml(r.ip).replace(/'/g, "\\\\'")}');renderGeoMap('${escHtml(r.ip).replace(/'/g, "\\\\'")}')">
+      <span><span style="font-family:monospace">${escHtml(r.ip)}</span>
+        <span class="pill" style="margin-left:8px">${escHtml(loc)}</span>
+      </span>
+      <span class="pill">${r.total}</span>
+    </div>`;
+  }).join('');
+  wrap.innerHTML = rows || '<p class="empty">No data.</p>';
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 buildChips('source-chips', selectSource);
 buildChips('cfg-chips', showConfig);
 // auto-select first source
 document.querySelector('#source-chips .chip')?.click();
+// Resize viz on window resize so they stay responsive.
+window.addEventListener('resize', () => {
+  if (window._sankey) window._sankey.resize();
+  if (window._geomap) window._geomap.resize();
+});
 </script>
 </body>
 </html>"""
@@ -969,6 +1273,79 @@ async def api_requests(source: str, ag_session: str | None = Cookie(None)):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     data = list(REQUEST_TRACE.get(source, []))
     return JSONResponse(data)
+
+
+# ── Sankey + GeoMap data feeds ──────────────────────────────────────────────
+# Both endpoints are pure aggregation over the in-process AGG dict. No DB
+# round-trip, no per-request geo lookup — the GeoMap endpoint resolves IPs
+# lazily and caches the answers in geoip.py for the lifetime of the process.
+
+@router.get("/api/flows")
+async def api_flows(ip: str | None = None, ag_session: str | None = Cookie(None)):
+    """Sankey feed: source IPs (left) → log-source names (right).
+
+    Optional ``?ip=`` filter narrows the view to one origin without a second
+    round-trip when the user clicks an IP node in the chart.
+    """
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    # Snapshot under the lock — AGG is mutated by the trace middleware on
+    # every request, and we want a consistent (ip, source, count) view.
+    from trace import _AGG_LOCK
+    with _AGG_LOCK:
+        rows = [(k[0], k[1], v["count"]) for k, v in AGG.items()]
+
+    if ip:
+        rows = [r for r in rows if r[0] == ip]
+
+    # Deduplicate node ids: prefix to disambiguate "okta" the source from any
+    # IP that happened to literally equal "okta" (won't, but be safe).
+    ip_nodes = sorted({r[0] for r in rows})
+    src_nodes = sorted({r[1] for r in rows})
+    nodes = (
+        [{"name": f"ip:{i}", "label": i, "type": "ip"} for i in ip_nodes]
+        + [{"name": f"src:{s}", "label": s, "type": "source"} for s in src_nodes]
+    )
+    links = [
+        {"source": f"ip:{r[0]}", "target": f"src:{r[1]}", "value": r[2]}
+        for r in rows
+    ]
+    return JSONResponse({"nodes": nodes, "links": links, "filter_ip": ip})
+
+
+@router.get("/api/geo")
+async def api_geo(ag_session: str | None = Cookie(None)):
+    """GeoMap feed: per-IP totals + lat/lon + per-source breakdown."""
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    from trace import _AGG_LOCK
+    with _AGG_LOCK:
+        per_ip: dict[str, dict[str, Any]] = {}
+        for (ip_, source), bucket in AGG.items():
+            slot = per_ip.setdefault(ip_, {"total": 0, "by_source": {}, "last_ts": ""})
+            slot["total"] += bucket["count"]
+            slot["by_source"][source] = slot["by_source"].get(source, 0) + bucket["count"]
+            if bucket["last_ts"] > slot["last_ts"]:
+                slot["last_ts"] = bucket["last_ts"]
+
+    # Resolve each IP. Already-cached lookups return synchronously; only the
+    # first sighting of a brand-new IP pays the lookup latency, and even that
+    # is bounded by geoip's 4 s timeout.
+    out = []
+    for ip_, slot in per_ip.items():
+        geo = await geoip.lookup(ip_)
+        out.append({
+            "ip": ip_,
+            "total": slot["total"],
+            "by_source": slot["by_source"],
+            "last_ts": slot["last_ts"],
+            "geo": geo,
+        })
+    # Largest first — the UI uses this for default sort and bubble sizing.
+    out.sort(key=lambda r: r["total"], reverse=True)
+    return JSONResponse({"rows": out, "geoip_source": "mmdb" if geoip._load_mmdb() else "ip-api"})
 
 
 @router.get("/api/logs/{container}")

@@ -63,6 +63,8 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-apigenie}
       ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:-}
+      # Admin GeoMap / Sankey
+      APIGENIE_AGG_CAP: ${APIGENIE_AGG_CAP:-5000}
       # Pub/Sub emulator
       PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
       GCP_PROJECT_ID: obs-test
