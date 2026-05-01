@@ -15,6 +15,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 
 from trace import AGG, REQUEST_TRACE
 import geoip
+import listeners as _listeners
 
 # ── Config ────────────────────────────────────────────────────────────────────
 ADMIN_USER   = os.environ.get("ADMIN_USERNAME", "admin")
@@ -516,6 +517,50 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
 .geo-side .ip-row:hover{color:var(--mist)}
 .geo-side .ip-row.active{color:var(--lilac);font-weight:600}
 .geo-side .pill{font-family:monospace;font-size:.72rem;color:rgba(224,170,255,.5)}
+/* Listeners */
+.listener-row{background:rgba(36,0,70,.4);border:1px solid rgba(199,125,255,.18);border-radius:10px;padding:14px 16px;margin-bottom:10px}
+.listener-row.disabled{opacity:.55}
+.listener-row .lr-head{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap}
+.listener-row .lr-name{font-weight:600;color:var(--mist);font-size:.95rem}
+.listener-row .lr-url{font-family:monospace;font-size:.78rem;color:rgba(224,170,255,.7);word-break:break-all;margin-top:4px}
+.listener-row .lr-meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.listener-row .pill{font-family:monospace;font-size:.7rem;background:rgba(123,44,191,.25);border:1px solid rgba(199,125,255,.25);border-radius:8px;padding:2px 8px;color:rgba(224,170,255,.85)}
+.listener-row .lr-actions{display:flex;gap:6px;flex-wrap:wrap}
+.listener-row .btn-danger{background:linear-gradient(135deg,#9c1a36,#c0392b);border:none}
+.listener-hits{margin-top:12px;background:rgba(0,0,0,.35);border-radius:8px;padding:10px;display:none;max-height:280px;overflow-y:auto;font-family:monospace;font-size:.75rem}
+.listener-hits.open{display:block}
+.listener-hits .hit-row{padding:4px 0;border-bottom:1px dashed rgba(199,125,255,.1);display:grid;grid-template-columns:130px 70px 70px 1fr;gap:8px;align-items:start}
+.listener-hits .hit-row:last-child{border-bottom:none}
+.listener-hits .h-status-2{color:#90ee90}.listener-hits .h-status-4{color:#ffb070}.listener-hits .h-status-5{color:#ff8080}
+/* Modal */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:100;padding:24px}
+.modal-overlay.hidden{display:none}
+.modal{background:#1a0033;border:1px solid rgba(199,125,255,.3);border-radius:14px;width:min(680px,100%);max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.6)}
+.modal-head{padding:16px 20px;border-bottom:1px solid rgba(199,125,255,.15);display:flex;justify-content:space-between;align-items:center}
+.modal-head h3{font-size:1rem;color:var(--mist)}
+.modal-head .close{background:none;border:none;color:rgba(224,170,255,.6);font-size:1.4rem;cursor:pointer;padding:0;width:auto;margin:0}
+.modal-head .close:hover{color:var(--mist);filter:none}
+.modal-body{padding:20px}
+.modal-foot{padding:14px 20px;border-top:1px solid rgba(199,125,255,.15);display:flex;justify-content:space-between;align-items:center;gap:8px}
+.modal-foot .left,.modal-foot .right{display:flex;gap:8px}
+/* Wizard steps */
+.wiz-steps{display:flex;gap:6px;margin-bottom:16px;font-size:.75rem;flex-wrap:wrap}
+.wiz-steps .step{flex:1;min-width:80px;padding:6px 8px;border-radius:6px;background:rgba(90,24,154,.15);border:1px solid rgba(199,125,255,.15);color:rgba(224,170,255,.55);text-align:center}
+.wiz-steps .step.active{background:rgba(123,44,191,.4);color:var(--mist);border-color:var(--lilac)}
+.wiz-steps .step.done{background:rgba(90,24,154,.3);color:rgba(224,170,255,.85)}
+.wiz-pane{display:none}.wiz-pane.active{display:block}
+.field{display:grid;grid-template-columns:170px 1fr;gap:12px;align-items:center;margin-bottom:12px}
+.field label{font-size:.82rem;color:rgba(224,170,255,.7)}
+.field .hint{grid-column:2;font-size:.72rem;color:rgba(224,170,255,.4);margin-top:-4px}
+.field input,.field select,.field textarea{width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.3);border-radius:8px;padding:7px 12px;color:var(--mist);font-family:inherit;font-size:.85rem;outline:none}
+.field input:focus,.field select:focus,.field textarea:focus{border-color:var(--lilac)}
+.snippet-tabs{display:flex;gap:6px;margin-bottom:10px}
+.snippet-tabs .stab{padding:6px 12px;border-radius:6px;cursor:pointer;background:rgba(90,24,154,.15);border:1px solid rgba(199,125,255,.15);color:rgba(224,170,255,.6);font-size:.78rem}
+.snippet-tabs .stab.active{background:rgba(123,44,191,.4);color:var(--mist);border-color:var(--lilac)}
+.snippet-pre{background:#000;border:1px solid rgba(199,125,255,.2);border-radius:8px;padding:12px;font-family:monospace;font-size:.78rem;color:#c8e6c9;max-height:50vh;overflow:auto;white-space:pre;line-height:1.45}
+.toast{position:fixed;bottom:24px;right:24px;background:rgba(90,24,154,.95);border:1px solid var(--lilac);border-radius:8px;padding:10px 16px;font-size:.85rem;color:var(--mist);box-shadow:0 8px 24px rgba(0,0,0,.5);z-index:200;animation:fadein .2s}
+.toast.error{background:rgba(120,30,40,.95);border-color:#ff6b6b}
+@keyframes fadein{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 </style>
 </head>
 <body>
@@ -526,6 +571,7 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
   <a class="nav-item active" onclick="showTab('requests', this)">📋 Requests</a>
   <a class="nav-item" onclick="showTab('flows', this); loadFlows()">🔀 Flows</a>
   <a class="nav-item" onclick="showTab('geo', this); loadGeo()">🌍 GeoMap</a>
+  <a class="nav-item" onclick="showTab('listeners', this); loadListeners()">🎯 Listeners</a>
   <a class="nav-item" onclick="showTab('logs', this)">📜 Container Logs</a>
   <span class="nav-section">Reference</span>
   <a class="nav-item" onclick="showTab('config', this)">🔧 Source Config</a>
@@ -597,6 +643,25 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
             <div id="geo-list"><p class="empty">Loading…</p></div>
           </aside>
         </div>
+      </div>
+    </div>
+
+    <!-- LISTENERS TAB -->
+    <div class="pane" id="pane-listeners">
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span>Custom HTTP listeners</span>
+          <span>
+            <button class="btn-sm" onclick="openWizard()">＋ New listener</button>
+            <button class="btn-sm" onclick="loadListeners()" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2);margin-left:6px">↺ Refresh</button>
+          </span>
+        </div>
+        <p style="font-size:.78rem;color:rgba(224,170,255,.55);margin-bottom:14px">
+          Define an HTTP endpoint a custom Observo SCol Lua source can poll. Pick one of four synthetic telemetry topics
+          (endpoint / identity / cloud / network) or upload a log file for time-shifted replay.
+          Design: <code>docs/CUSTOM_LISTENERS.md</code>.
+        </p>
+        <div id="listeners-list"><p class="empty">Loading…</p></div>
       </div>
     </div>
 
@@ -681,7 +746,7 @@ function showTab(tab, el) {
   document.getElementById('pane-' + tab).classList.add('active');
   if (el) el.classList.add('active');
   activeTab = tab;
-  const titles = {requests:'Request Inspector', flows:'Flow Sankey', geo:'Geo Distribution', logs:'Container Logs', config:'Source Config', settings:'Settings'};
+  const titles = {requests:'Request Inspector', flows:'Flow Sankey', geo:'Geo Distribution', listeners:'Custom Listeners', logs:'Container Logs', config:'Source Config', settings:'Settings'};
   // Resize viz canvases — ECharts can't measure a hidden element correctly,
   // so we trigger a resize when its pane becomes active.
   if (tab === 'flows' && window._sankey) window._sankey.resize();
@@ -1139,6 +1204,306 @@ function renderGeoSidebar(focusIp) {
   wrap.innerHTML = rows || '<p class="empty">No data.</p>';
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// Custom Listeners (Phase 3 UI) — see docs/CUSTOM_LISTENERS.md
+// ════════════════════════════════════════════════════════════════════════════
+
+let LISTENERS_CACHE = [];     // last fetch from /admin/api/listeners
+let WIZ_STATE = null;         // current wizard form state
+
+function toast(msg, isErr) {
+  const t = document.createElement('div');
+  t.className = 'toast' + (isErr ? ' error' : '');
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3000);
+}
+
+async function loadListeners() {
+  const wrap = document.getElementById('listeners-list');
+  wrap.innerHTML = '<p class="empty">Loading…</p>';
+  try {
+    const r = await fetch('/admin/api/listeners', {credentials:'same-origin'});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    LISTENERS_CACHE = d.listeners || [];
+    if (!LISTENERS_CACHE.length) {
+      wrap.innerHTML = '<p class="empty">No listeners yet. Click <b>＋ New listener</b> to create one.</p>';
+      return;
+    }
+    wrap.innerHTML = LISTENERS_CACHE.map(renderListenerRow).join('');
+  } catch (e) {
+    wrap.innerHTML = '<p class="empty">Failed to load listeners: ' + escHtml(String(e)) + '</p>';
+  }
+}
+
+function renderListenerRow(l) {
+  const id = escHtml(l.id);
+  const enabled = l.enabled !== false;
+  const last = l.last_hit_ts ? new Date(l.last_hit_ts).toLocaleString() : '—';
+  return `<div class="listener-row${enabled ? '' : ' disabled'}" id="lr-${id}">
+    <div class="lr-head">
+      <div>
+        <div class="lr-name">${escHtml(l.name || l.id)} <span class="pill">${id}</span></div>
+        <div class="lr-url">${escHtml(l.method)} ${escHtml(l.url)}</div>
+      </div>
+      <div class="lr-actions">
+        <button class="btn-sm" onclick="viewSnippet('${id}')">📋 Snippet</button>
+        <button class="btn-sm" onclick="toggleHits('${id}')">📜 Hits</button>
+        <button class="btn-sm" onclick="openWizard('${id}')">✏ Edit</button>
+        <button class="btn-sm" onclick="toggleEnabled('${id}', ${!enabled})" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2)">
+          ${enabled ? '⏸ Disable' : '▶ Enable'}
+        </button>
+        <button class="btn-sm btn-danger" onclick="deleteListener('${id}')">🗑 Delete</button>
+      </div>
+    </div>
+    <div class="lr-meta">
+      <span class="pill">auth: ${escHtml(l.auth_kind)}</span>
+      <span class="pill">codec: ${escHtml(l.codec)}</span>
+      <span class="pill">${escHtml(l.data_source)}</span>
+      <span class="pill">hits(mem): ${l.hit_count_mem || 0}</span>
+      <span class="pill">last: ${escHtml(last)}</span>
+    </div>
+    <div class="listener-hits" id="hits-${id}"></div>
+  </div>`;
+}
+
+async function toggleEnabled(id, target) {
+  try {
+    const r = await fetch('/admin/api/listeners/' + encodeURIComponent(id), {
+      method:'PATCH', credentials:'same-origin',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({enabled: target}),
+    });
+    if (!r.ok) throw new Error((await r.json()).error || 'HTTP ' + r.status);
+    toast(target ? 'Enabled' : 'Disabled');
+    loadListeners();
+  } catch (e) { toast('Toggle failed: ' + e, true); }
+}
+
+async function deleteListener(id) {
+  if (!confirm('Delete listener "' + id + '"? Config and hit log will be removed from disk.')) return;
+  try {
+    const r = await fetch('/admin/api/listeners/' + encodeURIComponent(id), {
+      method:'DELETE', credentials:'same-origin'});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    toast('Deleted');
+    loadListeners();
+  } catch (e) { toast('Delete failed: ' + e, true); }
+}
+
+async function toggleHits(id) {
+  const box = document.getElementById('hits-' + id);
+  if (!box) return;
+  if (box.classList.contains('open')) { box.classList.remove('open'); return; }
+  box.classList.add('open');
+  box.innerHTML = '<div style="color:rgba(224,170,255,.55)">Loading hits…</div>';
+  try {
+    const r = await fetch('/admin/api/listeners/' + encodeURIComponent(id) + '/hits',
+                          {credentials:'same-origin'});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    if (!d.hits || !d.hits.length) {
+      box.innerHTML = '<div style="color:rgba(224,170,255,.4)">No hits yet — point a collector at the URL above.</div>';
+      return;
+    }
+    box.innerHTML = d.hits.slice(0, 100).map(h => {
+      const cls = 'h-status-' + String(h.status).charAt(0);
+      const ts = h.ts ? new Date(h.ts).toLocaleTimeString() : '?';
+      return `<div class="hit-row">
+        <span style="color:rgba(224,170,255,.55)">${escHtml(ts)}</span>
+        <span class="${cls}">${h.status}</span>
+        <span style="color:rgba(224,170,255,.7)">${escHtml(h.method)}</span>
+        <span style="word-break:break-all">${escHtml(h.path)}${h.query ? '?' + escHtml(h.query) : ''}
+          <span class="pill" style="margin-left:6px">${escHtml(h.identity || 'anon')}</span>
+          <span class="pill">${h.duration_ms || 0}ms</span>
+          <span class="pill">${escHtml(h.client || '?')}</span>
+        </span>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    box.innerHTML = '<div style="color:#ff8080">Failed: ' + escHtml(String(e)) + '</div>';
+  }
+}
+
+// ── Wizard ────────────────────────────────────────────────────────────────────
+function openWizard(existingId) {
+  const editing = !!existingId;
+  let base;
+  if (editing) {
+    // Pull from cache, then refresh from backend for full payload (auth secrets etc.)
+    fetch('/admin/api/listeners/' + encodeURIComponent(existingId), {credentials:'same-origin'})
+      .then(r => r.ok ? r.json() : Promise.reject('HTTP ' + r.status))
+      .then(d => { _openWizardWith(d, true); })
+      .catch(e => toast('Could not load listener: ' + e, true));
+    return;
+  }
+  base = {
+    id: '', name: '', path: '/v1/events', method: 'GET', codec: 'json', enabled: true,
+    auth: {kind:'none'},
+    synthetic: {topic:'endpoint', rate_per_request:50, seed:null},
+    pagination: null, rate_limit: null, chaos: null,
+  };
+  _openWizardWith(base, false);
+}
+
+function _openWizardWith(state, editing) {
+  WIZ_STATE = state; WIZ_STATE._editing = editing;
+  document.getElementById('wiz-title').textContent = editing ? ('Edit listener — ' + state.id) : 'New listener';
+  // Fill step 1
+  const idIn = document.getElementById('wiz-id');
+  idIn.value = state.id || '';
+  idIn.disabled = !!editing;
+  document.getElementById('wiz-name').value = state.name || '';
+  document.getElementById('wiz-path').value = state.path || '/v1/events';
+  document.getElementById('wiz-method').value = state.method || 'GET';
+  // Step 2 (auth)
+  document.getElementById('wiz-auth-kind').value = (state.auth && state.auth.kind) || 'none';
+  document.getElementById('wiz-auth-token').value = (state.auth && state.auth.token) || '';
+  document.getElementById('wiz-auth-user').value  = (state.auth && state.auth.username) || '';
+  document.getElementById('wiz-auth-pass').value  = (state.auth && state.auth.password) || '';
+  document.getElementById('wiz-auth-apikey').value= (state.auth && state.auth.api_key) || '';
+  document.getElementById('wiz-auth-apikey-h').value=(state.auth && state.auth.api_key_header) || 'X-Api-Key';
+  // Step 3 (data source)
+  if (state.replay) {
+    toast('Replay editing is Phase 4 — only synthetic listeners can be edited in v1.', true);
+  }
+  const syn = state.synthetic || {topic:'endpoint', rate_per_request:50, seed:null};
+  document.getElementById('wiz-topic').value = syn.topic;
+  document.getElementById('wiz-rate').value  = syn.rate_per_request;
+  document.getElementById('wiz-seed').value  = syn.seed == null ? '' : syn.seed;
+  // Step 4 (behaviour)
+  document.getElementById('wiz-codec').value = state.codec || 'json';
+  document.getElementById('wiz-pag-kind').value = (state.pagination && state.pagination.kind) || 'none';
+  document.getElementById('wiz-pag-total').value = (state.pagination && state.pagination.total_pages) || 5;
+  document.getElementById('wiz-pag-size').value  = (state.pagination && state.pagination.page_size)   || 100;
+  document.getElementById('wiz-rl').value    = (state.rate_limit && state.rate_limit.every_n) || 0;
+  document.getElementById('wiz-chaos-n').value = (state.chaos && state.chaos.every_n) || 0;
+  document.getElementById('wiz-chaos-s').value = (state.chaos && state.chaos.status) || 503;
+  wizardStep(1);
+  document.getElementById('wiz-modal').classList.remove('hidden');
+}
+
+function closeWizard(){ document.getElementById('wiz-modal').classList.add('hidden'); WIZ_STATE = null; }
+
+function wizardStep(n) {
+  for (let i = 1; i <= 4; i++) {
+    const p = document.getElementById('wiz-pane-' + i);
+    const s = document.getElementById('wiz-step-' + i);
+    if (p) p.classList.toggle('active', i === n);
+    if (s) {
+      s.classList.toggle('active', i === n);
+      s.classList.toggle('done',   i <  n);
+    }
+  }
+  document.getElementById('wiz-prev').style.visibility = n === 1 ? 'hidden' : 'visible';
+  document.getElementById('wiz-next').textContent = n === 4 ? 'Save' : 'Next →';
+  WIZ_STATE._step = n;
+  // Show only the relevant auth field set
+  if (n === 2) _showAuthFields(document.getElementById('wiz-auth-kind').value);
+}
+
+function _showAuthFields(kind) {
+  ['none','basic','bearer','oauth2_cc','x_api_key'].forEach(k => {
+    const el = document.getElementById('wiz-auth-fields-' + k);
+    if (el) el.style.display = (k === kind) ? 'block' : 'none';
+  });
+}
+
+function wizardNext() {
+  const n = WIZ_STATE._step || 1;
+  if (n < 4) return wizardStep(n + 1);
+  return submitWizard();
+}
+
+function _collectWizard() {
+  const auth = {kind: document.getElementById('wiz-auth-kind').value};
+  if (auth.kind === 'basic')     { auth.username = document.getElementById('wiz-auth-user').value;
+                                   auth.password = document.getElementById('wiz-auth-pass').value; }
+  else if (auth.kind === 'bearer'){ auth.token   = document.getElementById('wiz-auth-token').value; }
+  else if (auth.kind === 'x_api_key'){ auth.api_key = document.getElementById('wiz-auth-apikey').value;
+                                       auth.api_key_header = document.getElementById('wiz-auth-apikey-h').value || 'X-Api-Key'; }
+  // oauth2_cc and none have no extra fields
+  const seedRaw = document.getElementById('wiz-seed').value.trim();
+  const synthetic = {
+    topic: document.getElementById('wiz-topic').value,
+    rate_per_request: parseInt(document.getElementById('wiz-rate').value) || 50,
+    seed: seedRaw === '' ? null : parseInt(seedRaw),
+  };
+  let pagination = null;
+  const pk = document.getElementById('wiz-pag-kind').value;
+  if (pk !== 'none') {
+    pagination = {
+      kind: pk,
+      total_pages: parseInt(document.getElementById('wiz-pag-total').value) || 5,
+      page_size:   parseInt(document.getElementById('wiz-pag-size').value)  || 100,
+    };
+  }
+  let rate_limit = null;
+  const rl = parseInt(document.getElementById('wiz-rl').value) || 0;
+  if (rl > 0) rate_limit = {every_n: rl};
+  let chaos = null;
+  const ch = parseInt(document.getElementById('wiz-chaos-n').value) || 0;
+  if (ch > 0) chaos = {every_n: ch, status: parseInt(document.getElementById('wiz-chaos-s').value) || 503};
+
+  return {
+    id:    document.getElementById('wiz-id').value.trim(),
+    name:  document.getElementById('wiz-name').value.trim() || document.getElementById('wiz-id').value.trim(),
+    path:  document.getElementById('wiz-path').value.trim(),
+    method: document.getElementById('wiz-method').value,
+    codec: document.getElementById('wiz-codec').value,
+    enabled: WIZ_STATE.enabled !== false,
+    auth, synthetic, pagination, rate_limit, chaos,
+  };
+}
+
+async function submitWizard() {
+  const editing = WIZ_STATE && WIZ_STATE._editing;
+  const body = _collectWizard();
+  // Keep the immutable id when editing
+  if (editing) body.id = WIZ_STATE.id;
+  const url = editing ? '/admin/api/listeners/' + encodeURIComponent(body.id) : '/admin/api/listeners';
+  const method = editing ? 'PATCH' : 'POST';
+  try {
+    const r = await fetch(url, {method, credentials:'same-origin',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    toast(editing ? 'Listener updated' : 'Listener created');
+    closeWizard(); loadListeners();
+  } catch (e) { toast('Save failed: ' + e, true); }
+}
+
+// ── Snippet dialog ────────────────────────────────────────────────────────────
+async function viewSnippet(id) {
+  const m = document.getElementById('snippet-modal');
+  document.getElementById('snip-title').textContent = 'Collector snippet — ' + id;
+  document.getElementById('snip-body').innerHTML = '<p class="empty">Loading…</p>';
+  m.classList.remove('hidden');
+  try {
+    const [lua, yaml] = await Promise.all([
+      fetch('/admin/api/listeners/' + encodeURIComponent(id) + '/snippet?lang=lua',  {credentials:'same-origin'}).then(r => r.text()),
+      fetch('/admin/api/listeners/' + encodeURIComponent(id) + '/snippet?lang=yaml', {credentials:'same-origin'}).then(r => r.text()),
+    ]);
+    document.getElementById('snip-body').innerHTML = `
+      <div class="snippet-tabs">
+        <span class="stab active" id="stab-lua"  onclick="snipShow('lua')">Lua script</span>
+        <span class="stab"        id="stab-yaml" onclick="snipShow('yaml')">Source YAML</span>
+      </div>
+      <pre class="snippet-pre" id="snip-lua">${escHtml(lua)}</pre>
+      <pre class="snippet-pre" id="snip-yaml" style="display:none">${escHtml(yaml)}</pre>`;
+  } catch (e) {
+    document.getElementById('snip-body').innerHTML = '<p class="empty">Failed: ' + escHtml(String(e)) + '</p>';
+  }
+}
+function snipShow(which) {
+  document.getElementById('snip-lua').style.display  = which === 'lua'  ? 'block' : 'none';
+  document.getElementById('snip-yaml').style.display = which === 'yaml' ? 'block' : 'none';
+  document.getElementById('stab-lua').classList.toggle('active',  which === 'lua');
+  document.getElementById('stab-yaml').classList.toggle('active', which === 'yaml');
+}
+function closeSnippet(){ document.getElementById('snippet-modal').classList.add('hidden'); }
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 buildChips('source-chips', selectSource);
 buildChips('cfg-chips', showConfig);
@@ -1149,7 +1514,138 @@ window.addEventListener('resize', () => {
   if (window._sankey) window._sankey.resize();
   if (window._geomap) window._geomap.resize();
 });
+// Wire wizard auth-kind dropdown to show the right fields.
+document.addEventListener('change', (e) => {
+  if (e.target && e.target.id === 'wiz-auth-kind') _showAuthFields(e.target.value);
+});
 </script>
+
+<!-- Wizard modal -->
+<div id="wiz-modal" class="modal-overlay hidden" onclick="if(event.target===this)closeWizard()">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 id="wiz-title">New listener</h3>
+      <button class="close" onclick="closeWizard()">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="wiz-steps">
+        <div class="step active" id="wiz-step-1">1 · Identity</div>
+        <div class="step"        id="wiz-step-2">2 · Auth</div>
+        <div class="step"        id="wiz-step-3">3 · Data</div>
+        <div class="step"        id="wiz-step-4">4 · Behaviour</div>
+      </div>
+
+      <div class="wiz-pane active" id="wiz-pane-1">
+        <div class="field"><label>ID</label><input id="wiz-id" placeholder="e.g. customer-edr" maxlength="32"/></div>
+        <div class="hint" style="grid-column:2;font-size:.7rem;margin-left:182px;margin-top:-8px;color:rgba(224,170,255,.4)">[a-z0-9][a-z0-9_-]&#123;1,30&#125; — used in the URL path</div>
+        <div class="field"><label>Display name</label><input id="wiz-name" placeholder="Human-readable label"/></div>
+        <div class="field"><label>Path</label><input id="wiz-path" placeholder="/v1/events"/></div>
+        <div class="field"><label>Method</label>
+          <select id="wiz-method"><option>GET</option><option>POST</option><option>PUT</option><option>DELETE</option><option>PATCH</option></select>
+        </div>
+      </div>
+
+      <div class="wiz-pane" id="wiz-pane-2">
+        <div class="field"><label>Auth kind</label>
+          <select id="wiz-auth-kind">
+            <option value="none">None (open)</option>
+            <option value="bearer">Bearer token</option>
+            <option value="basic">HTTP Basic</option>
+            <option value="oauth2_cc">OAuth2 client_credentials</option>
+            <option value="x_api_key">X-Api-Key header</option>
+          </select>
+        </div>
+        <div id="wiz-auth-fields-none" style="font-size:.78rem;color:rgba(224,170,255,.5)">No credentials required. Anyone can poll this listener.</div>
+        <div id="wiz-auth-fields-bearer" style="display:none">
+          <div class="field"><label>Token value</label><input id="wiz-auth-token" placeholder="any string the collector will send"/></div>
+          <div class="hint" style="grid-column:2">Header is <code>Authorization</code>, prefix is <code>Bearer </code>.</div>
+        </div>
+        <div id="wiz-auth-fields-basic" style="display:none">
+          <div class="field"><label>Username</label><input id="wiz-auth-user"/></div>
+          <div class="field"><label>Password</label><input id="wiz-auth-pass" type="password"/></div>
+        </div>
+        <div id="wiz-auth-fields-oauth2_cc" style="display:none;font-size:.78rem;color:rgba(224,170,255,.6);background:rgba(123,44,191,.15);border:1px solid rgba(199,125,255,.2);border-radius:8px;padding:10px">
+          The collector should POST to <code>/oauth2/v1/token</code> with any <code>client_id</code> &amp; <code>client_secret</code>.
+          The token endpoint returns <code>apigenie-fake-oauth-access-token</code>, which is then accepted as the Bearer for this listener.
+          See <code>docs/CUSTOM_LISTENERS.md</code> §6.
+        </div>
+        <div id="wiz-auth-fields-x_api_key" style="display:none">
+          <div class="field"><label>Header name</label><input id="wiz-auth-apikey-h" placeholder="X-Api-Key"/></div>
+          <div class="field"><label>Key value</label><input id="wiz-auth-apikey" placeholder="any string"/></div>
+        </div>
+      </div>
+
+      <div class="wiz-pane" id="wiz-pane-3">
+        <div class="field"><label>Synthetic topic</label>
+          <select id="wiz-topic">
+            <option value="endpoint">endpoint — EDR / process telemetry</option>
+            <option value="identity">identity — auth / SSO / IAM</option>
+            <option value="cloud">cloud — multi-cloud audit (AWS/Azure/GCP)</option>
+            <option value="network">network — Zeek-style flows</option>
+          </select>
+        </div>
+        <div class="field"><label>Records per call</label><input id="wiz-rate" type="number" min="1" max="10000" value="50"/></div>
+        <div class="field"><label>Seed (optional)</label><input id="wiz-seed" placeholder="leave empty for random" type="number"/></div>
+        <div class="hint" style="grid-column:2">Replay-from-file is <b>Phase 4</b>; not yet wired into the wizard.</div>
+      </div>
+
+      <div class="wiz-pane" id="wiz-pane-4">
+        <div class="field"><label>Codec</label>
+          <select id="wiz-codec">
+            <option value="json">application/json</option>
+            <option value="ndjson">application/x-ndjson</option>
+            <option value="syslog">RFC 3164 syslog (text/plain)</option>
+          </select>
+        </div>
+        <div class="hint" style="grid-column:2">v1 set. GELF / protobuf / Avro / VRL deferred to v2 — see docs §10.</div>
+
+        <div class="field"><label>Pagination</label>
+          <select id="wiz-pag-kind">
+            <option value="none">None (single response)</option>
+            <option value="cursor">Cursor (X-Next-Cursor)</option>
+            <option value="page">Page number (?page=N)</option>
+            <option value="since">Since timestamp (?since=…)</option>
+          </select>
+        </div>
+        <div class="field"><label>Total pages</label><input id="wiz-pag-total" type="number" min="1" max="100" value="5"/></div>
+        <div class="field"><label>Page size</label><input id="wiz-pag-size" type="number" min="1" max="10000" value="100"/></div>
+
+        <div class="field"><label>Rate-limit</label><input id="wiz-rl" type="number" min="0" value="0"/></div>
+        <div class="hint" style="grid-column:2">Every Nth request returns 429. 0 = disabled.</div>
+
+        <div class="field"><label>Chaos every N</label><input id="wiz-chaos-n" type="number" min="0" value="0"/></div>
+        <div class="field"><label>Chaos status code</label><input id="wiz-chaos-s" type="number" min="400" max="599" value="503"/></div>
+        <div class="hint" style="grid-column:2">For testing collector retry logic. 0 = disabled.</div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <div class="left">
+        <button class="btn-sm" id="wiz-prev" onclick="wizardStep((WIZ_STATE._step||1)-1)" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2)">← Back</button>
+      </div>
+      <div class="right">
+        <button class="btn-sm" onclick="closeWizard()" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2)">Cancel</button>
+        <button class="btn-sm" id="wiz-next" onclick="wizardNext()">Next →</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Snippet modal -->
+<div id="snippet-modal" class="modal-overlay hidden" onclick="if(event.target===this)closeSnippet()">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 id="snip-title">Collector snippet</h3>
+      <button class="close" onclick="closeSnippet()">×</button>
+    </div>
+    <div class="modal-body" id="snip-body"></div>
+    <div class="modal-foot">
+      <div class="left"></div>
+      <div class="right">
+        <button class="btn-sm" onclick="closeSnippet()">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
 </body>
 </html>"""
 
@@ -1522,3 +2018,303 @@ async def api_change_password(
         return JSONResponse({"error": f"Could not persist new hash: {exc}"}, status_code=500)
 
     return JSONResponse({"ok": True})
+
+
+# ── Custom Listeners — Phase 1 CRUD ───────────────────────────────────────────
+# Design: docs/CUSTOM_LISTENERS.md
+# All endpoints are session-cookie gated (same as the rest of /admin/api).
+
+def _listener_summary(listener: "_listeners.Listener") -> dict[str, Any]:
+    """Compact representation for the listings endpoint."""
+    hits = _listeners.LISTENER_HITS.get(listener.id)
+    last_ts = hits[0]["ts"] if hits and len(hits) > 0 else None
+    return {
+        "id": listener.id,
+        "name": listener.name,
+        "path": listener.path,
+        "method": listener.method,
+        "codec": listener.codec,
+        "enabled": listener.enabled,
+        "auth_kind": listener.auth.kind,
+        "data_source": (
+            f"synthetic:{listener.synthetic.topic}" if listener.synthetic
+            else (f"replay:{listener.replay.file_id}" if listener.replay else "?")
+        ),
+        "url": f"https://{DOMAIN}/listener/{listener.id}{listener.path}",
+        "hit_count_mem": len(hits) if hits is not None else 0,
+        "last_hit_ts": last_ts,
+        "created_at": listener.created_at,
+    }
+
+
+@router.get("/api/listeners")
+async def api_listeners_list(ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return JSONResponse({
+        "listeners": [_listener_summary(l) for l in _listeners.LISTENERS.values()],
+        "limits": {
+            "hits_mem_cap": _listeners.HITS_MEM_CAP,
+            "hits_disk_cap": _listeners.HITS_DISK_CAP,
+            "allowed_codecs_v1": sorted(_listeners.ALLOWED_CODECS_V1),
+            "allowed_auth_kinds": sorted(_listeners.ALLOWED_AUTH_KINDS),
+        },
+    })
+
+
+@router.post("/api/listeners")
+async def api_listeners_create(request: Request, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        return JSONResponse({"error": f"invalid JSON body: {exc}"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+
+    ok, err = _listeners.validate_listener_payload(payload)
+    if not ok:
+        return JSONResponse({"error": err}, status_code=400)
+    if payload["id"] in _listeners.LISTENERS:
+        return JSONResponse({"error": f"listener id '{payload['id']}' already exists"}, status_code=409)
+
+    try:
+        listener = _listeners.Listener.from_dict(payload)
+        _listeners.save(listener)
+    except Exception as exc:
+        return JSONResponse({"error": f"could not save: {exc}"}, status_code=500)
+    return JSONResponse(_listener_summary(listener), status_code=201)
+
+
+@router.get("/api/listeners/{lid}")
+async def api_listeners_get(lid: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    listener = _listeners.LISTENERS.get(lid)
+    if not listener:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return JSONResponse(listener.to_dict())
+
+
+@router.patch("/api/listeners/{lid}")
+async def api_listeners_patch(lid: str, request: Request, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    listener = _listeners.LISTENERS.get(lid)
+    if not listener:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    try:
+        patch = await request.json()
+    except Exception as exc:
+        return JSONResponse({"error": f"invalid JSON body: {exc}"}, status_code=400)
+    if not isinstance(patch, dict):
+        return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+
+    merged = listener.to_dict()
+    # Shallow merge for top-level scalars; nested dicts overwrite wholesale.
+    for k, v in patch.items():
+        if k == "id":
+            continue  # immutable
+        merged[k] = v
+
+    ok, err = _listeners.validate_listener_payload(merged)
+    if not ok:
+        return JSONResponse({"error": err}, status_code=400)
+    try:
+        new_listener = _listeners.Listener.from_dict(merged)
+        _listeners.save(new_listener)
+    except Exception as exc:
+        return JSONResponse({"error": f"could not save: {exc}"}, status_code=500)
+    return JSONResponse(_listener_summary(new_listener))
+
+
+@router.delete("/api/listeners/{lid}")
+async def api_listeners_delete(lid: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if lid not in _listeners.LISTENERS:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    _listeners.delete(lid)
+    return JSONResponse({"ok": True, "id": lid})
+
+
+@router.get("/api/listeners/{lid}/hits")
+async def api_listeners_hits(lid: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if lid not in _listeners.LISTENERS:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    hits = list(_listeners.LISTENER_HITS.get(lid, []))
+    return JSONResponse({"hits": hits, "count": len(hits)})
+
+
+@router.delete("/api/listeners/{lid}/hits")
+async def api_listeners_hits_clear(lid: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if lid not in _listeners.LISTENERS:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    _listeners.clear_hits(lid)
+    return JSONResponse({"ok": True, "id": lid})
+
+
+# ── Snippet generator ────────────────────────────────────────────────────────
+# Returns a Lua source script (lang=lua) or the matching Observo SCol source
+# YAML stanza (lang=yaml). Pure templating — no third-party deps.
+
+def _snippet_lua(l: "_listeners.Listener", base_url: str) -> str:
+    full_url = f"{base_url}/listener/{l.id}{l.path}"
+    auth_block = ""
+    if l.auth.kind == "bearer":
+        auth_block = (
+            "  -- Bearer auth: token configured on the listener\n"
+            f'  local token = "{l.auth.token or ""}"\n'
+            '  local resp, err = http.fetch(url, { headers = { ["Authorization"] = "Bearer " .. token } })\n'
+        )
+    elif l.auth.kind == "basic":
+        auth_block = (
+            f'  local user, pass = "{l.auth.username or ""}", "{l.auth.password or ""}"\n'
+            '  local resp, err = http.fetch(url, { auth = { kind = "basic", username = user, password = pass } })\n'
+        )
+    elif l.auth.kind == "x_api_key":
+        hdr = l.auth.api_key_header or "X-Api-Key"
+        auth_block = (
+            f'  local resp, err = http.fetch(url, {{ headers = {{ ["{hdr}"] = "{l.auth.api_key or ""}" }} }})\n'
+        )
+    elif l.auth.kind == "oauth2_cc":
+        auth_block = (
+            "  -- OAuth2 client_credentials: SCol's auth handler will mint the token\n"
+            "  -- for you. Configure auth.kind=oauth2_cc in the source YAML.\n"
+            "  local resp, err = http.fetch(url)\n"
+        )
+    else:
+        auth_block = "  local resp, err = http.fetch(url)\n"
+
+    pag_block = "  -- (no pagination configured — fetch returns one shot)\n"
+    if l.pagination is not None:
+        if l.pagination.kind == "cursor":
+            pag_block = (
+                "  -- Cursor pagination: re-call until X-Next-Cursor is absent\n"
+                '  local cursor = state.get("cursor", "")\n'
+                '  if cursor ~= "" then url = url .. "?cursor=" .. cursor end\n'
+                "  -- after fetch:\n"
+                '  -- state.set("cursor", resp.headers["X-Next-Cursor"] or "")\n'
+            )
+        elif l.pagination.kind == "page":
+            pag_block = (
+                "  -- Page-number pagination: increment ?page until next_page absent\n"
+                '  local page = tonumber(state.get("page", "0")) or 0\n'
+                '  url = url .. "?page=" .. tostring(page)\n'
+                "  -- after decode: if body.next_page then state.set('page', body.next_page) end\n"
+            )
+        elif l.pagination.kind == "since":
+            pag_block = (
+                "  -- Since-timestamp pagination: feed the last seen ts back as ?since=\n"
+                '  local since = state.get("since", "")\n'
+                '  if since ~= "" then url = url .. "?since=" .. since end\n'
+                "  -- after decode: state.set('since', body.next_since)\n"
+            )
+
+    return (
+        f"-- Auto-generated by ApiGenie — listener id={l.id}\n"
+        f"-- Endpoint: {full_url}\n"
+        f"-- Codec: {l.codec}\n"
+        "\n"
+        "function on_trigger()\n"
+        f'  local url = "{full_url}"\n'
+        f"{pag_block}"
+        f"{auth_block}"
+        "  if err ~= nil then\n"
+        '    log.warn("fetch failed: " .. tostring(err))\n'
+        "    return\n"
+        "  end\n"
+        "  -- Decode according to listener codec; here for JSON:\n"
+        "  local body, derr = json.decode(resp.body)\n"
+        "  if derr ~= nil then return end\n"
+        f"  for _, rec in ipairs(body.records or {{}}) do\n"
+        "    emit(rec)\n"
+        "  end\n"
+        "end\n"
+    )
+
+
+def _snippet_yaml(l: "_listeners.Listener", base_url: str) -> str:
+    full_url = f"{base_url}/listener/{l.id}{l.path}"
+    auth_yaml = ""
+    if l.auth.kind == "bearer":
+        auth_yaml = (
+            "    auth:\n"
+            "      kind: bearer\n"
+            f"      token: {l.auth.token or ''}\n"
+        )
+    elif l.auth.kind == "basic":
+        auth_yaml = (
+            "    auth:\n"
+            "      kind: basic\n"
+            f"      username: {l.auth.username or ''}\n"
+            f"      password: {l.auth.password or ''}\n"
+        )
+    elif l.auth.kind == "x_api_key":
+        auth_yaml = (
+            "    auth:\n"
+            "      kind: header\n"
+            f"      header: {l.auth.api_key_header or 'X-Api-Key'}\n"
+            f"      value: {l.auth.api_key or ''}\n"
+        )
+    elif l.auth.kind == "oauth2_cc":
+        auth_yaml = (
+            "    auth:\n"
+            "      kind: oauth2_cc\n"
+            f"      token_url: {base_url}/oauth2/v1/token\n"
+            "      client_id: any-string-accepted\n"
+            "      client_secret: any-string-accepted\n"
+        )
+    else:
+        auth_yaml = "    # auth: none\n"
+
+    decoder = {
+        "json":   "json",
+        "ndjson": "json_lines",
+        "syslog": "syslog",
+    }.get(l.codec, "json")
+
+    return (
+        f"# Observo SCol source stanza generated by ApiGenie for listener id={l.id}\n"
+        f"# Paste under your dataplane's `sources:` block.\n"
+        "\n"
+        f"sources:\n"
+        f"  apigenie_{l.id.replace('-','_')}:\n"
+        f"    type: scol\n"
+        f"    script: ./scripts/{l.id}.lua    # the Lua script tab\n"
+        f"    interval_seconds: 30\n"
+        f"    http_cfgs:\n"
+        f"      default:\n"
+        f"        url: {full_url}\n"
+        f"        method: {l.method}\n"
+        f"{auth_yaml}"
+        f"        tls:\n"
+        f"          verify: false   # ApiGenie self-signed in lab — set true for letsencrypt\n"
+        f"    decoders:\n"
+        f"      default:\n"
+        f"        decoding: {decoder}\n"
+    )
+
+
+@router.get("/api/listeners/{lid}/snippet")
+async def api_listeners_snippet(
+    lid: str,
+    lang: str = "lua",
+    ag_session: str | None = Cookie(None),
+):
+    if not _valid(ag_session):
+        return Response("unauthorized", status_code=401, media_type="text/plain")
+    listener = _listeners.LISTENERS.get(lid)
+    if not listener:
+        return Response("not_found", status_code=404, media_type="text/plain")
+    base_url = f"https://{DOMAIN}"
+    if lang == "yaml":
+        body = _snippet_yaml(listener, base_url)
+    else:
+        body = _snippet_lua(listener, base_url)
+    return Response(body, media_type="text/plain; charset=utf-8")
