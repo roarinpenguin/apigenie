@@ -57,7 +57,7 @@ _SOURCE_PATTERNS: list[tuple[str, list[str]]] = [
 # Skip the admin UI itself (login/logout/dashboard/admin API) but NOT Cisco Duo,
 # which legitimately lives under /admin/v1/... and /admin/v2/... .
 _SKIP_EXACT = {"/admin", "/admin/"}
-_SKIP_PREFIXES = ("/admin/login", "/admin/logout", "/admin/api/", "/health", "/docs", "/openapi")
+_SKIP_PREFIXES = ("/admin/login", "/admin/logout", "/admin/api/", "/health", "/docs", "/openapi", "/listener/")
 
 
 def get_source(path: str) -> str | None:

@@ -208,6 +208,7 @@ The **Settings** tab (under *System*) exposes:
 | **Flows** | Sankey diagram of source IPs (left) → log-source names (right) with click-to-filter per IP and a min-volume slider |
 | **GeoMap** | World map with one bubble per source IP (size ∝ volume); click a bubble to drill down into its per-source breakdown |
 | **Container logs** | Tail logs of any container in the stack via `docker logs --follow` (apigenie, nginx, kafka, zookeeper, pubsub-emulator) |
+| **🎯 Listeners** *(planned)* | Stand up a custom HTTP endpoint on the fly to test a hand-rolled SCol Lua source — synthetic data across four telemetry topics (endpoint / identity / cloud / network) or replay an uploaded log file with a configurable time anchor. Design: [`docs/CUSTOM_LISTENERS.md`](docs/CUSTOM_LISTENERS.md) |
 
 ### GeoMap data source
 
@@ -330,7 +331,8 @@ apigenie/
 ├── app.py                    # FastAPI app: 14 source routes, OAuth2, fake Google token endpoint
 ├── admin.py                  # Admin UI router (/admin/*) + source reference cards + SA JSON generator
 ├── auth.py                   # Bearer / Basic / X-ApiKeys / Duo HMAC dependency injectors
-├── trace.py                  # Request-tracing middleware → REQUEST_TRACE deque per source
+├── trace.py                  # Request-tracing middleware → REQUEST_TRACE deque + AGG (client_ip × source) LRU
+├── geoip.py                  # Hybrid GeoIP resolver: MaxMind .mmdb if present, else ip-api.com
 ├── state.py                  # Thread-safe Tenable export cache (TTL eviction)
 ├── generators.py             # Random-data helpers (UUID, IP, hostname, weighted choice)
 ├── nginx/
@@ -345,7 +347,16 @@ apigenie/
 ├── publishers/
 │   ├── kafka_publisher.py    # Background thread → Kafka topic azure-platform-logs
 │   └── pubsub_publisher.py   # Background thread → Pub/Sub topic audit-logs
-├── docker-compose.yaml       # nginx, apigenie, zookeeper, kafka-cert-init, kafka, pubsub-emulator, pubsub-emulator-seed
+├── scripts/
+│   ├── bootstrap.sh          # Interactive first-run: domain, admin pwd, TLS mode, optional MaxMind key
+│   ├── gen-self-signed.sh    # Generate a self-signed cert for ./certs/<domain>/
+│   ├── migrate-certs.sh      # Move existing Let's Encrypt material into ./certs/<domain>/
+│   ├── refresh-geoip.sh      # Download/update GeoLite2-City.mmdb (cron-safe, atomic)
+│   ├── hash_password.py      # PBKDF2-SHA256 hasher used by bootstrap to set ADMIN_PASSWORD_HASH
+│   ├── seed-fake-traffic.sh  # Generate X-Forwarded-For-spoofed traffic for Flows/GeoMap demos
+│   ├── smoke-test.sh         # 28-check regression suite (functional + admin endpoints)
+│   └── admin-screenshot.py   # Headless-Chrome driver: screenshot /admin tabs + dump console
+├── docker-compose.yaml       # nginx, apigenie, zookeeper, kafka-cert-init, kafka, pubsub-emulator, pubsub-emulator-seed, certbot
 ├── Dockerfile                # python:3.13-slim + uv + docker-cli (for admin log streaming)
 ├── pyproject.toml
 └── assets/
@@ -360,9 +371,18 @@ apigenie/
 |----------|---------|-------------|
 | `LOG_LEVEL` | `INFO` | Uvicorn / app log level |
 | `PUBLISHERS_ENABLED` | `true` | Enable background Kafka + Pub/Sub publishers |
+| `APIGENIE_DOMAIN` | `apigenie.example.com` | Public hostname — drives nginx server names, cert paths, Kafka advertised listener |
+| `APIGENIE_TLS_MODE` | `self-signed` | One of `self-signed`, `letsencrypt`, `existing` (set by bootstrap) |
+| `APIGENIE_TLS_EMAIL` |  | Contact email for Let's Encrypt registration (only when `APIGENIE_TLS_MODE=letsencrypt`) |
+| `APIGENIE_KAFKA_ADVERTISED_HOST` | = `APIGENIE_DOMAIN` | Override the Kafka SASL_SSL advertised host if it differs from the API hostname |
 | `ADMIN_USERNAME` | `admin` | Admin UI login |
-| `ADMIN_PASSWORD` | `apigenie` | Admin UI password |
-| `PUBLIC_HOSTNAME` | `apigenie.roarinpenguin.com` | Used by Kafka advertised listeners and the cert-init script |
+| `ADMIN_PASSWORD` | `apigenie` | First-boot fallback admin password (only used if no hash is set) |
+| `ADMIN_PASSWORD_HASH` |  | PBKDF2-HMAC-SHA256 hash (600k iterations); takes precedence over `ADMIN_PASSWORD` |
+| `MAXMIND_LICENSE_KEY` |  | Free MaxMind key — when set, bootstrap downloads `GeoLite2-City.mmdb` for offline GeoMap lookups |
+| `APIGENIE_AGG_CAP` | `5000` | Max distinct (client_ip, source) pairs the Flows/GeoMap aggregator retains (LRU eviction) |
+| `APIGENIE_LISTENER_HITS_CAP` | `200` | Per-listener in-memory ring buffer for the live trace pane *(custom Listeners feature)* |
+| `APIGENIE_LISTENER_HITS_DISK_CAP` | `5000` | Per-listener on-disk hit log line cap before rotation *(custom Listeners feature)* |
+| `APIGENIE_REPLAY_MAX_MB` | `100` | Hard cap (MB) on a single replay-mode log file upload *(custom Listeners feature, Phase 4)* |
 | `PUBSUB_EMULATOR_HOST` | `pubsub-emulator:8085` | Pub/Sub emulator (in-Docker) |
 | `GCP_PROJECT_ID` | `obs-test` | Pub/Sub project |
 | `PUBSUB_TOPIC_ID` | `audit-logs` | Pub/Sub topic |

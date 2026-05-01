@@ -7,15 +7,18 @@ can connect without any URL rewriting.
 import logging
 import os
 import random
+import time as _time
 from contextlib import asynccontextmanager
+from datetime import datetime as _dt, timezone as _tz
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from admin import router as admin_router
 from auth import BearerAuth, BasicAuth, DuoAuth, XApiKeysAuth
 from trace import TraceMiddleware
+import listeners as _listeners
 from state import (
     tenable_export_exists,
     tenable_get_chunks,
@@ -697,3 +700,80 @@ async def darktrace_devices(
          "score": round(random.uniform(0.0, 1.0), 3)}
         for i in range(1, min(count, 50) + 1)
     ]
+
+
+# =============================================================================
+# Custom Listeners — Phase 1 dispatcher
+# See docs/CUSTOM_LISTENERS.md
+#
+# A single catch-all route handles ALL configured listeners. We resolve the
+# config from the in-memory LISTENERS dict, run auth + chaos + rate-limit,
+# record the hit, and return a stub response. TraceMiddleware skips this
+# prefix (listener traffic has its own per-listener trace pane in admin).
+# =============================================================================
+
+@app.api_route(
+    "/listener/{lid}/{rest:path}",
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"],
+)
+async def listener_dispatch(lid: str, rest: str, request: Request):
+    listener = _listeners.LISTENERS.get(lid)
+    t0 = _time.monotonic()
+    body_bytes = await request.body()
+    body_str = body_bytes.decode("utf-8", errors="replace") if body_bytes else ""
+
+    # Helper: record + return. Centralised so every code path emits a hit.
+    def _finish(status: int, body: Any, content_type: str,
+                identity: str = "anon", extra_headers: dict[str, str] | None = None):
+        ts_iso = _dt.now(_tz.utc).isoformat(timespec="seconds")
+        duration_ms = int((_time.monotonic() - t0) * 1000)
+        client_ip = request.client.host if request.client else "?"
+        # Prefer X-Forwarded-For if nginx forwarded one
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            client_ip = xff.split(",", 1)[0].strip() or client_ip
+        if listener is not None:
+            entry = _listeners.make_hit(
+                ts=ts_iso, method=request.method, path="/" + rest,
+                query=str(request.query_params) if request.query_params else "",
+                client=client_ip, status=status, identity=identity,
+                headers=dict(request.headers), body=body_str,
+                duration_ms=duration_ms,
+            )
+            _listeners.record_hit(lid, entry)
+        if isinstance(body, str):
+            resp = PlainTextResponse(body, status_code=status, media_type=content_type)
+        else:
+            resp = JSONResponse(body, status_code=status, media_type=content_type)
+        if extra_headers:
+            for k, v in extra_headers.items():
+                resp.headers[k] = v
+        return resp
+
+    if listener is None or not listener.enabled:
+        return _finish(404, {"error": "listener_not_found", "id": lid}, "application/json")
+
+    # Path/method match. The configured listener.path is treated as the prefix
+    # under /listener/<id>/...
+    expected = listener.path.lstrip("/")
+    if rest != expected and not rest.startswith(expected + "/"):
+        return _finish(404, {
+            "error": "path_mismatch", "expected": "/" + expected, "got": "/" + rest,
+        }, "application/json")
+    if request.method != listener.method and request.method != "HEAD":
+        return _finish(405, {
+            "error": "method_not_allowed", "expected": listener.method, "got": request.method,
+        }, "application/json")
+
+    # Auth
+    ok, identity = _listeners.check_auth(listener.auth, dict(request.headers))
+    if not ok:
+        return _finish(401, {"error": "unauthorized", "reason": identity}, "application/json", identity)
+
+    # Rate-limit / chaos
+    injected = _listeners.maybe_inject_status(listener)
+    if injected is not None:
+        return _finish(injected, {"error": "injected", "status": injected}, "application/json", identity)
+
+    body, ctype, extra = _listeners.build_response(listener, dict(request.query_params))
+    return _finish(200, body, ctype, identity, extra)
