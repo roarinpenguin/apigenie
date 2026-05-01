@@ -1,6 +1,6 @@
 # Custom Listeners — Design Doc
 
-> **Status:** *planned, not yet implemented.* This document captures the agreed design for the upcoming feature so we can implement it in slices without re-litigating the shape every time.
+> **Status:** ✅ **implemented** — all four phases (backbone, synthetic topics, admin UI, replay engine) are complete and verified by `scripts/smoke-test.sh`. This document is preserved as the design-of-record (rationale, deferred items, env-var table) for future revisits and onboarding. See §11 for the per-phase shipped summary.
 
 ## 1. Goal
 
@@ -248,17 +248,17 @@ class Replay:
 
 Each phase is a self-contained, mergeable slice with a smoke-test extension and (where applicable) a screenshot driver entry.
 
-1. **Phase 1 — backbone**
+1. **Phase 1 — backbone** ✅ shipped
    `listeners.py` data model + persistence, CRUD admin endpoints, dynamic FastAPI router for `/listener/{id}/{rest:path}`, auth dispatcher, persistent hit recorder. **No UI yet.** Verifiable with `curl`.
 
-2. **Phase 2 — synthetic topics**
-   Four generator modules under `sources/synthetic/`, wired into the dispatcher. `scripts/smoke-test.sh` extended to cover each topic.
+2. **Phase 2 — synthetic topics** ✅ shipped
+   Four generator modules under `sources/synthetic/` (endpoint, identity, cloud, network) wired into the dispatcher with seedable determinism. Codecs json / ndjson / syslog. Pagination cursor / page / since.
 
-3. **Phase 3 — admin UI**
-   Listeners tab, 4-step wizard, edit/delete flow, live trace pane, snippet generator. `scripts/admin-screenshot.py` extended to capture the new tab.
+3. **Phase 3 — admin UI** ✅ shipped
+   Listeners tab, 4-step wizard, edit/delete flow, inline live-trace pane, snippet generator (Lua + Observo SCol YAML).
 
-4. **Phase 4 — replay**
-   Upload endpoint, replay engine, time-shift, format autodetection, wizard integration.
+4. **Phase 4 — replay** ✅ shipped
+   `replay.py` module with on-disk storage at `./data/replays/<file_id>/{meta.json, blob}`, lazy parsers for json (single array) / jsonl / csv / syslog (RFC 3164 + 5424) / cef, time-shift streaming with three anchor modes (`now` / `offset` / `fixed`) preserving original record spread, admin REST endpoints (`POST/GET/DELETE /admin/api/replays`, `GET /preview`), wizard step 3 synthetic↔replay toggle, file-upload modal, manage-uploads panel. Delete-while-in-use returns 409 to prevent dangling references. The dispatcher applies pagination over the lazy stream the same way it does for synthetic topics, with `total_pages` derived from `meta.line_count` rather than the listener's static spec.
 
 ## 12. New environment variables
 
@@ -268,7 +268,7 @@ Each phase is a self-contained, mergeable slice with a smoke-test extension and 
 | `APIGENIE_LISTENER_HITS_DISK_CAP` | `5000` | Max lines kept in `./data/listeners/<id>.hits.jsonl` before rotation |
 | `APIGENIE_REPLAY_MAX_MB` | `100` | Per-file upload cap for replay sources |
 
-These get added to `.env.example` and the README env-var table when Phase 1 lands.
+These are present in `.env.example` and the README env-var table.
 
 ## 13. Open / revisit-later items
 

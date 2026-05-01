@@ -29,6 +29,19 @@ chk "/admin/api/cert"               200 "$(curl -sk -b $C https://localhost/admi
 chk "/admin/gcp-sa.json"            200 "$(curl -sk -b $C https://localhost/admin/gcp-sa.json -o /dev/null -w '%{http_code}')"
 chk "/admin/ dashboard renders"     200 "$(curl -sk -b $C https://localhost/admin/ -o /tmp/dash.html -w '%{http_code}')"
 chk_min "dashboard size"          40000 "$(wc -c </tmp/dash.html | tr -d ' ')"
+# Catch JS syntax errors in the inline <script> blob early — these otherwise
+# manifest as a cosmetically-rendered but completely non-interactive admin UI.
+# Skipped gracefully when node isn't on the host.
+if command -v node >/dev/null 2>&1; then
+  python3 -c "
+import re; h=open('/tmp/dash.html').read()
+scripts=re.findall(r'<script[^>]*>(.*?)</script>', h, re.DOTALL)
+open('/tmp/dash.js','w').write(max(scripts, key=len) if scripts else '')
+"
+  chk "dashboard JS parses (node --check)" 0 "$(node --check /tmp/dash.js >/dev/null 2>&1; echo $?)"
+else
+  echo "  · skipping JS parse check (node not installed)"
+fi
 
 echo "── New admin endpoints"
 chk "/admin/api/flows"              200 "$(curl -sk -b $C https://localhost/admin/api/flows -o /tmp/flows.json -w '%{http_code}')"
@@ -206,6 +219,176 @@ chk_min "page=1 NO next_page"     1 "$(curl -sk "https://localhost/listener/$LP/
 for L in p2-endpoint-$$ p2-identity-$$ p2-cloud-$$ p2-network-$$ $LN $LS $LC $LP; do
   curl -sk -b $C -X DELETE "https://localhost/admin/api/listeners/$L" >/dev/null
 done
+
+echo "── Custom Listeners Phase 4 (replay engine + uploads)"
+# UI markup checks (added at the dashboard level)
+chk_min "wizard data-source toggle"     1 "$(grep -c 'wiz-ds-kind' /tmp/dash.html)"
+chk_min "Replay upload modal"           1 "$(grep -c 'id=.replay-upload-modal.' /tmp/dash.html)"
+chk_min "Manage uploads modal"          1 "$(grep -c 'id=.manage-uploads-modal.' /tmp/dash.html)"
+chk_min "loadReplayDropdown function"   1 "$(grep -c 'async function loadReplayDropdown' /tmp/dash.html)"
+chk_min "submitReplayUpload function"   1 "$(grep -c 'async function submitReplayUpload' /tmp/dash.html)"
+
+# Auth gate
+chk "/admin/api/replays w/o cookie"   401 "$(curl -sk https://localhost/admin/api/replays -o /dev/null -w '%{http_code}')"
+chk "POST /admin/api/replays w/o cookie" 401 "$(curl -sk -X POST -F file=@/etc/hosts https://localhost/admin/api/replays -o /dev/null -w '%{http_code}')"
+
+# Empty list initially (well — list is non-empty across reruns; assert the call works)
+chk "GET /admin/api/replays"          200 "$(curl -sk -b $C https://localhost/admin/api/replays -o /tmp/replays.json -w '%{http_code}')"
+chk_min "max_mb in response"            1 "$(python3 -c 'import json; d=json.load(open("/tmp/replays.json")); print(1 if d.get("max_mb",0)>=1 else 0)')"
+
+# Build five tiny fixture files on the fly and upload each.
+TMPDIR=$(mktemp -d)
+cat > "$TMPDIR/edr.jsonl" <<JSONL
+{"timestamp":"2026-01-01T10:00:00Z","host":"a","action":"login"}
+{"timestamp":"2026-01-01T10:00:30Z","host":"b","action":"logout"}
+{"timestamp":"2026-01-01T10:01:00Z","host":"c","action":"login"}
+JSONL
+cat > "$TMPDIR/dump.json" <<JSON
+[{"timestamp":"2026-01-01T10:00:00Z","x":1},{"timestamp":"2026-01-01T10:00:10Z","x":2}]
+JSON
+cat > "$TMPDIR/audit.csv" <<CSV
+timestamp,user,action
+2026-01-01T10:00:00Z,alice,login
+2026-01-01T10:00:30Z,bob,logout
+CSV
+cat > "$TMPDIR/syslog.log" <<SYSLOG
+<165>1 2026-01-01T10:00:00Z host1 app1 1234 ID47 - msg-one
+<165>1 2026-01-01T10:00:30Z host1 app1 1234 ID48 - msg-two
+SYSLOG
+cat > "$TMPDIR/events.cef" <<CEF
+CEF:0|Vendor|Product|1.0|sig1|Name1|3|src=1.2.3.4 rt=1735725600000 act=login
+CEF:0|Vendor|Product|1.0|sig2|Name2|3|src=1.2.3.5 rt=1735725660000 act=logout
+CEF
+
+upload_replay() {
+  local file=$1; local fmt=$2; local tsf=$3
+  local args=(-X POST -F "file=@$file")
+  if [ -n "$fmt" ]; then args+=(-F "fmt=$fmt"); fi
+  if [ -n "$tsf" ]; then args+=(-F "timestamp_field=$tsf"); fi
+  curl -sk -b $C "${args[@]}" https://localhost/admin/api/replays
+}
+
+# Upload each format and capture the file_id
+JSONL_RES=$(upload_replay "$TMPDIR/edr.jsonl" "" "")
+JSONL_ID=$(echo "$JSONL_RES" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("file_id",""))')
+JSONL_FMT=$(echo "$JSONL_RES" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("format",""))')
+JSONL_LC=$(echo "$JSONL_RES" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("line_count",0))')
+chk     "upload jsonl auto-detect (got fmt=$JSONL_FMT)" jsonl "$JSONL_FMT"
+chk     "jsonl line_count"            3 "$JSONL_LC"
+
+JSON_RES=$(upload_replay "$TMPDIR/dump.json" "" "")
+JSON_ID=$(echo "$JSON_RES" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("file_id",""))')
+JSON_FMT=$(echo "$JSON_RES" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("format",""))')
+chk     "upload json (array) auto-detect" json "$JSON_FMT"
+
+CSV_RES=$(upload_replay "$TMPDIR/audit.csv" "" "")
+CSV_ID=$(echo "$CSV_RES" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("file_id",""))')
+CSV_FMT=$(echo "$CSV_RES" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("format",""))')
+chk     "upload csv auto-detect"      csv "$CSV_FMT"
+
+SYS_RES=$(upload_replay "$TMPDIR/syslog.log" "syslog" "")
+SYS_ID=$(echo "$SYS_RES" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("file_id",""))')
+SYS_FMT=$(echo "$SYS_RES" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("format",""))')
+chk     "upload syslog (forced)"      syslog "$SYS_FMT"
+
+CEF_RES=$(upload_replay "$TMPDIR/events.cef" "" "")
+CEF_ID=$(echo "$CEF_RES" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("file_id",""))')
+CEF_FMT=$(echo "$CEF_RES" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("format",""))')
+chk     "upload cef auto-detect"      cef "$CEF_FMT"
+
+# All five present in the listing
+chk_min "list shows >= 5 replays"     5 "$(curl -sk -b $C https://localhost/admin/api/replays | python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("replays",[])))')"
+
+# /preview returns parsed records
+chk "preview jsonl"                   200 "$(curl -sk -b $C "https://localhost/admin/api/replays/$JSONL_ID/preview?n=2" -o /tmp/prev.json -w '%{http_code}')"
+chk_min "preview returns >=2 records"  2 "$(python3 -c 'import json; print(len(json.load(open("/tmp/prev.json"))["records"]))')"
+chk "preview missing → 404"           404 "$(curl -sk -b $C https://localhost/admin/api/replays/no-such-file/preview -o /dev/null -w '%{http_code}')"
+
+# Bad format override → 400
+chk "upload bad fmt → 400"            400 "$(curl -sk -b $C -X POST -F file=@$TMPDIR/edr.jsonl -F fmt=bogus https://localhost/admin/api/replays -o /dev/null -w '%{http_code}')"
+
+# ── Replay-backed listener (anchor=now, jsonl, 3 records) ────────────────────
+RID="p4-replay-$$"
+cat > /tmp/lp.json <<EOF
+{"id":"$RID","name":"$RID","path":"/x","method":"GET","codec":"json",
+ "auth":{"kind":"none"},
+ "replay":{"file_id":"$JSONL_ID","format":"jsonl","timestamp_field":"timestamp",
+           "anchor_mode":"now","anchor_offset_seconds":0,"anchor_fixed_iso":null,
+           "preserve_spread":true}}
+EOF
+curl -sk -b $C -X DELETE "https://localhost/admin/api/listeners/$RID" >/dev/null 2>&1 || true
+chk "create replay listener"          201 "$(curl -sk -b $C -X POST -H 'Content-Type: application/json' --data @/tmp/lp.json https://localhost/admin/api/listeners -o /dev/null -w '%{http_code}')"
+chk "GET replay listener"             200 "$(curl -sk "https://localhost/listener/$RID/x" -o /tmp/r1.json -w '%{http_code}')"
+chk     "replay returns 3 records"      3 "$(python3 -c 'import json; print(json.load(open("/tmp/r1.json"))["count"])')"
+chk_min "records have host field"       1 "$(python3 -c 'import json; d=json.load(open("/tmp/r1.json")); print(1 if d["records"][0].get("host") else 0)')"
+# Verify anchor=now: latest record's timestamp should be within 60s of now.
+chk_min "max ts within 60s of now"      1 "$(python3 -c '
+import json, datetime
+d = json.load(open("/tmp/r1.json"))
+ts = max(r["timestamp"] for r in d["records"])
+parsed = datetime.datetime.fromisoformat(ts.replace("Z","+00:00"))
+delta = abs((datetime.datetime.now(datetime.timezone.utc) - parsed).total_seconds())
+print(1 if delta < 60 else 0)
+')"
+# Verify spread preserved: original spread between max and min was 60s.
+chk     "spread preserved (60s)"        60 "$(python3 -c '
+import json, datetime
+d = json.load(open("/tmp/r1.json"))
+ts_list = sorted(datetime.datetime.fromisoformat(r["timestamp"].replace("Z","+00:00")) for r in d["records"])
+print(int((ts_list[-1]-ts_list[0]).total_seconds()))
+')"
+
+# ── Anchor mode = fixed ──────────────────────────────────────────────────────
+RID2="p4-fixed-$$"
+cat > /tmp/lp.json <<EOF
+{"id":"$RID2","name":"$RID2","path":"/x","method":"GET","codec":"json",
+ "auth":{"kind":"none"},
+ "replay":{"file_id":"$JSONL_ID","format":"jsonl","timestamp_field":"timestamp",
+           "anchor_mode":"fixed","anchor_offset_seconds":0,
+           "anchor_fixed_iso":"2030-06-15T12:00:00+00:00","preserve_spread":true}}
+EOF
+chk "create fixed-anchor listener"    201 "$(curl -sk -b $C -X POST -H 'Content-Type: application/json' --data @/tmp/lp.json https://localhost/admin/api/listeners -o /dev/null -w '%{http_code}')"
+chk "GET fixed-anchor listener"       200 "$(curl -sk "https://localhost/listener/$RID2/x" -o /tmp/r2.json -w '%{http_code}')"
+chk_min "max ts == 2030-06-15T12:00"   1 "$(python3 -c '
+import json
+d = json.load(open("/tmp/r2.json"))
+mx = max(r["timestamp"] for r in d["records"])
+print(1 if mx.startswith("2030-06-15T12:00:00") else 0)
+')"
+
+# ── Cursor pagination over replay (page_size=2 → 2 pages from 3-row file) ────
+RID3="p4-cursor-$$"
+cat > /tmp/lp.json <<EOF
+{"id":"$RID3","name":"$RID3","path":"/x","method":"GET","codec":"json",
+ "auth":{"kind":"none"},
+ "pagination":{"kind":"cursor","page_size":2,"total_pages":99},
+ "replay":{"file_id":"$JSONL_ID","format":"jsonl","timestamp_field":"timestamp",
+           "anchor_mode":"now","anchor_offset_seconds":0,"anchor_fixed_iso":null,
+           "preserve_spread":true}}
+EOF
+chk "create cursor replay listener"   201 "$(curl -sk -b $C -X POST -H 'Content-Type: application/json' --data @/tmp/lp.json https://localhost/admin/api/listeners -o /dev/null -w '%{http_code}')"
+chk "page 1 OK"                       200 "$(curl -sk -D /tmp/h.txt "https://localhost/listener/$RID3/x" -o /tmp/r3.json -w '%{http_code}')"
+chk     "page 1 has 2 records"          2 "$(python3 -c 'import json; print(json.load(open("/tmp/r3.json"))["count"])')"
+chk_min "page 1 has X-Next-Cursor"     1 "$(grep -ci 'x-next-cursor:' /tmp/h.txt)"
+chk "page 2 OK"                       200 "$(curl -sk -D /tmp/h.txt "https://localhost/listener/$RID3/x?cursor=page-1" -o /tmp/r3.json -w '%{http_code}')"
+chk     "page 2 has 1 record"           1 "$(python3 -c 'import json; print(json.load(open("/tmp/r3.json"))["count"])')"
+chk     "page 2 NO X-Next-Cursor"      0 "$(grep -ci 'x-next-cursor:' /tmp/h.txt)"
+
+# ── Delete-while-in-use (409) ────────────────────────────────────────────────
+chk "DELETE replay (in use) → 409"    409 "$(curl -sk -b $C -X DELETE https://localhost/admin/api/replays/$JSONL_ID -o /dev/null -w '%{http_code}')"
+
+# ── Detach listeners then delete the replays ─────────────────────────────────
+for L in $RID $RID2 $RID3; do
+  curl -sk -b $C -X DELETE "https://localhost/admin/api/listeners/$L" >/dev/null
+done
+chk "DELETE replay (free) → 200"      200 "$(curl -sk -b $C -X DELETE https://localhost/admin/api/replays/$JSONL_ID -o /dev/null -w '%{http_code}')"
+chk "DELETE replay missing → 404"     404 "$(curl -sk -b $C -X DELETE https://localhost/admin/api/replays/$JSONL_ID -o /dev/null -w '%{http_code}')"
+
+# Cleanup the rest of the upload fixtures so reruns stay tidy.
+for ID in $JSON_ID $CSV_ID $SYS_ID $CEF_ID; do
+  [ -n "$ID" ] && curl -sk -b $C -X DELETE "https://localhost/admin/api/replays/$ID" >/dev/null
+done
+rm -rf "$TMPDIR"
 
 echo
 echo "════ result: $PASS passed, $FAIL failed ════"

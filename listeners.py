@@ -1,20 +1,27 @@
-"""Custom Listeners — Phase 1 backbone.
+"""Custom Listeners — backbone, dispatcher, and response builder.
 
-Lets a /admin user define a runtime-configurable HTTP endpoint which behaves
-like a real SaaS log API for a hand-rolled Observo SCol Lua source to poll.
+Lets an admin user define a runtime-configurable HTTP endpoint that behaves
+like a real SaaS log API so a hand-rolled Observo SCol Lua source can poll it
+and exercise its decoder / pagination / auth / retry logic without standing
+up the upstream platform.
 
 Design doc: docs/CUSTOM_LISTENERS.md
 
-Phase 1 scope
-=============
-* Persistent listener configs:        ./data/listeners/<id>.json
-* Persistent hits (line-buffered):    ./data/listeners/<id>.hits.jsonl
-* In-memory ring buffer of last N hits per listener
-* Dynamic dispatcher: validates auth / rate-limit / chaos, records the hit,
-  returns a stub JSON response so the wiring is end-to-end testable.
-* No synthetic data generators yet (Phase 2).
-* No replay engine yet (Phase 4).
-* No UI yet (Phase 3).
+Responsibilities
+================
+* Persistent listener configs at        ./data/listeners/<id>.json
+* Persistent hit log (line-buffered) at ./data/listeners/<id>.hits.jsonl with
+  size-capped rotation, plus an in-memory ring buffer of the last N hits per
+  listener for the live trace pane
+* Validation of incoming requests (auth, rate-limit, chaos)
+* Response building for the two data-source kinds:
+    - synthetic — generators under ``sources.synthetic`` (endpoint / identity /
+      cloud / network), seeded for determinism, encoded per the listener's
+      codec (json / ndjson / syslog) with optional pagination (cursor / page /
+      since)
+    - replay   — uploaded files served through ``replay.py`` with time-shift
+      semantics (anchor_mode = now | offset | fixed), preserving the original
+      spread between records
 
 The module is single-process (matches the rest of apigenie which runs with
 ``--workers 1``). All in-memory state is keyed by listener id.
@@ -444,16 +451,9 @@ def build_response(
         ``str``. ``extra_headers`` is empty unless cursor-pagination is in use,
         in which case ``X-Next-Cursor`` (or ``Link: <…>; rel="next"``) is set.
     """
-    # ── Replay (Phase 4 — not implemented yet) ──────────────────────────
+    # ── Replay (Phase 4) ────────────────────────────────────────────────
     if listener.replay is not None:
-        return (
-            {"error": "replay_not_implemented",
-             "note": "Replay engine lands in Phase 4 — see docs/CUSTOM_LISTENERS.md §11.",
-             "listener_id": listener.id,
-             "file_id": listener.replay.file_id},
-            "application/json",
-            {},
-        )
+        return _replay_response(listener, query_params)
 
     # ── Synthetic ───────────────────────────────────────────────────────
     if listener.synthetic is None:
@@ -486,6 +486,114 @@ def build_response(
         records = fn(n, seed=per_page_seed)
 
     return _encode(listener.codec, records, listener, pag_meta, extra_headers)
+
+
+# ── Replay branch ────────────────────────────────────────────────────────────
+# Defaults for an *unpaginated* replay listener: cap at this many records per
+# call so a 100 MB file doesn't try to inline-encode into one response.
+_REPLAY_DEFAULT_LIMIT = 1000
+
+
+def _replay_response(
+    listener: Listener,
+    query_params: dict[str, str],
+) -> tuple[dict[str, Any] | str, str, dict[str, str]]:
+    """Stream a replay file with time-shift, sliced for the current page.
+
+    Returns the same ``(body, content_type, extra_headers)`` shape as
+    ``build_response``. Uses the existing pagination machinery; total_pages
+    is *derived* from the file's ``line_count`` rather than the listener's
+    static spec (which is meaningful for synthetic only).
+    """
+    # Lazy import so a missing replay.py at boot doesn't break the listener
+    # backbone (defensive symmetry with the synthetic branch).
+    from replay import StreamSpec, get_replay, stream as replay_stream
+
+    rspec = listener.replay
+    assert rspec is not None  # narrowed by build_response
+
+    meta = get_replay(rspec.file_id)
+    if meta is None:
+        return (
+            {"error": "replay_file_missing",
+             "note": "The uploaded blob this listener pointed at has been deleted.",
+             "listener_id": listener.id,
+             "file_id": rspec.file_id},
+            "application/json",
+            {},
+        )
+
+    # Effective pagination spec: if the listener has its own pagination
+    # config, honour kind+page_size but override total_pages so we stop at
+    # the actual end of the file. If the listener has no pagination, return
+    # up to _REPLAY_DEFAULT_LIMIT records in one shot.
+    if listener.pagination is not None:
+        eff = PaginationSpec(
+            kind=listener.pagination.kind,
+            page_size=max(1, listener.pagination.page_size or 100),
+            total_pages=max(1, (meta.line_count + listener.pagination.page_size - 1) // listener.pagination.page_size or 1),
+        )
+        page_idx, has_more, pag_meta, extra_headers = _resolve_pagination(eff, query_params)
+        page_size = eff.page_size
+    else:
+        page_idx, has_more, pag_meta, extra_headers = 0, True, {}, {}
+        page_size = _REPLAY_DEFAULT_LIMIT
+
+    if not has_more:
+        return _encode_replay(listener, [], pag_meta, extra_headers, meta)
+
+    # Slice the stream lazily without buffering the whole file: skip
+    # ``page_idx * page_size`` records, take the next ``page_size``.
+    skip = page_idx * page_size
+    stream_spec = StreamSpec(
+        file_id=rspec.file_id,
+        format=meta.format,
+        timestamp_field=rspec.timestamp_field or meta.timestamp_field,
+        anchor_mode=rspec.anchor_mode,
+        anchor_offset_seconds=rspec.anchor_offset_seconds,
+        anchor_fixed_iso=rspec.anchor_fixed_iso,
+        preserve_spread=rspec.preserve_spread,
+    )
+
+    out: list[dict] = []
+    for i, rec in enumerate(replay_stream(stream_spec)):
+        if i < skip:
+            continue
+        if len(out) >= page_size:
+            break
+        out.append(rec)
+
+    return _encode_replay(listener, out, pag_meta, extra_headers, meta)
+
+
+def _encode_replay(
+    listener: Listener,
+    records: list[dict],
+    pag_meta: dict[str, Any],
+    extra_headers: dict[str, str],
+    meta: Any,  # ReplayMeta from replay.py — kept Any to avoid a hard import here
+) -> tuple[dict[str, Any] | str, str, dict[str, str]]:
+    """Same encoding contract as ``_encode``, but the syslog tag is the
+    replay file's stem (e.g. ``edr-export``) rather than a synthetic topic."""
+    codec = listener.codec
+    if codec == "ndjson":
+        body = "".join(json.dumps(r, separators=(",", ":")) + "\n" for r in records)
+        return body, "application/x-ndjson", extra_headers
+
+    if codec == "syslog":
+        host = "apigenie"
+        tag = (meta.filename.rsplit(".", 1)[0] if getattr(meta, "filename", None) else "replay") or "replay"
+        ts_now = datetime.now(timezone.utc).strftime("%b %d %H:%M:%S")
+        out_lines: list[str] = []
+        for r in records:
+            kvs = " ".join(f"{k}={_syslog_val(v)}" for k, v in _flatten(r).items())
+            out_lines.append(f"<134>{ts_now} {host} {tag}[{listener.id}]: {kvs}")
+        body = "\n".join(out_lines) + ("\n" if out_lines else "")
+        return body, "text/plain; charset=utf-8", extra_headers
+
+    body_dict: dict[str, Any] = {"records": records, "count": len(records)}
+    body_dict.update(pag_meta)
+    return body_dict, "application/json", extra_headers
 
 
 def _resolve_pagination(

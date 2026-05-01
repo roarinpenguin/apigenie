@@ -10,12 +10,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Cookie, Form, Request
+from fastapi import APIRouter, Cookie, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 
 from trace import AGG, REQUEST_TRACE
 import geoip
 import listeners as _listeners
+import replay as _replay
 
 # ── Config ────────────────────────────────────────────────────────────────────
 ADMIN_USER   = os.environ.get("ADMIN_USERNAME", "admin")
@@ -554,6 +555,9 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
 .field .hint{grid-column:2;font-size:.72rem;color:rgba(224,170,255,.4);margin-top:-4px}
 .field input,.field select,.field textarea{width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.3);border-radius:8px;padding:7px 12px;color:var(--mist);font-family:inherit;font-size:.85rem;outline:none}
 .field input:focus,.field select:focus,.field textarea:focus{border-color:var(--lilac)}
+/* Native sizing for choice inputs — width:100% above would otherwise blow them up. */
+.field input[type=radio],.field input[type=checkbox]{width:auto;background:transparent;border:none;border-radius:0;padding:0;margin:0 6px 0 0;vertical-align:middle;accent-color:var(--lilac)}
+.field input[type=file]{padding:6px 8px;cursor:pointer}
 .snippet-tabs{display:flex;gap:6px;margin-bottom:10px}
 .snippet-tabs .stab{padding:6px 12px;border-radius:6px;cursor:pointer;background:rgba(90,24,154,.15);border:1px solid rgba(199,125,255,.15);color:rgba(224,170,255,.6);font-size:.78rem}
 .snippet-tabs .stab.active{background:rgba(123,44,191,.4);color:var(--mist);border-color:var(--lilac)}
@@ -653,6 +657,7 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
           <span>Custom HTTP listeners</span>
           <span>
             <button class="btn-sm" onclick="openWizard()">＋ New listener</button>
+            <button class="btn-sm" onclick="openManageUploads()" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2);margin-left:6px">📁 Replay uploads</button>
             <button class="btn-sm" onclick="loadListeners()" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2);margin-left:6px">↺ Refresh</button>
           </span>
         </div>
@@ -1364,14 +1369,25 @@ function _openWizardWith(state, editing) {
   document.getElementById('wiz-auth-pass').value  = (state.auth && state.auth.password) || '';
   document.getElementById('wiz-auth-apikey').value= (state.auth && state.auth.api_key) || '';
   document.getElementById('wiz-auth-apikey-h').value=(state.auth && state.auth.api_key_header) || 'X-Api-Key';
-  // Step 3 (data source)
-  if (state.replay) {
-    toast('Replay editing is Phase 4 — only synthetic listeners can be edited in v1.', true);
-  }
+  // Step 3 (data source) — synthetic vs replay
+  const dsKind = state.replay ? 'replay' : 'synthetic';
+  document.querySelectorAll('input[name="wiz-ds-kind"]').forEach(r => { r.checked = (r.value === dsKind); });
+  _showDataSourceFields(dsKind);
   const syn = state.synthetic || {topic:'endpoint', rate_per_request:50, seed:null};
   document.getElementById('wiz-topic').value = syn.topic;
   document.getElementById('wiz-rate').value  = syn.rate_per_request;
   document.getElementById('wiz-seed').value  = syn.seed == null ? '' : syn.seed;
+  // Replay mode: refresh the dropdown then preselect the listener's file_id.
+  loadReplayDropdown(state.replay ? state.replay.file_id : null);
+  const rep = state.replay || {format:'', timestamp_field:'', anchor_mode:'now',
+                               anchor_offset_seconds:0, anchor_fixed_iso:'', preserve_spread:true};
+  document.getElementById('wiz-replay-format').value  = rep.format || '';
+  document.getElementById('wiz-replay-tsfield').value = rep.timestamp_field || '';
+  document.getElementById('wiz-replay-anchor').value  = rep.anchor_mode || 'now';
+  document.getElementById('wiz-replay-anchor-offset').value = rep.anchor_offset_seconds || 0;
+  document.getElementById('wiz-replay-anchor-fixed').value  = rep.anchor_fixed_iso || '';
+  document.getElementById('wiz-replay-spread').checked = (rep.preserve_spread !== false);
+  _showAnchorFields(rep.anchor_mode || 'now');
   // Step 4 (behaviour)
   document.getElementById('wiz-codec').value = state.codec || 'json';
   document.getElementById('wiz-pag-kind').value = (state.pagination && state.pagination.kind) || 'none';
@@ -1424,12 +1440,26 @@ function _collectWizard() {
   else if (auth.kind === 'x_api_key'){ auth.api_key = document.getElementById('wiz-auth-apikey').value;
                                        auth.api_key_header = document.getElementById('wiz-auth-apikey-h').value || 'X-Api-Key'; }
   // oauth2_cc and none have no extra fields
-  const seedRaw = document.getElementById('wiz-seed').value.trim();
-  const synthetic = {
-    topic: document.getElementById('wiz-topic').value,
-    rate_per_request: parseInt(document.getElementById('wiz-rate').value) || 50,
-    seed: seedRaw === '' ? null : parseInt(seedRaw),
-  };
+  const dsKind = (document.querySelector('input[name="wiz-ds-kind"]:checked') || {}).value || 'synthetic';
+  let synthetic = null, replay = null;
+  if (dsKind === 'synthetic') {
+    const seedRaw = document.getElementById('wiz-seed').value.trim();
+    synthetic = {
+      topic: document.getElementById('wiz-topic').value,
+      rate_per_request: parseInt(document.getElementById('wiz-rate').value) || 50,
+      seed: seedRaw === '' ? null : parseInt(seedRaw),
+    };
+  } else {
+    replay = {
+      file_id:               document.getElementById('wiz-replay-file').value,
+      format:                document.getElementById('wiz-replay-format').value || 'jsonl',
+      timestamp_field:       document.getElementById('wiz-replay-tsfield').value.trim() || 'timestamp',
+      anchor_mode:           document.getElementById('wiz-replay-anchor').value,
+      anchor_offset_seconds: parseInt(document.getElementById('wiz-replay-anchor-offset').value) || 0,
+      anchor_fixed_iso:      document.getElementById('wiz-replay-anchor-fixed').value.trim() || null,
+      preserve_spread:       document.getElementById('wiz-replay-spread').checked,
+    };
+  }
   let pagination = null;
   const pk = document.getElementById('wiz-pag-kind').value;
   if (pk !== 'none') {
@@ -1453,7 +1483,7 @@ function _collectWizard() {
     method: document.getElementById('wiz-method').value,
     codec: document.getElementById('wiz-codec').value,
     enabled: WIZ_STATE.enabled !== false,
-    auth, synthetic, pagination, rate_limit, chaos,
+    auth, synthetic, replay, pagination, rate_limit, chaos,
   };
 }
 
@@ -1503,6 +1533,170 @@ function snipShow(which) {
   document.getElementById('stab-yaml').classList.toggle('active', which === 'yaml');
 }
 function closeSnippet(){ document.getElementById('snippet-modal').classList.add('hidden'); }
+
+// ── Replay (Phase 4) ──────────────────────────────────────────────────────────
+function _showDataSourceFields(kind) {
+  document.getElementById('wiz-ds-synthetic').style.display = (kind === 'synthetic') ? 'block' : 'none';
+  document.getElementById('wiz-ds-replay').style.display    = (kind === 'replay')    ? 'block' : 'none';
+}
+function _showAnchorFields(mode) {
+  document.getElementById('wiz-replay-anchor-offset-row').style.display = (mode === 'offset') ? 'grid' : 'none';
+  document.getElementById('wiz-replay-anchor-fixed-row').style.display  = (mode === 'fixed')  ? 'grid' : 'none';
+}
+
+async function loadReplayDropdown(preselectFileId) {
+  const sel = document.getElementById('wiz-replay-file');
+  const prev = preselectFileId || sel.value || '';
+  sel.innerHTML = '<option value="">— loading… —</option>';
+  try {
+    const r = await fetch('/admin/api/replays', {credentials:'same-origin'});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    if (!d.replays || !d.replays.length) {
+      sel.innerHTML = '<option value="">— no replays uploaded yet —</option>';
+      return;
+    }
+    sel.innerHTML = d.replays.map(rp => {
+      const sizeKb = (rp.size / 1024).toFixed(1);
+      const label = `${rp.filename}  ·  ${rp.format}  ·  ${rp.line_count} rec  ·  ${sizeKb} KB`;
+      return `<option value="${escHtml(rp.file_id)}">${escHtml(label)}</option>`;
+    }).join('');
+    if (prev) sel.value = prev;
+    // If user has selected something and we have a file in the list, refresh preview.
+    if (sel.value) refreshReplayPreview(sel.value);
+    sel.onchange = (e) => refreshReplayPreview(e.target.value);
+  } catch (e) {
+    sel.innerHTML = '<option value="">— failed: ' + escHtml(String(e)) + ' —</option>';
+  }
+}
+
+async function refreshReplayPreview(fileId) {
+  const box = document.getElementById('wiz-replay-preview');
+  if (!fileId) { box.innerHTML = ''; return; }
+  box.innerHTML = '<span style="color:rgba(224,170,255,.5)">loading preview…</span>';
+  try {
+    const [m, p] = await Promise.all([
+      fetch('/admin/api/replays/' + encodeURIComponent(fileId), {credentials:'same-origin'}).then(r => r.json()),
+      fetch('/admin/api/replays/' + encodeURIComponent(fileId) + '/preview?n=3', {credentials:'same-origin'}).then(r => r.json()),
+    ]);
+    const summary = `<b>${escHtml(m.filename)}</b> · format: ${escHtml(m.format)} · ${m.line_count} records · ts range: ${escHtml(m.ts_min_iso || '—')} → ${escHtml(m.ts_max_iso || '—')}`;
+    const sample = (p.records || []).slice(0,3).map(r => JSON.stringify(r).slice(0,200)).join('\\n');
+    box.innerHTML = summary + '<br/><pre style="margin-top:6px;background:#000;border:1px solid rgba(199,125,255,.2);border-radius:6px;padding:8px;max-height:140px;overflow:auto;color:#c8e6c9;font-size:.7rem">' + escHtml(sample) + '</pre>';
+  } catch (e) {
+    box.innerHTML = '<span style="color:#ff8080">preview failed: ' + escHtml(String(e)) + '</span>';
+  }
+}
+
+// Upload modal
+function openReplayUpload() {
+  document.getElementById('replay-upload-msg').textContent = '';
+  document.getElementById('replay-upload-file').value = '';
+  document.getElementById('replay-upload-fmt').value = '';
+  document.getElementById('replay-upload-tsfield').value = '';
+  document.getElementById('replay-upload-modal').classList.remove('hidden');
+  // Surface the live cap (in case env override differs from default).
+  fetch('/admin/api/replays', {credentials:'same-origin'})
+    .then(r => r.ok ? r.json() : null)
+    .then(d => { if (d && d.max_mb) document.getElementById('replay-upload-cap').textContent = d.max_mb; })
+    .catch(() => {});
+}
+function closeReplayUpload(){ document.getElementById('replay-upload-modal').classList.add('hidden'); }
+
+async function submitReplayUpload() {
+  const fileEl = document.getElementById('replay-upload-file');
+  if (!fileEl.files || !fileEl.files.length) {
+    document.getElementById('replay-upload-msg').textContent = 'Please pick a file first.';
+    return;
+  }
+  const f = fileEl.files[0];
+  const fd = new FormData();
+  fd.append('file', f);
+  const fmt = document.getElementById('replay-upload-fmt').value;
+  if (fmt) fd.append('fmt', fmt);
+  const tsf = document.getElementById('replay-upload-tsfield').value.trim();
+  if (tsf) fd.append('timestamp_field', tsf);
+  const btn = document.getElementById('replay-upload-btn');
+  btn.disabled = true; btn.textContent = 'Uploading…';
+  document.getElementById('replay-upload-msg').textContent = '';
+  try {
+    const r = await fetch('/admin/api/replays', {method:'POST', credentials:'same-origin', body: fd});
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    toast('Uploaded: ' + d.filename + ' (' + d.line_count + ' records, ' + d.format + ')');
+    closeReplayUpload();
+    await loadReplayDropdown(d.file_id);
+    // If wizard is open in replay mode, focus the new file.
+    document.getElementById('wiz-replay-file').value = d.file_id;
+    refreshReplayPreview(d.file_id);
+  } catch (e) {
+    document.getElementById('replay-upload-msg').textContent = 'Failed: ' + e;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Upload';
+  }
+}
+
+// Manage uploads modal
+async function openManageUploads() {
+  document.getElementById('manage-uploads-modal').classList.remove('hidden');
+  await refreshManageUploads();
+}
+function closeManageUploads(){ document.getElementById('manage-uploads-modal').classList.add('hidden'); }
+
+async function refreshManageUploads() {
+  const wrap = document.getElementById('manage-uploads-list');
+  wrap.innerHTML = '<p class="empty">Loading…</p>';
+  try {
+    const r = await fetch('/admin/api/replays', {credentials:'same-origin'});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    if (!d.replays || !d.replays.length) {
+      wrap.innerHTML = '<p class="empty">No uploads yet. Click <b>⬆ Upload new file…</b> in the wizard step 3.</p>';
+      return;
+    }
+    wrap.innerHTML = d.replays.map(rp => {
+      const sizeKb = (rp.size / 1024).toFixed(1);
+      const ts = (rp.ts_min_iso && rp.ts_max_iso) ? `${rp.ts_min_iso} → ${rp.ts_max_iso}` : '—';
+      return `<div class="listener-row" style="margin-bottom:8px">
+        <div class="lr-head">
+          <div>
+            <div class="lr-name">${escHtml(rp.filename)} <span class="pill">${escHtml(rp.file_id.slice(0,12))}…</span></div>
+            <div class="lr-meta">
+              <span class="pill">${escHtml(rp.format)}</span>
+              <span class="pill">${rp.line_count} rec</span>
+              <span class="pill">${sizeKb} KB</span>
+              <span class="pill">ts: ${escHtml(ts)}</span>
+            </div>
+          </div>
+          <div class="lr-actions">
+            <button class="btn-sm btn-danger" onclick="deleteReplayFile('${escHtml(rp.file_id)}')">🗑 Delete</button>
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    wrap.innerHTML = '<p class="empty">Failed: ' + escHtml(String(e)) + '</p>';
+  }
+}
+
+async function deleteReplayFile(fileId) {
+  if (!confirm('Delete this uploaded file? Listeners that reference it will return errors until reattached.')) return;
+  try {
+    const r = await fetch('/admin/api/replays/' + encodeURIComponent(fileId), {method:'DELETE', credentials:'same-origin'});
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      if (r.status === 409 && d.listeners) {
+        alert('Cannot delete — still in use by listener(s):\\n  ' + d.listeners.join('\\n  ') + '\\n\\nDetach or delete those first.');
+        return;
+      }
+      throw new Error(d.error || ('HTTP ' + r.status));
+    }
+    toast('Deleted');
+    await refreshManageUploads();
+    await loadReplayDropdown();
+  } catch (e) {
+    toast('Delete failed: ' + e, true);
+  }
+}
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 buildChips('source-chips', selectSource);
@@ -1576,17 +1770,76 @@ document.addEventListener('change', (e) => {
       </div>
 
       <div class="wiz-pane" id="wiz-pane-3">
-        <div class="field"><label>Synthetic topic</label>
-          <select id="wiz-topic">
-            <option value="endpoint">endpoint — EDR / process telemetry</option>
-            <option value="identity">identity — auth / SSO / IAM</option>
-            <option value="cloud">cloud — multi-cloud audit (AWS/Azure/GCP)</option>
-            <option value="network">network — Zeek-style flows</option>
-          </select>
+        <div class="field"><label>Data source</label>
+          <div>
+            <label style="font-size:.85rem;margin-right:14px;cursor:pointer">
+              <input type="radio" name="wiz-ds-kind" value="synthetic" checked onchange="_showDataSourceFields('synthetic')"/> Synthetic topic
+            </label>
+            <label style="font-size:.85rem;cursor:pointer">
+              <input type="radio" name="wiz-ds-kind" value="replay" onchange="_showDataSourceFields('replay')"/> Replay uploaded file
+            </label>
+          </div>
         </div>
-        <div class="field"><label>Records per call</label><input id="wiz-rate" type="number" min="1" max="10000" value="50"/></div>
-        <div class="field"><label>Seed (optional)</label><input id="wiz-seed" placeholder="leave empty for random" type="number"/></div>
-        <div class="hint" style="grid-column:2">Replay-from-file is <b>Phase 4</b>; not yet wired into the wizard.</div>
+
+        <div id="wiz-ds-synthetic">
+          <div class="field"><label>Synthetic topic</label>
+            <select id="wiz-topic">
+              <option value="endpoint">endpoint — EDR / process telemetry</option>
+              <option value="identity">identity — auth / SSO / IAM</option>
+              <option value="cloud">cloud — multi-cloud audit (AWS/Azure/GCP)</option>
+              <option value="network">network — Zeek-style flows</option>
+            </select>
+          </div>
+          <div class="field"><label>Records per call</label><input id="wiz-rate" type="number" min="1" max="10000" value="50"/></div>
+          <div class="field"><label>Seed (optional)</label><input id="wiz-seed" placeholder="leave empty for random" type="number"/></div>
+        </div>
+
+        <div id="wiz-ds-replay" style="display:none">
+          <div class="field"><label>Uploaded file</label>
+            <select id="wiz-replay-file">
+              <option value="">— no replays uploaded yet —</option>
+            </select>
+          </div>
+          <div class="field"><label></label>
+            <div>
+              <button class="btn-sm" type="button" onclick="openReplayUpload()">⬆ Upload new file…</button>
+              <button class="btn-sm" type="button" onclick="loadReplayDropdown()" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2);margin-left:6px">↺ Refresh list</button>
+              <button class="btn-sm" type="button" onclick="openManageUploads()" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2);margin-left:6px">⚙ Manage uploads</button>
+            </div>
+          </div>
+          <div class="field"><label>Format override</label>
+            <select id="wiz-replay-format">
+              <option value="">— auto-detected (default) —</option>
+              <option value="jsonl">jsonl</option>
+              <option value="json">json (array)</option>
+              <option value="csv">csv</option>
+              <option value="syslog">syslog (RFC 3164/5424)</option>
+              <option value="cef">cef</option>
+            </select>
+          </div>
+          <div class="field"><label>Timestamp field</label>
+            <input id="wiz-replay-tsfield" placeholder="e.g. timestamp, eventTime, published, ts"/></div>
+          <div class="hint" style="grid-column:2">Dot-notation supported for nested fields (e.g. <code>event.created</code>). For CSV use the column name. Leave blank to use the file&apos;s default.</div>
+
+          <div class="field"><label>Anchor mode</label>
+            <select id="wiz-replay-anchor" onchange="_showAnchorFields(this.value)">
+              <option value="now">now — file&apos;s last record = right now</option>
+              <option value="offset">offset — anchor = now ± seconds</option>
+              <option value="fixed">fixed — anchor = ISO-8601 datetime</option>
+            </select>
+          </div>
+          <div class="field" id="wiz-replay-anchor-offset-row" style="display:none">
+            <label>Offset (seconds)</label><input id="wiz-replay-anchor-offset" type="number" value="0"/></div>
+          <div class="field" id="wiz-replay-anchor-fixed-row" style="display:none">
+            <label>Fixed datetime</label><input id="wiz-replay-anchor-fixed" placeholder="2026-05-01T12:00:00Z"/></div>
+          <div class="field"><label>Preserve spread</label>
+            <label style="font-size:.85rem;cursor:pointer">
+              <input id="wiz-replay-spread" type="checkbox" checked/> keep original spacing between records
+            </label>
+          </div>
+
+          <div id="wiz-replay-preview" style="margin-top:10px;font-size:.78rem;color:rgba(224,170,255,.55)"></div>
+        </div>
       </div>
 
       <div class="wiz-pane" id="wiz-pane-4">
@@ -1642,6 +1895,72 @@ document.addEventListener('change', (e) => {
       <div class="left"></div>
       <div class="right">
         <button class="btn-sm" onclick="closeSnippet()">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Replay upload modal -->
+<div id="replay-upload-modal" class="modal-overlay hidden" onclick="if(event.target===this)closeReplayUpload()">
+  <div class="modal" style="width:min(560px,100%)">
+    <div class="modal-head">
+      <h3>Upload replay file</h3>
+      <button class="close" onclick="closeReplayUpload()">×</button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:.78rem;color:rgba(224,170,255,.55);margin-bottom:14px">
+        Up to <span id="replay-upload-cap">100</span> MB. Supported formats:
+        <code>json</code> (single array), <code>jsonl</code>/<code>ndjson</code>,
+        <code>csv</code> (with header), <code>syslog</code> (RFC 3164 / 5424),
+        <code>cef</code>. Format is auto-detected from extension + first-line
+        sniff but can be overridden below.
+      </p>
+      <div class="field"><label>File</label>
+        <input type="file" id="replay-upload-file"/></div>
+      <div class="field"><label>Format override</label>
+        <select id="replay-upload-fmt">
+          <option value="">— auto-detect —</option>
+          <option value="jsonl">jsonl</option>
+          <option value="json">json (array)</option>
+          <option value="csv">csv</option>
+          <option value="syslog">syslog</option>
+          <option value="cef">cef</option>
+        </select></div>
+      <div class="field"><label>Timestamp field</label>
+        <input id="replay-upload-tsfield" placeholder="default: timestamp"/></div>
+      <div class="hint" style="grid-column:2">Used during the upload-time scan to compute the file's time range. Dot-notation is supported (e.g. <code>event.created</code>).</div>
+      <div id="replay-upload-msg" style="margin-top:10px;font-size:.82rem;color:#ff8080"></div>
+    </div>
+    <div class="modal-foot">
+      <div class="left"></div>
+      <div class="right">
+        <button class="btn-sm" onclick="closeReplayUpload()" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2)">Cancel</button>
+        <button class="btn-sm" id="replay-upload-btn" onclick="submitReplayUpload()">Upload</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Manage uploads modal -->
+<div id="manage-uploads-modal" class="modal-overlay hidden" onclick="if(event.target===this)closeManageUploads()">
+  <div class="modal" style="width:min(720px,100%)">
+    <div class="modal-head">
+      <h3>Manage replay uploads</h3>
+      <button class="close" onclick="closeManageUploads()">×</button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:.78rem;color:rgba(224,170,255,.55);margin-bottom:14px">
+        All replay files stored on this server. Files in use by an active
+        listener cannot be deleted until the listener is detached or removed.
+      </p>
+      <div id="manage-uploads-list"></div>
+    </div>
+    <div class="modal-foot">
+      <div class="left">
+        <button class="btn-sm" onclick="refreshManageUploads()" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2)">↺ Refresh</button>
+      </div>
+      <div class="right">
+        <button class="btn-sm" onclick="closeManageUploads()">Close</button>
       </div>
     </div>
   </div>
@@ -2038,7 +2357,16 @@ def _listener_summary(listener: "_listeners.Listener") -> dict[str, Any]:
         "auth_kind": listener.auth.kind,
         "data_source": (
             f"synthetic:{listener.synthetic.topic}" if listener.synthetic
-            else (f"replay:{listener.replay.file_id}" if listener.replay else "?")
+            else (
+                # Surface the replay file's original filename (or 'missing' if
+                # the blob has been deleted under us).
+                "replay:" + (
+                    (_replay.get_replay(listener.replay.file_id).filename
+                     if _replay.get_replay(listener.replay.file_id)
+                     else "<missing>")
+                )
+                if listener.replay else "?"
+            )
         ),
         "url": f"https://{DOMAIN}/listener/{listener.id}{listener.path}",
         "hit_count_mem": len(hits) if hits is not None else 0,
@@ -2318,3 +2646,115 @@ async def api_listeners_snippet(
     else:
         body = _snippet_lua(listener, base_url)
     return Response(body, media_type="text/plain; charset=utf-8")
+
+
+# ── Replay uploads (Phase 4) ─────────────────────────────────────────────────
+# These power the "Replay" data-source mode in the listener wizard. Storage
+# layout and validation rules live in replay.py; this layer is only HTTP glue.
+
+
+def _replay_meta_to_dict(m: "_replay.ReplayMeta") -> dict[str, Any]:
+    return {
+        "file_id":        m.file_id,
+        "filename":       m.filename,
+        "size":           m.size,
+        "format":         m.format,
+        "line_count":     m.line_count,
+        "ts_min_iso":     m.ts_min_iso,
+        "ts_max_iso":     m.ts_max_iso,
+        "timestamp_field": m.timestamp_field,
+        "created_at":     m.created_at,
+    }
+
+
+@router.get("/api/replays")
+async def api_replays_list(ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return JSONResponse({
+        "replays": [_replay_meta_to_dict(m) for m in _replay.list_replays()],
+        "max_mb": _replay.MAX_MB,
+    })
+
+
+@router.post("/api/replays")
+async def api_replays_upload(
+    file: UploadFile = File(...),
+    fmt: str | None = Form(None),
+    timestamp_field: str | None = Form(None),
+    ag_session: str | None = Cookie(None),
+):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    # Read with an early-abort if the upload exceeds the cap. We can't trust
+    # Content-Length blindly so we cap by counting bytes.
+    chunks: list[bytes] = []
+    total = 0
+    cap = _replay.MAX_BYTES
+    while True:
+        chunk = await file.read(1024 * 1024)  # 1 MB
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > cap:
+            return JSONResponse(
+                {"error": "oversize",
+                 "note": f"file exceeds APIGENIE_REPLAY_MAX_MB ({_replay.MAX_MB} MB)"},
+                status_code=413,
+            )
+        chunks.append(chunk)
+    content = b"".join(chunks)
+    try:
+        meta = _replay.save_replay(
+            filename=file.filename or "upload.bin",
+            content=content,
+            fmt=(fmt.strip() or None) if isinstance(fmt, str) else None,
+            timestamp_field=(timestamp_field.strip() or None) if isinstance(timestamp_field, str) else None,
+        )
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    return JSONResponse(_replay_meta_to_dict(meta), status_code=201)
+
+
+@router.get("/api/replays/{file_id}")
+async def api_replays_get(file_id: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    meta = _replay.get_replay(file_id)
+    if meta is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return JSONResponse(_replay_meta_to_dict(meta))
+
+
+@router.get("/api/replays/{file_id}/preview")
+async def api_replays_preview(
+    file_id: str,
+    n: int = 10,
+    ag_session: str | None = Cookie(None),
+):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if _replay.get_replay(file_id) is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    n = max(1, min(int(n or 10), 50))
+    return JSONResponse({"file_id": file_id, "records": _replay.preview_records(file_id, n)})
+
+
+@router.delete("/api/replays/{file_id}")
+async def api_replays_delete(file_id: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    # Defensive: refuse if any listener still points at this file. The user
+    # would otherwise get cryptic 'replay_file_missing' errors at fetch time.
+    blocking = [l.id for l in _listeners.LISTENERS.values()
+                if l.replay is not None and l.replay.file_id == file_id]
+    if blocking:
+        return JSONResponse(
+            {"error": "in_use",
+             "note": "Detach or delete the listed listeners first.",
+             "listeners": blocking},
+            status_code=409,
+        )
+    if not _replay.delete_replay(file_id):
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return JSONResponse({"ok": True, "file_id": file_id})

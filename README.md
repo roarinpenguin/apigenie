@@ -208,7 +208,7 @@ The **Settings** tab (under *System*) exposes:
 | **Flows** | Sankey diagram of source IPs (left) → log-source names (right) with click-to-filter per IP and a min-volume slider |
 | **GeoMap** | World map with one bubble per source IP (size ∝ volume); click a bubble to drill down into its per-source breakdown |
 | **Container logs** | Tail logs of any container in the stack via `docker logs --follow` (apigenie, nginx, kafka, zookeeper, pubsub-emulator) |
-| **🎯 Listeners** *(planned)* | Stand up a custom HTTP endpoint on the fly to test a hand-rolled SCol Lua source — synthetic data across four telemetry topics (endpoint / identity / cloud / network) or replay an uploaded log file with a configurable time anchor. Design: [`docs/CUSTOM_LISTENERS.md`](docs/CUSTOM_LISTENERS.md) |
+| **🎯 Listeners** | Stand up a custom HTTP endpoint on the fly to test a hand-rolled SCol Lua source — synthetic data across four telemetry topics (endpoint / identity / cloud / network) or replay an uploaded log file (json / jsonl / csv / syslog / cef) with a configurable time anchor. Design: [`docs/CUSTOM_LISTENERS.md`](docs/CUSTOM_LISTENERS.md) |
 
 ### GeoMap data source
 
@@ -382,7 +382,7 @@ apigenie/
 | `APIGENIE_AGG_CAP` | `5000` | Max distinct (client_ip, source) pairs the Flows/GeoMap aggregator retains (LRU eviction) |
 | `APIGENIE_LISTENER_HITS_CAP` | `200` | Per-listener in-memory ring buffer for the live trace pane *(custom Listeners feature)* |
 | `APIGENIE_LISTENER_HITS_DISK_CAP` | `5000` | Per-listener on-disk hit log line cap before rotation *(custom Listeners feature)* |
-| `APIGENIE_REPLAY_MAX_MB` | `100` | Hard cap (MB) on a single replay-mode log file upload *(custom Listeners feature, Phase 4)* |
+| `APIGENIE_REPLAY_MAX_MB` | `100` | Hard cap (MB) on a single replay-mode log file upload *(custom Listeners feature)* |
 | `PUBSUB_EMULATOR_HOST` | `pubsub-emulator:8085` | Pub/Sub emulator (in-Docker) |
 | `GCP_PROJECT_ID` | `obs-test` | Pub/Sub project |
 | `PUBSUB_TOPIC_ID` | `audit-logs` | Pub/Sub topic |
