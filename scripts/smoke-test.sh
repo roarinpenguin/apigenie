@@ -21,6 +21,10 @@ chk "entra audit"                   200 "$(curl -sk -H "Authorization: Bearer $T
 chk "defender alerts"               200 "$(curl -sk -H "Authorization: Bearer $TOK" https://localhost/v1.0/security/alerts -o /dev/null -w '%{http_code}')"
 chk "tenable audit"                 200 "$(curl -sk -H 'X-ApiKeys: accessKey=apigenie-ak-001;secretKey=apigenie-sk-001' https://localhost/audit-log/v1/events -o /dev/null -w '%{http_code}')"
 
+echo "── Public stats endpoint"
+chk "/stats returns 200"             200 "$(curl -sk https://localhost/stats -o /tmp/stats.json -w '%{http_code}')"
+chk_min "/stats http_sources ≥ 11"   11  "$(python3 -c 'import json; print(json.load(open("/tmp/stats.json"))["http_sources"])')"
+
 echo "── Existing admin endpoints (regression)"
 chk "/admin/api/requests/okta"      200 "$(curl -sk -b $C https://localhost/admin/api/requests/okta -o /tmp/r.json -w '%{http_code}')"
 chk_min "okta trace entries"          1 "$(python3 -c 'import json; print(len(json.load(open(chr(47)+"tmp"+chr(47)+"r.json"))))')"

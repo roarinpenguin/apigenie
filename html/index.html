@@ -252,8 +252,8 @@
 
         /* stats row inside the feature card */
         .stats {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            display: flex;
+            justify-content: space-evenly;
             gap: 18px;
             text-align: center;
         }
@@ -450,20 +450,20 @@
         <section class="card feature">
             <div class="stats">
                 <div>
-                    <div class="stat-num">11</div>
+                    <div class="stat-num" id="stat-http">11</div>
                     <div class="stat-lbl">HTTP sources</div>
                 </div>
                 <div>
-                    <div class="stat-num">2</div>
+                    <div class="stat-num" id="stat-stream">2</div>
                     <div class="stat-lbl">Streaming sources</div>
                 </div>
                 <div>
-                    <div class="stat-num">5</div>
+                    <div class="stat-num" id="stat-auth">5</div>
                     <div class="stat-lbl">Auth schemes</div>
                 </div>
                 <div>
-                    <div class="stat-num">100%</div>
-                    <div class="stat-lbl">Synthetic data</div>
+                    <div class="stat-num" id="stat-listeners">0</div>
+                    <div class="stat-lbl">Custom listeners</div>
                 </div>
             </div>
         </section>
@@ -499,6 +499,18 @@
         if (pill) pill.textContent = host;
         document.title = 'API Genie \u00b7 ' + host;
     })();
+
+    // Fetch live stats (includes custom listeners count).
+    fetch('/stats')
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(d) {
+            if (!d) return;
+            document.getElementById('stat-http').textContent      = d.http_sources;
+            document.getElementById('stat-stream').textContent    = d.streaming_sources;
+            document.getElementById('stat-auth').textContent      = d.auth_schemes;
+            document.getElementById('stat-listeners').textContent = d.custom_listeners;
+        })
+        .catch(function() { /* keep static fallback values */ });
 </script>
 </body>
 </html>

@@ -97,6 +97,18 @@ async def health() -> dict[str, str]:
     return {"status": "ok", "service": "apigenie"}
 
 
+@app.get("/stats")
+async def public_stats() -> dict[str, Any]:
+    """Public (no auth) stats for the landing page."""
+    enabled = sum(1 for l in _listeners.LISTENERS.values() if l.enabled)
+    return {
+        "http_sources": 11 + enabled,
+        "streaming_sources": 2,
+        "auth_schemes": 5,
+        "custom_listeners": enabled,
+    }
+
+
 # =============================================================================
 # Fake Google OAuth2 token endpoint
 #
