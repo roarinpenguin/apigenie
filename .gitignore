@@ -14,3 +14,7 @@ certbot/www/*
 
 # Persisted admin password override file (Phase 2)
 data/
+terraform/.terraform/
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/*.tfvars
