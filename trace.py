@@ -22,6 +22,9 @@ from typing import Any
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
+import bans
+import request_log
+
 # source_id → deque of trace entries (newest first)
 REQUEST_TRACE: dict[str, collections.deque] = collections.defaultdict(
     lambda: collections.deque(maxlen=100)
@@ -134,10 +137,22 @@ def _agg_observe(ip: str, source: str, status: int, ts_iso: str) -> None:
 
 
 class TraceMiddleware(BaseHTTPMiddleware):
+    _log_pruner_started = False
+
     async def dispatch(self, request: Request, call_next):
+        if not TraceMiddleware._log_pruner_started:
+            request_log.start_pruner()
+            TraceMiddleware._log_pruner_started = True
+
         path = request.url.path
         if path in _SKIP_EXACT or any(path.startswith(p) for p in _SKIP_PREFIXES):
             return await call_next(request)
+
+        # ── IP ban check (early exit, after admin routes are exempt) ──────
+        client_ip = _real_client(request)
+        if bans.is_banned(client_ip):
+            from starlette.responses import JSONResponse
+            return JSONResponse({"error": "forbidden", "reason": "IP banned"}, status_code=403)
 
         source = get_source(path)
         if source is None:
@@ -149,7 +164,7 @@ class TraceMiddleware(BaseHTTPMiddleware):
 
         response = await call_next(request)
         duration_ms = int((time.monotonic() - t0) * 1000)
-        client_ip = _real_client(request)
+        # client_ip already resolved at the top of dispatch
         ts_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
         entry: dict[str, Any] = {
@@ -165,4 +180,5 @@ class TraceMiddleware(BaseHTTPMiddleware):
         }
         REQUEST_TRACE[source].appendleft(entry)
         _agg_observe(client_ip, source, response.status_code, ts_iso)
+        request_log.append({**entry, "source": source})
         return response

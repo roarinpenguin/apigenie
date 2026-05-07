@@ -14,9 +14,11 @@ from fastapi import APIRouter, Cookie, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 
 from trace import AGG, REQUEST_TRACE
+import bans
 import geoip
 import listeners as _listeners
 import replay as _replay
+import request_log
 
 # ── Config ────────────────────────────────────────────────────────────────────
 ADMIN_USER   = os.environ.get("ADMIN_USERNAME", "admin")
@@ -460,6 +462,8 @@ select:focus{border-color:var(--lilac)}
 button,input[type=button]{background:linear-gradient(135deg,#7b2cbf,#9d4edd);border:none;border-radius:8px;padding:7px 16px;color:#fff;font-size:.85rem;font-weight:600;cursor:pointer;transition:filter .15s}
 button:hover,input[type=button]:hover{filter:brightness(1.15)}
 .btn-sm{padding:5px 12px;font-size:.8rem}
+.btn-danger{background:linear-gradient(135deg,#9c1a36,#c0392b)!important;border:none!important}
+.pill{font-family:monospace;font-size:.72rem;background:rgba(123,44,191,.25);border:1px solid rgba(199,125,255,.25);border-radius:8px;padding:2px 8px;color:rgba(224,170,255,.85)}
 /* Requests table */
 table{width:100%;border-collapse:collapse}
 th{text-align:left;padding:8px 10px;font-size:.75rem;color:rgba(224,170,255,.5);text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid rgba(199,125,255,.12)}
@@ -576,6 +580,7 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
   <a class="nav-item" onclick="showTab('flows', this); loadFlows()">🔀 Flows</a>
   <a class="nav-item" onclick="showTab('geo', this); loadGeo()">🌍 GeoMap</a>
   <a class="nav-item" onclick="showTab('listeners', this); loadListeners()">🎯 Listeners</a>
+  <a class="nav-item" onclick="showTab('investigate', this); loadBans()">🔍 Investigations</a>
   <a class="nav-item" onclick="showTab('logs', this)">📜 Container Logs</a>
   <span class="nav-section">Reference</span>
   <a class="nav-item" onclick="showTab('config', this)">🔧 Source Config</a>
@@ -627,7 +632,7 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
         </div>
         <div id="sankey" class="viz"></div>
         <p style="font-size:.75rem;color:rgba(224,170,255,.45);margin-top:10px">
-          Click any node to focus on that IP / source. Click outside or "Clear filter" to reset.
+          Click an IP node to filter. Double-click an IP to open the 🔍 Investigation panel.
         </p>
       </div>
     </div>
@@ -696,6 +701,42 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
       <div id="cfg-detail"><p class="empty">Select a source above</p></div>
     </div>
 
+    <!-- INVESTIGATIONS TAB -->
+    <div class="pane" id="pane-investigate">
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span>IP Investigation</span>
+          <div class="row" style="gap:6px;margin:0">
+            <input id="inv-ip-input" type="text" placeholder="Enter IP address…" style="background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:6px 12px;color:var(--mist);outline:none;width:200px;font-size:.85rem"/>
+            <button onclick="investigateIp(document.getElementById('inv-ip-input').value)">🔍 Investigate</button>
+          </div>
+        </div>
+        <div id="inv-result" style="margin-top:12px"><p class="empty">Enter an IP or click one in the Flows / GeoMap tabs.</p></div>
+      </div>
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span>Active IP bans</span>
+          <div class="row" style="gap:6px;margin:0">
+            <input id="ban-ip-input" type="text" placeholder="IP to ban…" style="background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:6px 12px;color:var(--mist);outline:none;width:150px;font-size:.85rem"/>
+            <select id="ban-duration" style="background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:6px 8px;color:var(--mist);outline:none;font-size:.82rem">
+              <option value="30m">30 min</option>
+              <option value="1h" selected>1 hour</option>
+              <option value="6h">6 hours</option>
+              <option value="24h">24 hours</option>
+              <option value="7d">7 days</option>
+              <option value="30d">30 days</option>
+            </select>
+            <button onclick="banIpFromInput()">🚫 Ban</button>
+          </div>
+        </div>
+        <div id="bans-list"><p class="empty">Loading…</p></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Request log stats</div>
+        <div id="reqlog-stats"><p class="empty">Loading…</p></div>
+      </div>
+    </div>
+
     <!-- SETTINGS TAB -->
     <div class="pane" id="pane-settings">
       <div class="card">
@@ -751,7 +792,7 @@ function showTab(tab, el) {
   document.getElementById('pane-' + tab).classList.add('active');
   if (el) el.classList.add('active');
   activeTab = tab;
-  const titles = {requests:'Request Inspector', flows:'Flow Sankey', geo:'Geo Distribution', listeners:'Custom Listeners', logs:'Container Logs', config:'Source Config', settings:'Settings'};
+  const titles = {requests:'Request Inspector', flows:'Flow Sankey', geo:'Geo Distribution', listeners:'Custom Listeners', investigate:'Investigations', logs:'Container Logs', config:'Source Config', settings:'Settings'};
   // Resize viz canvases — ECharts can't measure a hidden element correctly,
   // so we trigger a resize when its pane becomes active.
   if (tab === 'flows' && window._sankey) window._sankey.resize();
@@ -1039,11 +1080,17 @@ function renderSankey() {
     }],
   }, true);
   window._sankey.off('click');
+  window._sankey.off('dblclick');
   window._sankey.on('click', (params) => {
     if (params.dataType === 'node' && params.data.name.startsWith('ip:')) {
       const ip = params.data.name.slice(3);
       document.getElementById('flow-ip').value = ip;
       loadFlows(ip);
+    }
+  });
+  window._sankey.on('dblclick', (params) => {
+    if (params.dataType === 'node' && params.data.name.startsWith('ip:')) {
+      investigateIp(params.data.name.slice(3));
     }
   });
 }
@@ -1191,7 +1238,10 @@ function renderGeoSidebar(focusIp) {
       </div>
       <h4>Per-source breakdown</h4>
       ${bars}
-      <button class="btn-sm" onclick="renderGeoSidebar(null);renderGeoMap()" style="margin-top:10px;background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2)">← Back to all</button>`;
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="btn-sm" onclick="investigateIp('${escHtml(row.ip)}')">🔍 Investigate</button>
+        <button class="btn-sm" onclick="renderGeoSidebar(null);renderGeoMap()" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2)">← Back to all</button>
+      </div>`;
     return;
   }
 
@@ -1712,6 +1762,166 @@ window.addEventListener('resize', () => {
 document.addEventListener('change', (e) => {
   if (e.target && e.target.id === 'wiz-auth-kind') _showAuthFields(e.target.value);
 });
+
+// ── Investigation + Ban functions ────────────────────────────────────────────
+
+function investigateIp(ip) {
+  ip = (ip || '').trim();
+  if (!ip) { toast('Enter an IP address', true); return; }
+  document.getElementById('inv-ip-input').value = ip;
+  // Switch to investigate tab
+  showTab('investigate', document.querySelector('.nav-item[onclick*="investigate"]'));
+  const box = document.getElementById('inv-result');
+  box.innerHTML = '<p class="empty">Investigating ' + escHtml(ip) + '…</p>';
+  fetch('/admin/api/investigate/' + encodeURIComponent(ip) + '?days=1&limit=500', {credentials:'same-origin'})
+    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(d => {
+      let h = '';
+      // Geo + rDNS
+      h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">';
+      h += '<div class="card" style="margin:0;padding:16px"><div class="card-title" style="font-size:.82rem">GeoIP</div>';
+      if (d.geo && d.geo.status === 'ok') {
+        h += '<div style="font-size:.92rem">' + escHtml((d.geo.city||'') + ', ' + (d.geo.country||'')) + '</div>';
+        h += '<div style="font-size:.78rem;color:rgba(224,170,255,.55)">lat ' + (d.geo.lat||'?') + ', lon ' + (d.geo.lon||'?') + '</div>';
+      } else {
+        h += '<div style="font-size:.82rem;color:rgba(224,170,255,.45)">' + escHtml(d.geo ? d.geo.status : 'unknown') + '</div>';
+      }
+      h += '</div>';
+      h += '<div class="card" style="margin:0;padding:16px"><div class="card-title" style="font-size:.82rem">Reverse DNS</div>';
+      h += '<div style="font-size:.92rem">' + escHtml(d.rdns || '—') + '</div></div>';
+      h += '</div>';
+      // Ban status
+      if (d.ban) {
+        h += '<div style="background:rgba(255,80,80,.15);border:1px solid rgba(255,80,80,.3);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:.85rem">';
+        h += '🚫 <b>Banned</b> until ' + escHtml(d.ban.until_iso) + ' — ' + escHtml(d.ban.reason);
+        h += ' <button class="btn-sm" style="margin-left:8px" onclick="unbanIp(this.dataset.ip)" data-ip="'+escHtml(d.ip)+'">Unban</button>';
+        h += '</div>';
+      } else {
+        h += '<div style="margin-bottom:14px"><button class="btn-sm" onclick="banIpQuick(this.dataset.ip)" data-ip="'+escHtml(d.ip)+'">🚫 Ban this IP (1h)</button></div>';
+      }
+      // WHOIS
+      h += '<details style="margin-bottom:14px"><summary style="cursor:pointer;font-size:.85rem;color:var(--lilac)">WHOIS</summary>';
+      h += '<pre style="background:rgba(0,0,0,.35);border:1px solid rgba(199,125,255,.15);border-radius:8px;padding:12px;font-size:.72rem;color:#c0b8d0;max-height:300px;overflow:auto;white-space:pre-wrap">' + escHtml(d.whois || 'no data') + '</pre></details>';
+      // Source breakdown
+      h += '<div class="card-title" style="font-size:.82rem;margin-bottom:8px">Sources hit (' + d.request_count + ' requests in last 24h)</div>';
+      h += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">';
+      for (const [src, cnt] of Object.entries(d.sources || {})) {
+        h += '<span class="pill">' + escHtml(src) + ': ' + cnt + '</span>';
+      }
+      if (!Object.keys(d.sources||{}).length) h += '<span class="pill">no requests</span>';
+      h += '</div>';
+      // Anomalies
+      if (d.anomalies && d.anomalies.length) {
+        h += '<div style="background:rgba(255,200,50,.1);border:1px solid rgba(255,200,50,.25);border-radius:10px;padding:10px 14px;margin-bottom:14px">';
+        h += '<div style="font-size:.85rem;font-weight:600;margin-bottom:6px">⚠ Anomalies detected</div>';
+        d.anomalies.forEach(a => {
+          h += '<div style="font-size:.78rem;color:#e0d090">Path <code>' + escHtml(a.path) + '</code> expected <b>' + escHtml(a.expected) + '</b>, logged as <b>' + escHtml(a.actual) + '</b></div>';
+        });
+        h += '</div>';
+      }
+      // Unknown paths
+      if (d.unknown_paths && d.unknown_paths.length) {
+        h += '<div style="margin-bottom:14px"><div style="font-size:.82rem;font-weight:600;margin-bottom:4px">Unrecognised paths</div>';
+        d.unknown_paths.forEach(p => { h += '<div style="font-size:.78rem"><code>' + escHtml(p) + '</code></div>'; });
+        h += '</div>';
+      }
+      // Request list
+      if (d.requests && d.requests.length) {
+        h += '<details><summary style="cursor:pointer;font-size:.85rem;color:var(--lilac)">Request log (' + d.requests.length + ' entries)</summary>';
+        h += '<div style="max-height:400px;overflow:auto">';
+        h += '<table style="width:100%;font-size:.75rem;border-collapse:collapse"><tr style="border-bottom:1px solid rgba(199,125,255,.15)">';
+        h += '<th style="text-align:left;padding:4px 8px">Time</th><th style="text-align:left;padding:4px 8px">Method</th><th style="text-align:left;padding:4px 8px">Path</th><th style="text-align:left;padding:4px 8px">Source</th><th style="text-align:left;padding:4px 8px">Status</th><th style="text-align:right;padding:4px 8px">ms</th></tr>';
+        d.requests.forEach(r => {
+          h += '<tr style="border-bottom:1px solid rgba(199,125,255,.06)">';
+          h += '<td style="padding:3px 8px;white-space:nowrap">' + escHtml(r.ts) + '</td>';
+          h += '<td style="padding:3px 8px">' + escHtml(r.method) + '</td>';
+          h += '<td style="padding:3px 8px"><code>' + escHtml(r.path) + '</code></td>';
+          h += '<td style="padding:3px 8px"><span class="pill">' + escHtml(r.source||'?') + '</span></td>';
+          h += '<td style="padding:3px 8px">' + r.status + '</td>';
+          h += '<td style="padding:3px 8px;text-align:right">' + (r.duration_ms||'') + '</td></tr>';
+        });
+        h += '</table></div></details>';
+      }
+      box.innerHTML = h;
+    })
+    .catch(e => { box.innerHTML = '<p class="empty">Investigation failed: ' + escHtml(String(e)) + '</p>'; });
+}
+
+function banIpQuick(ip) {
+  fetch('/admin/api/bans', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ip:ip, hours:1, reason:'quick ban from investigation'})})
+    .then(r => { if (!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
+    .then(() => { toast('Banned '+ip+' for 1h'); investigateIp(ip); loadBans(); })
+    .catch(e => toast('Ban failed: '+e, true));
+}
+
+function unbanIp(ip) {
+  fetch('/admin/api/bans/' + encodeURIComponent(ip), {method:'DELETE', credentials:'same-origin'})
+    .then(r => { if (!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
+    .then(() => { toast('Unbanned '+ip); investigateIp(ip); loadBans(); })
+    .catch(e => toast('Unban failed: '+e, true));
+}
+
+function _parseDuration(val) {
+  const m = val.match(/^(\\d+)(m|h|d)$/);
+  if (!m) return {hours:1};
+  const n = parseInt(m[1]);
+  if (m[2]==='m') return {minutes:n};
+  if (m[2]==='h') return {hours:n};
+  return {days:n};
+}
+
+function banIpFromInput() {
+  const ip = (document.getElementById('ban-ip-input').value||'').trim();
+  if (!ip) { toast('Enter an IP', true); return; }
+  const dur = _parseDuration(document.getElementById('ban-duration').value);
+  fetch('/admin/api/bans', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({ip:ip, ...dur, reason:'manual ban from admin UI'})})
+    .then(r => { if (!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
+    .then(() => { toast('Banned '+ip); document.getElementById('ban-ip-input').value=''; loadBans(); })
+    .catch(e => toast('Ban failed: '+e, true));
+}
+
+async function loadBans() {
+  const box = document.getElementById('bans-list');
+  if (!box) return;
+  try {
+    const r = await fetch('/admin/api/bans', {credentials:'same-origin'});
+    const d = await r.json();
+    const items = d.bans || [];
+    if (!items.length) { box.innerHTML = '<p class="empty">No active bans.</p>'; }
+    else {
+      let h = '<table style="width:100%;font-size:.82rem;border-collapse:collapse">';
+      h += '<tr style="border-bottom:1px solid rgba(199,125,255,.15)"><th style="text-align:left;padding:4px 8px">IP</th><th style="text-align:left;padding:4px 8px">Until</th><th style="text-align:left;padding:4px 8px">Reason</th><th style="text-align:right;padding:4px 8px">Remaining</th><th></th></tr>';
+      items.forEach(b => {
+        const mins = Math.round(b.remaining_seconds/60);
+        h += '<tr style="border-bottom:1px solid rgba(199,125,255,.06)">';
+        h += '<td style="padding:4px 8px"><a href="#" onclick="investigateIp(this.dataset.ip);return false" data-ip="'+escHtml(b.ip)+'" style="color:var(--lilac)">' + escHtml(b.ip) + '</a></td>';
+        h += '<td style="padding:4px 8px">' + escHtml(b.until_iso) + '</td>';
+        h += '<td style="padding:4px 8px">' + escHtml(b.reason) + '</td>';
+        h += '<td style="padding:4px 8px;text-align:right">' + mins + ' min</td>';
+        h += '<td style="padding:4px 8px"><button class="btn-sm btn-danger" onclick="unbanIp(this.dataset.ip)" data-ip="'+escHtml(b.ip)+'">Unban</button></td>';
+        h += '</tr>';
+      });
+      h += '</table>';
+      box.innerHTML = h;
+    }
+  } catch(e) { box.innerHTML = '<p class="empty">Failed: '+escHtml(String(e))+'</p>'; }
+  // Also load request log stats
+  try {
+    const r2 = await fetch('/admin/api/request-logs/stats', {credentials:'same-origin'});
+    const d2 = await r2.json();
+    const box2 = document.getElementById('reqlog-stats');
+    if (box2) {
+      const mb = (d2.total_size_bytes / 1048576).toFixed(1);
+      const capMb = (d2.cap_bytes / 1048576).toFixed(0);
+      let h = '<div style="font-size:.92rem">' + mb + ' MB / ' + capMb + ' MB used</div>';
+      h += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">';
+      (d2.files||[]).forEach(f => { h += '<span class="pill">' + escHtml(f.name) + ' (' + (f.size/1024).toFixed(0) + ' KB)</span>'; });
+      h += '</div>';
+      box2.innerHTML = h;
+    }
+  } catch(e) {}
+}
 </script>
 
 <!-- Wizard modal -->
@@ -2758,3 +2968,123 @@ async def api_replays_delete(file_id: str, ag_session: str | None = Cookie(None)
     if not _replay.delete_replay(file_id):
         return JSONResponse({"error": "not_found"}, status_code=404)
     return JSONResponse({"ok": True, "file_id": file_id})
+
+
+# ── Investigation endpoints ──────────────────────────────────────────────────
+
+@router.get("/api/investigate/{ip}")
+async def api_investigate(ip: str, days: int = 1, limit: int = 500,
+                          ag_session: str | None = Cookie(None)):
+    """Return investigation context for a single IP."""
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    import socket
+    # WHOIS (best-effort, no external dep beyond socket)
+    whois_text = ""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["whois", ip], capture_output=True, text=True, timeout=10)
+        whois_text = result.stdout[:8000] if result.returncode == 0 else result.stderr[:2000]
+    except Exception as exc:
+        whois_text = f"whois lookup failed: {exc}"
+
+    # Reverse DNS
+    rdns = ""
+    try:
+        rdns = socket.getfqdn(ip)
+        if rdns == ip:
+            rdns = socket.gethostbyaddr(ip)[0]
+    except Exception:
+        rdns = ""
+
+    # GeoIP (reuse existing module)
+    geo = await geoip.lookup(ip)
+
+    # Recent requests from this IP
+    entries = request_log.search_by_ip(ip, max_days=days, limit=limit)
+
+    # Anomaly detection: for each source seen, check if the IP also hit
+    # paths that don't belong to that source
+    sources_seen: dict[str, list[str]] = {}
+    for e in entries:
+        src = e.get("source", "unknown")
+        sources_seen.setdefault(src, []).append(e.get("path", ""))
+
+    from trace import get_source
+    anomalies: list[dict[str, str]] = []
+    for e in entries:
+        path = e.get("path", "")
+        expected_source = get_source(path)
+        actual_source = e.get("source", "unknown")
+        if expected_source and expected_source != actual_source:
+            anomalies.append({"path": path, "expected": expected_source, "actual": actual_source})
+
+    # Unique paths not belonging to any known source
+    unknown_paths = list({e.get("path", "") for e in entries if not get_source(e.get("path", ""))})
+
+    # Ban status
+    ban = bans.ban_info(ip)
+
+    return JSONResponse({
+        "ip": ip,
+        "whois": whois_text,
+        "rdns": rdns,
+        "geo": geo,
+        "ban": ban,
+        "request_count": len(entries),
+        "requests": entries[:200],  # cap for payload size
+        "sources": {k: len(v) for k, v in sources_seen.items()},
+        "anomalies": anomalies[:50],
+        "unknown_paths": unknown_paths[:50],
+    })
+
+
+@router.get("/api/request-logs/stats")
+async def api_request_log_stats(ag_session: str | None = Cookie(None)):
+    """Return metadata about the persistent request log."""
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return JSONResponse({
+        "total_size_bytes": request_log.total_size_bytes(),
+        "cap_bytes": request_log._CAP_BYTES,
+        "files": request_log.file_list(),
+    })
+
+
+# ── IP Ban endpoints ─────────────────────────────────────────────────────────
+
+@router.get("/api/bans")
+async def api_bans_list(ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return JSONResponse({"bans": bans.list_bans()})
+
+
+@router.post("/api/bans")
+async def api_bans_create(request: Request, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    ip = body.get("ip", "").strip()
+    if not ip:
+        return JSONResponse({"error": "ip is required"}, status_code=400)
+    minutes = int(body.get("minutes", 0))
+    hours = int(body.get("hours", 0))
+    days = int(body.get("days", 0))
+    reason = body.get("reason", "manual ban from admin UI")
+    entry = bans.ban_ip(ip, minutes=minutes, hours=hours, days=days, reason=reason)
+    return JSONResponse(entry, status_code=201)
+
+
+@router.delete("/api/bans/{ip}")
+async def api_bans_delete(ip: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if bans.unban_ip(ip):
+        return JSONResponse({"ok": True, "ip": ip})
+    return JSONResponse({"error": "not_found"}, status_code=404)
