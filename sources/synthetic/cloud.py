@@ -13,6 +13,7 @@ import random
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import profiles
 from sources.synthetic import seeded_uuid
 
 # (provider, event_name, weight, resource_type)
@@ -142,14 +143,15 @@ def _gcp_record(rng: random.Random, ts: datetime, name: str, rtype: str, princip
     }
 
 
-def generate(n: int, seed: int | None = None) -> list[dict]:
+def generate(n: int, seed: int | None = None, ctx: profiles.ProfileContext | None = None) -> list[dict]:
     rng = random.Random(seed) if seed is not None else random.Random()
     now = datetime.now(timezone.utc)
     out: list[dict] = []
     for _ in range(max(0, n)):
         ts = now - timedelta(seconds=rng.randint(0, 3600))
         prov, name, rtype = _weighted(rng)
-        principal = rng.choice(_PRINCIPALS)
+        pu = ctx.pick_user() if ctx else None
+        principal = pu.get("username", rng.choice(_PRINCIPALS)) if pu else rng.choice(_PRINCIPALS)
         if prov == "aws":
             rec = _aws_record(rng, ts, name, rtype, principal)
         elif prov == "azure":

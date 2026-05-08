@@ -209,6 +209,7 @@ The **Settings** tab (under *System*) exposes:
 | **GeoMap** | World map with one bubble per source IP (size ∝ volume); click a bubble to drill down into its per-source breakdown |
 | **Container logs** | Tail logs of any container in the stack via `docker logs --follow` (apigenie, nginx, kafka, zookeeper, pubsub-emulator) |
 | **🎯 Listeners** | Stand up a custom HTTP endpoint on the fly to test a hand-rolled SCol Lua source — synthetic data across four telemetry topics (endpoint / identity / cloud / network) or replay an uploaded log file (json / jsonl / csv / syslog / cef) with a configurable time anchor. Design: [`docs/CUSTOM_LISTENERS.md`](docs/CUSTOM_LISTENERS.md) |
+| **Log Profiles** | Define reusable entity pools (users, machines, C2 servers, malware, mail senders), bind them to sources with a tunable signal-to-noise ratio, and generate **correlatable** telemetry across platforms. See [Log Profiles](#log-profiles) below |
 
 ### GeoMap data source
 
@@ -238,6 +239,11 @@ MaxMind ships weekly updates; re-running the script (or scheduling it via cron) 
 | `/admin/api/flows[?ip=…]` | Sankey feed: nodes (IPs + sources) and weighted links |
 | `/admin/api/geo` | GeoMap feed: per-IP totals + lat/lon + per-source breakdown |
 | `/admin/api/logs/{container}` | SSE stream of container logs |
+| `/admin/api/profiles` | List / create log profiles |
+| `/admin/api/profiles/{id}` | Read / update / delete a profile |
+| `/admin/api/profiles/{id}/preview` | Preview padded entity pools |
+| `/admin/api/source-profiles` | List source↔profile bindings |
+| `/admin/api/source-profiles/{source}` | Bind / unbind a profile to a source |
 
 ---
 
@@ -331,6 +337,7 @@ apigenie/
 ├── app.py                    # FastAPI app: 14 source routes, OAuth2, fake Google token endpoint
 ├── admin.py                  # Admin UI router (/admin/*) + source reference cards + SA JSON generator
 ├── auth.py                   # Bearer / Basic / X-ApiKeys / Duo HMAC dependency injectors
+├── profiles.py               # Log Profiles: CRUD, Star Wars padding, ProfileContext for generators
 ├── trace.py                  # Request-tracing middleware → REQUEST_TRACE deque + AGG (client_ip × source) LRU
 ├── geoip.py                  # Hybrid GeoIP resolver: MaxMind .mmdb if present, else ip-api.com
 ├── state.py                  # Thread-safe Tenable export cache (TTL eviction)
@@ -339,11 +346,12 @@ apigenie/
 │   └── nginx.conf            # 443 HTTPS + 8443 gRPC TLS proxy
 ├── html/
 │   └── index.html            # Public landing page
-├── sources/                  # One module per platform (data generators)
+├── sources/                  # One module per platform (data generators, profile-aware)
 │   ├── okta.py · netskope.py · azure_ad.py · microsoft_defender.py · cisco_duo.py
 │   ├── gcp_audit.py · tenable.py · proofpoint.py
 │   ├── wiz.py · snyk.py · darktrace.py
-│   └── aws_cloudtrail.py · aws_waf.py · aws_guardduty.py    # generators only (no HTTP routes — see LocalStack plan)
+│   ├── aws_cloudtrail.py · aws_waf.py · aws_guardduty.py    # generators only (no HTTP routes — see LocalStack plan)
+│   └── synthetic/            # Synthetic topics for custom listeners (also profile-aware)
 ├── publishers/
 │   ├── kafka_publisher.py    # Background thread → Kafka topic azure-platform-logs
 │   └── pubsub_publisher.py   # Background thread → Pub/Sub topic audit-logs
@@ -396,6 +404,36 @@ apigenie/
 
 ---
 
+## Log Profiles
+
+Log Profiles let you define **reusable entity pools** that are blended into generated logs across any combination of sources — producing correlatable telemetry where the same user, machine, or C2 IP appears in Okta, Defender, Darktrace, and custom listeners simultaneously.
+
+### Entity types
+
+| Entity | Max per profile | Blended into |
+|--------|----------------|--------------|
+| **Users** | 10 | Okta (actor), Azure AD (audit/signin), Cisco Duo (email), GCP Audit (principal), AWS CloudTrail (IAM), Snyk (audit), listener identity/cloud/endpoint |
+| **Machines** | 10 | Defender (compromised entity), Tenable (asset), Darktrace (device), GuardDuty (instance), Wiz (cloud entity), listener endpoint/network |
+| **C2 Servers** | 5 | Defender (remote IP), Darktrace (dest IP), GuardDuty (remote IP), WAF (blocked client IP), Netskope (C2), listener endpoint/network |
+| **Malware** | 10 | Proofpoint (threat name), Netskope (malware name) |
+| **Mail Senders** | 5 | Proofpoint (sender address, subject, attachment) |
+
+### How it works
+
+1. **Create a profile** via the Admin UI *Log Profiles* tab or `POST /admin/api/profiles` — define as few or many entities as you want.
+2. **Star Wars padding** — entity lists shorter than the limit are automatically filled with themed characters (Mandalorian, Rebels, Andor, etc.) so the pool is always full.
+3. **Bind to sources** — assign a profile to one or more sources with a signal-to-noise **ratio** (0–100%). At 80%, roughly 80% of generated events use profile entities and 20% use random noise.
+4. **Deterministic seeding** — the same profile + source combination always produces the same entity sequence (useful for reproducible demos).
+
+### Storage
+
+| Item | Path |
+|------|------|
+| Profile JSON files | `./data/profiles/<uuid>.json` |
+| Source↔profile bindings | `./data/source_profiles.json` |
+
+---
+
 ## Data realism
 
 Each request generates fresh, randomized log entries using weighted probability templates:
@@ -404,6 +442,8 @@ Each request generates fresh, randomized log entries using weighted probability 
 - **Tenable**: 40% critical Log4Shell · 35% high Apache vulns · 20% medium SMB · 5% low/informational
 - **Wiz**: 40% toxic combinations · 20% critical RCE · 15% open security groups · 10% exposed secrets
 - All other sources follow similar weighted distributions anchored to `now()` timestamps
+
+When a [Log Profile](#log-profiles) is bound to a source, profile entities are blended at the configured ratio while preserving these weighted templates — the *event shapes* stay realistic, only the *actors/targets* become correlatable across platforms.
 
 ---
 

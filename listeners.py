@@ -461,6 +461,7 @@ def build_response(
 
     # Lazy import so a (hypothetical) load-time failure in a topic module
     # doesn't stop the listener backbone from booting.
+    import profiles
     from sources.synthetic import TOPICS
 
     topic = listener.synthetic.topic
@@ -483,7 +484,8 @@ def build_response(
         # If a seed is set, derive a per-page seed so successive pages don't
         # return the same records.
         per_page_seed = (seed + page_idx) if seed is not None else None
-        records = fn(n, seed=per_page_seed)
+        ctx = profiles.get_context(f"listener_{listener.id}")
+        records = fn(n, seed=per_page_seed, ctx=ctx)
 
     return _encode(listener.codec, records, listener, pag_meta, extra_headers)
 

@@ -3,6 +3,7 @@
 import random
 from typing import Any
 
+import profiles
 from generators import (
     epoch_to_iso,
     generate_hostname,
@@ -66,18 +67,29 @@ _VULN_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
 }
 
 
-def _generate_vuln() -> dict[str, Any]:
+def _generate_vuln(ctx: profiles.ProfileContext | None = None) -> dict[str, Any]:
     template = weighted_choice(_VULN_TEMPLATES)
     ts = now_epoch() - random.randint(0, 86400 * 30)
+    pm = ctx.pick_machine() if ctx else None
+    if pm:
+        asset_hostname = pm.get("primary_workstation", generate_hostname().split(".")[0])
+        asset_fqdn = f"{asset_hostname}.internal.net"
+        asset_ip = pm.get("ip") or generate_ip()
+        asset_os = {"windows": "Windows Server 2019", "linux": "Ubuntu 20.04"}.get(pm.get("os_type", ""), random.choice(["Windows Server 2019", "Ubuntu 20.04", "CentOS 7", "RHEL 8"]))
+    else:
+        asset_fqdn = generate_hostname()
+        asset_hostname = asset_fqdn.split(".")[0]
+        asset_ip = generate_ip()
+        asset_os = random.choice(["Windows Server 2019", "Ubuntu 20.04", "CentOS 7", "RHEL 8"])
     return {
         "asset": {
             "agent_uuid": generate_uuid(),
             "device_type": random.choice(["general-purpose", "hypervisor", "router"]),
-            "fqdn": generate_hostname(),
-            "hostname": generate_hostname().split(".")[0],
-            "ipv4": generate_ip(),
+            "fqdn": asset_fqdn,
+            "hostname": asset_hostname,
+            "ipv4": asset_ip,
             "last_unauthenticated_results": now_iso(),
-            "operating_system": [random.choice(["Windows Server 2019", "Ubuntu 20.04", "CentOS 7", "RHEL 8"])],
+            "operating_system": [asset_os],
             "uuid": generate_uuid(),
         },
         "output": f"Port {random.choice([80, 443, 445, 8080, 22, 3389])} was found to be vulnerable.",
@@ -167,7 +179,8 @@ def _generate_asset() -> dict[str, Any]:
 
 
 def generate_vuln_chunks() -> list[list[dict[str, Any]]]:
-    all_vulns = [_generate_vuln() for _ in range(VULNS_TOTAL)]
+    ctx = profiles.get_context("tenable")
+    all_vulns = [_generate_vuln(ctx) for _ in range(VULNS_TOTAL)]
     chunks = []
     for i in range(0, len(all_vulns), VULNS_CHUNK_SIZE):
         chunks.append(all_vulns[i : i + VULNS_CHUNK_SIZE])

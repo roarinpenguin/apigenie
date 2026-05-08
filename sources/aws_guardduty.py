@@ -3,6 +3,7 @@
 import random
 from typing import Any
 
+import profiles
 from generators import (
     generate_ip,
     generate_uuid,
@@ -87,14 +88,16 @@ _FINDING_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
 }
 
 
-def _generate_finding() -> dict[str, Any]:
+def _generate_finding(ctx: profiles.ProfileContext | None = None) -> dict[str, Any]:
     template = weighted_choice(_FINDING_TEMPLATES)
     region = random.choice(_REGIONS)
     account_id = random.choice(_ACCOUNT_IDS)
     finding_id = generate_uuid().replace("-", "")
     instance_id = f"i-{generate_uuid()[:17]}"
-    src_ip = generate_ip()
-    dst_ip = generate_ip()
+    pm = ctx.pick_machine() if ctx else None
+    pc2 = ctx.pick_c2() if ctx else None
+    src_ip = pm.get("ip") if pm else generate_ip()
+    dst_ip = pc2.get("ip_c2") if pc2 else generate_ip()
 
     return {
         "AccountId": account_id,
@@ -166,7 +169,8 @@ def _generate_finding() -> dict[str, Any]:
 
 
 def get_findings_response(limit: int = 50) -> dict[str, Any]:
+    ctx = profiles.get_context("aws_guardduty")
     count = min(limit, 50)
-    findings = [_generate_finding() for _ in range(count)]
+    findings = [_generate_finding(ctx) for _ in range(count)]
     findings.sort(key=lambda x: x["UpdatedAt"], reverse=True)
     return {"Findings": findings}

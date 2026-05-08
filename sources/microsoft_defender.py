@@ -3,6 +3,7 @@
 import random
 from typing import Any
 
+import profiles
 from generators import (
     generate_hostname,
     generate_ip,
@@ -69,13 +70,17 @@ _SUBSCRIPTIONS = [generate_uuid() for _ in range(3)]
 
 
 def get_alerts_response(limit: int = 50) -> dict[str, Any]:
+    ctx = profiles.get_context("microsoft_defender")
     count = min(limit, 50)
     alerts = []
     for _ in range(count):
         template = weighted_choice(_ALERT_TEMPLATES)
         sub = random.choice(_SUBSCRIPTIONS)
         rg = random.choice(_RESOURCE_GROUPS)
-        hostname = generate_hostname().split(".")[0]
+        pm = ctx.pick_machine() if ctx else None
+        pc2 = ctx.pick_c2() if ctx else None
+        hostname = pm.get("primary_workstation", generate_hostname().split(".")[0]) if pm else generate_hostname().split(".")[0]
+        entity_ip = pc2.get("ip_c2") if pc2 else generate_ip()
         alert_id = generate_uuid()
         alerts.append(
             {
@@ -90,7 +95,7 @@ def get_alerts_response(limit: int = 50) -> dict[str, Any]:
                     "detectedTimeUtc": now_iso(),
                     "entities": [
                         {"$id": "1", "type": "host", "hostName": hostname, "omsAgentId": generate_uuid()},
-                        {"$id": "2", "type": "ip", "address": generate_ip()},
+                        {"$id": "2", "type": "ip", "address": entity_ip},
                     ],
                     "extendedProperties": {
                         "resourceType": "Virtual Machine",

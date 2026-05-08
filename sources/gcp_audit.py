@@ -4,6 +4,7 @@ import json
 import random
 from typing import Any
 
+import profiles
 from generators import (
     generate_email,
     generate_ip,
@@ -36,12 +37,18 @@ _LOG_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
 }
 
 
-def generate_audit_log(project: str | None = None) -> dict[str, Any]:
+def generate_audit_log(project: str | None = None, ctx: profiles.ProfileContext | None = None) -> dict[str, Any]:
     template = weighted_choice(_LOG_TEMPLATES)
     project = project or random.choice(_PROJECTS)
     service = random.choice(_SERVICES)
     method = random.choice(_METHODS.get(service, ["unknownMethod"]))
-    principal = generate_email()
+    pu = ctx.pick_user() if ctx else None
+    if pu:
+        principal = pu.get("email") or f"{pu.get('username', 'user')}@{pu.get('domain', 'example.com').lower()}.com"
+        caller_ip = pu.get("workstation_ip") or generate_ip()
+    else:
+        principal = generate_email()
+        caller_ip = generate_ip()
     log_id = generate_uuid()
 
     return {
@@ -63,7 +70,7 @@ def generate_audit_log(project: str | None = None) -> dict[str, Any]:
             ],
             "methodName": method,
             "requestMetadata": {
-                "callerIp": generate_ip(),
+                "callerIp": caller_ip,
                 "callerSuppliedUserAgent": "google-cloud-sdk/453.0.0",
             },
             "resourceName": f"projects/{project}",
@@ -81,12 +88,14 @@ def generate_audit_log(project: str | None = None) -> dict[str, Any]:
 
 
 def get_audit_logs_response(limit: int = 50, project: str | None = None) -> dict[str, Any]:
+    ctx = profiles.get_context("gcp_audit")
     count = min(limit, 50)
-    entries = [generate_audit_log(project) for _ in range(count)]
+    entries = [generate_audit_log(project, ctx) for _ in range(count)]
     return {"entries": entries}
 
 
 def generate_pubsub_message(project: str | None = None) -> bytes:
     """Generate a Pub/Sub message payload (JSON-encoded audit log)."""
-    log = generate_audit_log(project)
+    ctx = profiles.get_context("gcp_audit")
+    log = generate_audit_log(project, ctx)
     return json.dumps(log).encode("utf-8")

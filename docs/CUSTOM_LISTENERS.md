@@ -204,6 +204,8 @@ One module per topic under `sources/synthetic/`, each exposing `generate(n: int,
 
 Generators reuse the existing `generators.py` helpers (UUID, IP, hostname, weighted choice). Distributions are weighted to be visually realistic in dashboards (e.g. ~95% benign + ~5% suspicious endpoint events).
 
+All four synthetic generators are **Log Profile-aware**: when a profile is bound to `listener_endpoint`, `listener_identity`, `listener_cloud`, or `listener_network` via the Admin UI, the generator blends profile entities (users, machines, C2 servers) into the output at the configured ratio. See `README.md` → [Log Profiles](../README.md#log-profiles) for details.
+
 ## 9. Replay engine
 
 ```python

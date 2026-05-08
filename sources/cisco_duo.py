@@ -3,6 +3,7 @@
 import random
 from typing import Any
 
+import profiles
 from generators import (
     epoch_to_iso,
     generate_country_code,
@@ -39,7 +40,7 @@ _ADMIN_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
 }
 
 
-def _make_auth_log(mintime: int | None = None, maxtime: int | None = None) -> dict[str, Any]:
+def _make_auth_log(mintime: int | None = None, maxtime: int | None = None, ctx: profiles.ProfileContext | None = None) -> dict[str, Any]:
     template = weighted_choice(_AUTH_TEMPLATES)
     result = template["result"]
     reason = random.choice(_REASONS[result])
@@ -85,7 +86,7 @@ def _make_auth_log(mintime: int | None = None, maxtime: int | None = None) -> di
             "name": f"iPhone {random.randint(12, 15)} ({random.choice(_USERS).split('@')[0]})",
             "type": "Apple iOS",
         },
-        "email": random.choice(_USERS),
+        "email": _duo_email(ctx),
         "event_type": "authentication",
         "factor": random.choice(_FACTORS),
         "isotimestamp": epoch_to_iso(ts),
@@ -98,14 +99,22 @@ def _make_auth_log(mintime: int | None = None, maxtime: int | None = None) -> di
         "user": {
             "groups": [random.choice(["Engineering", "Sales", "HR", "Executives", "IT"])],
             "key": f"DU{generate_uuid()[:18].upper()}",
-            "name": random.choice(_USERS),
+            "name": _duo_email(ctx),
         },
     }
 
 
+def _duo_email(ctx: profiles.ProfileContext | None) -> str:
+    pu = ctx.pick_user() if ctx else None
+    if pu:
+        return pu.get("email") or f"{pu.get('username', 'user')}@{pu.get('domain', 'example.com').lower()}.com"
+    return random.choice(_USERS)
+
+
 def get_auth_logs_response(limit: int = 100, mintime: int | None = None, maxtime: int | None = None) -> dict[str, Any]:
+    ctx = profiles.get_context("cisco_duo")
     count = min(limit, 100)
-    logs = [_make_auth_log(mintime, maxtime) for _ in range(count)]
+    logs = [_make_auth_log(mintime, maxtime, ctx) for _ in range(count)]
     logs.sort(key=lambda x: x["timestamp"], reverse=True)
     next_offset = None
     if count == limit:

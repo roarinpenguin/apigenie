@@ -10,6 +10,7 @@ import random
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import profiles
 from sources.synthetic import seeded_uuid
 
 _USERS = [
@@ -60,17 +61,24 @@ def _weighted(rng: random.Random, items: list[tuple[str, float]]) -> str:
     return items[-1][0]
 
 
-def generate(n: int, seed: int | None = None) -> list[dict]:
+def generate(n: int, seed: int | None = None, ctx: profiles.ProfileContext | None = None) -> list[dict]:
     rng = random.Random(seed) if seed is not None else random.Random()
     now = datetime.now(timezone.utc)
     out: list[dict] = []
     for _ in range(max(0, n)):
         ts = now - timedelta(seconds=rng.randint(0, 1800))
-        actor = rng.choice(_USERS)
+        pu = ctx.pick_user() if ctx else None
+        if pu:
+            actor = pu.get("email") or f"{pu.get('username', 'user')}@acme.com"
+            ip = pu.get("workstation_ip") or f"{rng.randint(1,223)}.{rng.randint(0,255)}.{rng.randint(0,255)}.{rng.randint(1,254)}"
+            city_name = pu.get("city", "San Francisco")
+            country, country_name, region, city, lat, lon = ("US", "United States", "California", city_name, 37.77, -122.42)
+        else:
+            actor = rng.choice(_USERS)
+            country, country_name, region, city, lat, lon = rng.choice(_GEOS)
+            ip = f"{rng.randint(1,223)}.{rng.randint(0,255)}.{rng.randint(0,255)}.{rng.randint(1,254)}"
         evt = _weighted(rng, _EVENTS)
         outcome = _weighted(rng, _OUTCOMES)
-        country, country_name, region, city, lat, lon = rng.choice(_GEOS)
-        ip = f"{rng.randint(1,223)}.{rng.randint(0,255)}.{rng.randint(0,255)}.{rng.randint(1,254)}"
         rec = {
             "uuid":      str(seeded_uuid(rng)),
             "published": ts.isoformat(timespec="milliseconds"),

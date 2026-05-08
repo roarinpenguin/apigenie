@@ -18,6 +18,7 @@ import bans
 import geoip
 import listeners as _listeners
 import replay as _replay
+import profiles
 import request_log
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -580,6 +581,7 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
   <a class="nav-item" onclick="showTab('flows', this); loadFlows()">🔀 Flows</a>
   <a class="nav-item" onclick="showTab('geo', this); loadGeo()">🌍 GeoMap</a>
   <a class="nav-item" onclick="showTab('listeners', this); loadListeners()">🎯 Listeners</a>
+  <a class="nav-item" onclick="showTab('profiles', this); loadProfiles()">🎭 Log Profiles</a>
   <a class="nav-item" onclick="showTab('investigate', this); loadBans()">🔍 Investigations</a>
   <a class="nav-item" onclick="showTab('logs', this)">📜 Container Logs</a>
   <span class="nav-section">Reference</span>
@@ -701,6 +703,28 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
       <div id="cfg-detail"><p class="empty">Select a source above</p></div>
     </div>
 
+    <!-- LOG PROFILES TAB -->
+    <div class="pane" id="pane-profiles">
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span>Log Profiles</span>
+          <button onclick="openProfileEditor()">+ New profile</button>
+        </div>
+        <p style="font-size:.78rem;color:rgba(224,170,255,.45);margin-bottom:14px">
+          Profiles define users, machines, C2 servers, malware, and mail senders used to generate correlatable telemetry.
+          Assign a profile to one or more sources to blend profile entities into generated logs at a configurable ratio.
+        </p>
+        <div id="profiles-list"><p class="empty">Loading…</p></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Source ↔ Profile bindings</div>
+        <p style="font-size:.78rem;color:rgba(224,170,255,.45);margin-bottom:14px">
+          Assign profiles to sources and tune the signal-to-noise ratio (0–100%).
+        </p>
+        <div id="bindings-list"><p class="empty">Loading…</p></div>
+      </div>
+    </div>
+
     <!-- INVESTIGATIONS TAB -->
     <div class="pane" id="pane-investigate">
       <div class="card">
@@ -792,7 +816,7 @@ function showTab(tab, el) {
   document.getElementById('pane-' + tab).classList.add('active');
   if (el) el.classList.add('active');
   activeTab = tab;
-  const titles = {requests:'Request Inspector', flows:'Flow Sankey', geo:'Geo Distribution', listeners:'Custom Listeners', investigate:'Investigations', logs:'Container Logs', config:'Source Config', settings:'Settings'};
+  const titles = {requests:'Request Inspector', flows:'Flow Sankey', geo:'Geo Distribution', listeners:'Custom Listeners', profiles:'Log Profiles', investigate:'Investigations', logs:'Container Logs', config:'Source Config', settings:'Settings'};
   // Resize viz canvases — ECharts can't measure a hidden element correctly,
   // so we trigger a resize when its pane becomes active.
   if (tab === 'flows' && window._sankey) window._sankey.resize();
@@ -1922,7 +1946,268 @@ async function loadBans() {
     }
   } catch(e) {}
 }
+
+// ── Log Profiles functions ───────────────────────────────────────────────────
+let _profilesCache = [];
+let _editingProfileId = null;
+
+const _ENTITY_SECTIONS = [
+  {key:'users',        label:'Users (up to 10)',        limit:10, fields:['name','email','domain','username','department','city','country','role','primary_workstation','server_of_reference','workstation_ip','server_ip']},
+  {key:'machines',     label:'Machines (up to 10)',     limit:10, fields:['primary_workstation','os_type','role','ip']},
+  {key:'c2_servers',   label:'C2 Servers (up to 5)',    limit:5,  fields:['ip_c2','port','fqdn']},
+  {key:'malware',      label:'Malware (up to 10)',      limit:10, fields:['filename','hash','source_process','cmdline']},
+  {key:'mail_senders', label:'Mail Senders (up to 5)',  limit:5,  fields:['mail_address','subject','link','attachment_filename']},
+];
+
+async function loadProfiles() {
+  const box = document.getElementById('profiles-list');
+  try {
+    const r = await fetch('/admin/api/profiles', {credentials:'same-origin'});
+    const d = await r.json();
+    _profilesCache = d.profiles || [];
+    if (!_profilesCache.length) {
+      box.innerHTML = '<p class="empty">No profiles yet. Click "+ New profile" to create one.</p>';
+    } else {
+      let h = '';
+      _profilesCache.forEach(p => {
+        h += '<div class="listener-row" style="cursor:pointer" onclick="openProfileEditor(&apos;'+escHtml(p.id)+'&apos;)">';
+        h += '<div class="lr-name">'+escHtml(p.name)+'</div>';
+        if (p.description) h += '<div class="lr-url">'+escHtml(p.description)+'</div>';
+        h += '<div class="lr-meta">';
+        h += '<span class="pill">'+p.users+' users</span>';
+        h += '<span class="pill">'+p.machines+' machines</span>';
+        h += '<span class="pill">'+p.c2_servers+' C2</span>';
+        h += '<span class="pill">'+p.malware+' malware</span>';
+        h += '<span class="pill">'+p.mail_senders+' senders</span>';
+        h += '</div></div>';
+      });
+      box.innerHTML = h;
+    }
+  } catch(e) { box.innerHTML = '<p class="empty">Failed: '+escHtml(String(e))+'</p>'; }
+  // Also load bindings
+  await loadBindings();
+}
+
+async function loadBindings() {
+  const box = document.getElementById('bindings-list');
+  if (!box) return;
+  try {
+    const [bndResp, lstResp] = await Promise.all([
+      fetch('/admin/api/source-profiles', {credentials:'same-origin'}),
+      fetch('/admin/api/listeners', {credentials:'same-origin'})
+    ]);
+    const d = await bndResp.json();
+    const ld = await lstResp.json();
+    const bindings = d.bindings || {};
+    const allSources = Object.keys(SOURCES);
+    // Append active listeners keyed as listener_{id}
+    (ld.listeners || []).forEach(l => {
+      const key = 'listener_' + l.id;
+      if (!allSources.includes(key)) allSources.push(key);
+    });
+    // Build a display-name map for listeners
+    const listenerNames = {};
+    (ld.listeners || []).forEach(l => { listenerNames['listener_'+l.id] = l.name + ' (' + (l.topic||'replay') + ')'; });
+    let h = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px">';
+    allSources.forEach(src => {
+      const bnd = bindings[src];
+      const hasBind = !!bnd;
+      h += '<div style="background:rgba(36,0,70,.4);border:1px solid rgba(199,125,255,'+(hasBind?'.35':'.12')+');border-radius:10px;padding:12px">';
+      h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">';
+      const label = listenerNames[src] ? '🎯 ' + listenerNames[src] : (SOURCES[src]||{}).name || src;
+      h += '<span style="font-weight:600;color:var(--mist);font-size:.88rem">'+escHtml(label)+'</span>';
+      if (hasBind) {
+        h += '<button class="btn-sm btn-danger" onclick="unbindSource(&apos;'+escHtml(src)+'&apos;)">Unbind</button>';
+      }
+      h += '</div>';
+      h += '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">';
+      h += '<select id="bnd-prof-'+escHtml(src)+'" style="flex:1;min-width:120px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:5px 8px;color:var(--mist);font-size:.8rem">';
+      h += '<option value="">— none —</option>';
+      _profilesCache.forEach(p => {
+        const sel = (hasBind && bnd.profile_id===p.id) ? ' selected' : '';
+        h += '<option value="'+escHtml(p.id)+'"'+sel+'>'+escHtml(p.name)+'</option>';
+      });
+      h += '</select>';
+      h += '<input type="range" min="0" max="100" value="'+(hasBind?bnd.ratio:70)+'" id="bnd-ratio-'+escHtml(src)+'" style="width:80px" oninput="document.getElementById(&apos;bnd-rv-'+escHtml(src)+'&apos;).textContent=this.value+&apos;%&apos;"/>';
+      h += '<span id="bnd-rv-'+escHtml(src)+'" style="font-family:monospace;font-size:.78rem;min-width:32px">'+(hasBind?bnd.ratio:70)+'%</span>';
+      h += '<button class="btn-sm" onclick="saveBinding(&apos;'+escHtml(src)+'&apos;)">Save</button>';
+      h += '</div></div>';
+    });
+    h += '</div>';
+    box.innerHTML = h;
+  } catch(e) { box.innerHTML = '<p class="empty">Failed: '+escHtml(String(e))+'</p>'; }
+}
+
+function saveBinding(src) {
+  const sel = document.getElementById('bnd-prof-'+src);
+  const profId = sel ? sel.value : '';
+  if (!profId) { unbindSource(src); return; }
+  const slider = document.getElementById('bnd-ratio-'+src);
+  const ratio = slider ? parseInt(slider.value) : 70;
+  fetch('/admin/api/source-profiles/'+encodeURIComponent(src), {
+    method:'PUT', credentials:'same-origin', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({profile_id:profId, ratio:ratio})
+  }).then(r=>{if(!r.ok)throw new Error(r.status);return r.json()})
+    .then(()=>{toast('Bound '+src); loadBindings();})
+    .catch(e=>toast('Failed: '+e,true));
+}
+
+function unbindSource(src) {
+  fetch('/admin/api/source-profiles/'+encodeURIComponent(src), {method:'DELETE',credentials:'same-origin'})
+    .then(r=>{if(!r.ok&&r.status!==404)throw new Error(r.status);return r.json()})
+    .then(()=>{toast('Unbound '+src); loadBindings();})
+    .catch(e=>toast('Failed: '+e,true));
+}
+
+function openProfileEditor(profileId) {
+  _editingProfileId = profileId || null;
+  const modal = document.getElementById('profile-modal');
+  modal.classList.remove('hidden');
+  if (_editingProfileId) {
+    document.getElementById('profile-modal-title').textContent = 'Edit profile';
+    document.getElementById('profile-delete-btn').style.display = '';
+    fetch('/admin/api/profiles/'+_editingProfileId, {credentials:'same-origin'})
+      .then(r=>r.json()).then(p => _fillProfileForm(p));
+  } else {
+    document.getElementById('profile-modal-title').textContent = 'New profile';
+    document.getElementById('profile-delete-btn').style.display = 'none';
+    _fillProfileForm({name:'',description:'',users:[],machines:[],c2_servers:[],malware:[],mail_senders:[]});
+  }
+}
+
+function closeProfileEditor() {
+  document.getElementById('profile-modal').classList.add('hidden');
+}
+
+function _fillProfileForm(p) {
+  document.getElementById('pf-name').value = p.name||'';
+  document.getElementById('pf-desc').value = p.description||'';
+  _ENTITY_SECTIONS.forEach(sec => {
+    const wrap = document.getElementById('pf-'+sec.key);
+    wrap.innerHTML = '';
+    const items = p[sec.key] || [];
+    items.forEach((item,i) => _addEntityRow(sec, wrap, item, i));
+    // Add button
+    const addBtn = document.createElement('button');
+    addBtn.className = 'btn-sm';
+    addBtn.style.cssText = 'margin-top:6px;background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2)';
+    addBtn.textContent = '+ Add';
+    addBtn.id = 'pf-add-'+sec.key;
+    addBtn.onclick = function() {
+      const rows = wrap.querySelectorAll('.entity-row');
+      if (rows.length >= sec.limit) { toast('Max '+sec.limit+' entries',true); return; }
+      _addEntityRow(sec, wrap, {}, rows.length);
+      // Move add button to end
+      wrap.appendChild(addBtn);
+    };
+    wrap.appendChild(addBtn);
+  });
+}
+
+function _addEntityRow(sec, wrap, item, idx) {
+  const row = document.createElement('div');
+  row.className = 'entity-row';
+  row.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:4px;margin-bottom:6px;padding:6px;background:rgba(0,0,0,.2);border-radius:6px;position:relative';
+  sec.fields.forEach(f => {
+    const inp = document.createElement('input');
+    inp.type = 'text';
+    inp.placeholder = f;
+    inp.value = item[f]||'';
+    inp.dataset.field = f;
+    inp.style.cssText = 'background:rgba(90,24,154,.15);border:1px solid rgba(199,125,255,.25);border-radius:6px;padding:4px 8px;color:var(--mist);font-size:.78rem;outline:none;width:100%;box-sizing:border-box';
+    row.appendChild(inp);
+  });
+  const del = document.createElement('button');
+  del.textContent = '×';
+  del.className = 'btn-sm';
+  del.style.cssText = 'position:absolute;top:2px;right:2px;padding:2px 6px;font-size:.7rem;background:rgba(255,80,80,.3);border:none';
+  del.onclick = function(){ row.remove(); };
+  row.appendChild(del);
+  // Insert before add button
+  const addBtn = document.getElementById('pf-add-'+sec.key);
+  if (addBtn) wrap.insertBefore(row, addBtn);
+  else wrap.appendChild(row);
+}
+
+function _collectProfileForm() {
+  const data = {
+    name: document.getElementById('pf-name').value.trim(),
+    description: document.getElementById('pf-desc').value.trim(),
+  };
+  _ENTITY_SECTIONS.forEach(sec => {
+    const wrap = document.getElementById('pf-'+sec.key);
+    const rows = wrap.querySelectorAll('.entity-row');
+    data[sec.key] = [];
+    rows.forEach(row => {
+      const item = {};
+      let hasValue = false;
+      row.querySelectorAll('input[data-field]').forEach(inp => {
+        item[inp.dataset.field] = inp.value.trim();
+        if (inp.value.trim()) hasValue = true;
+      });
+      if (hasValue) data[sec.key].push(item);
+    });
+  });
+  return data;
+}
+
+function saveProfile() {
+  const data = _collectProfileForm();
+  if (!data.name) { toast('Name is required',true); return; }
+  const url = _editingProfileId
+    ? '/admin/api/profiles/'+_editingProfileId
+    : '/admin/api/profiles';
+  const method = _editingProfileId ? 'PUT' : 'POST';
+  fetch(url, {method, credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)})
+    .then(r=>{if(!r.ok)throw new Error(r.status);return r.json()})
+    .then(()=>{toast(_editingProfileId?'Profile updated':'Profile created'); closeProfileEditor(); loadProfiles();})
+    .catch(e=>toast('Save failed: '+e,true));
+}
+
+function deleteProfile() {
+  if (!_editingProfileId) return;
+  if (!confirm('Delete this profile? This also removes all source bindings using it.')) return;
+  fetch('/admin/api/profiles/'+_editingProfileId, {method:'DELETE',credentials:'same-origin'})
+    .then(r=>{if(!r.ok)throw new Error(r.status);return r.json()})
+    .then(()=>{toast('Profile deleted'); closeProfileEditor(); loadProfiles();})
+    .catch(e=>toast('Delete failed: '+e,true));
+}
 </script>
+
+<!-- Profile editor modal -->
+<div id="profile-modal" class="modal-overlay hidden" onclick="if(event.target===this)closeProfileEditor()">
+  <div class="modal" style="width:min(900px,95vw);max-height:90vh;overflow-y:auto">
+    <div class="modal-head">
+      <h3 id="profile-modal-title">New profile</h3>
+      <button class="close" onclick="closeProfileEditor()">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field"><label>Name</label>
+        <input id="pf-name" type="text" placeholder="e.g. Starfleet" style="flex:1"/></div>
+      <div class="field"><label>Description</label>
+        <input id="pf-desc" type="text" placeholder="Optional description" style="flex:1"/></div>
+      <h4 style="margin-top:16px;font-size:.85rem;color:var(--lilac)">Users (up to 10)</h4>
+      <div id="pf-users"></div>
+      <h4 style="margin-top:16px;font-size:.85rem;color:var(--lilac)">Machines (up to 10)</h4>
+      <div id="pf-machines"></div>
+      <h4 style="margin-top:16px;font-size:.85rem;color:var(--lilac)">C2 Servers (up to 5)</h4>
+      <div id="pf-c2_servers"></div>
+      <h4 style="margin-top:16px;font-size:.85rem;color:var(--lilac)">Malware (up to 10)</h4>
+      <div id="pf-malware"></div>
+      <h4 style="margin-top:16px;font-size:.85rem;color:var(--lilac)">Mail Senders (up to 5)</h4>
+      <div id="pf-mail_senders"></div>
+    </div>
+    <div class="modal-foot">
+      <div class="left">
+        <button class="btn-sm btn-danger" id="profile-delete-btn" onclick="deleteProfile()" style="display:none">🗑 Delete</button>
+      </div>
+      <div class="right">
+        <button class="btn-sm" onclick="closeProfileEditor()" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2)">Cancel</button>
+        <button class="btn-sm" onclick="saveProfile()">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- Wizard modal -->
 <div id="wiz-modal" class="modal-overlay hidden" onclick="if(event.target===this)closeWizard()">
@@ -2578,6 +2863,7 @@ def _listener_summary(listener: "_listeners.Listener") -> dict[str, Any]:
                 if listener.replay else "?"
             )
         ),
+        "topic": listener.synthetic.topic if listener.synthetic else None,
         "url": f"https://{DOMAIN}/listener/{listener.id}{listener.path}",
         "hit_count_mem": len(hits) if hits is not None else 0,
         "last_hit_ts": last_ts,
@@ -3087,4 +3373,119 @@ async def api_bans_delete(ip: str, ag_session: str | None = Cookie(None)):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     if bans.unban_ip(ip):
         return JSONResponse({"ok": True, "ip": ip})
+    return JSONResponse({"error": "not_found"}, status_code=404)
+
+
+# ── Log Profiles API ──────────────────────────────────────────────────────────
+
+@router.get("/api/profiles")
+async def api_profiles_list(ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return JSONResponse({"profiles": profiles.list_profiles()})
+
+
+@router.post("/api/profiles")
+async def api_profiles_create(request: Request, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    if not body.get("name", "").strip():
+        return JSONResponse({"error": "name is required"}, status_code=400)
+    profile = profiles.create_profile(body)
+    return JSONResponse(profile, status_code=201)
+
+
+@router.get("/api/profiles/{profile_id}")
+async def api_profiles_get(profile_id: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    profile = profiles.get_profile(profile_id)
+    if not profile:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return JSONResponse(profile)
+
+
+@router.put("/api/profiles/{profile_id}")
+async def api_profiles_update(profile_id: str, request: Request, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    updated = profiles.update_profile(profile_id, body)
+    if not updated:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return JSONResponse(updated)
+
+
+@router.delete("/api/profiles/{profile_id}")
+async def api_profiles_delete(profile_id: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if profiles.delete_profile(profile_id):
+        return JSONResponse({"ok": True})
+    return JSONResponse({"error": "not_found"}, status_code=404)
+
+
+@router.get("/api/profiles/{profile_id}/preview")
+async def api_profiles_preview(profile_id: str, source: str = "okta", ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    profile = profiles.get_profile(profile_id)
+    if not profile:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    ctx = profiles.ProfileContext(profile, source, 100)
+    return JSONResponse({
+        "users": ctx.users,
+        "machines": ctx.machines,
+        "c2_servers": ctx.c2_servers,
+        "malware": ctx.malware,
+        "mail_senders": ctx.mail_senders,
+    })
+
+
+# ── Source-profile bindings API ───────────────────────────────────────────────
+
+@router.get("/api/source-profiles")
+async def api_source_profiles_list(ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    bindings = profiles.list_bindings()
+    # Enrich with profile name
+    enriched = {}
+    for src, bnd in bindings.items():
+        p = profiles.get_profile(bnd["profile_id"])
+        enriched[src] = {**bnd, "profile_name": p["name"] if p else "?"}
+    return JSONResponse({"bindings": enriched})
+
+
+@router.put("/api/source-profiles/{source}")
+async def api_source_profiles_bind(source: str, request: Request, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    profile_id = body.get("profile_id", "").strip()
+    if not profile_id:
+        return JSONResponse({"error": "profile_id is required"}, status_code=400)
+    if not profiles.get_profile(profile_id):
+        return JSONResponse({"error": "profile not found"}, status_code=404)
+    ratio = int(body.get("ratio", 70))
+    result = profiles.bind_source(source, profile_id, ratio)
+    return JSONResponse(result)
+
+
+@router.delete("/api/source-profiles/{source}")
+async def api_source_profiles_unbind(source: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if profiles.unbind_source(source):
+        return JSONResponse({"ok": True})
     return JSONResponse({"error": "not_found"}, status_code=404)

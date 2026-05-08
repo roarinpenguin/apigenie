@@ -3,6 +3,7 @@
 import random
 from typing import Any
 
+import profiles
 from generators import (
     generate_country_code,
     generate_email,
@@ -73,11 +74,20 @@ _LOG_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
 }
 
 
-def _generate_log() -> dict[str, Any]:
+def _generate_log(ctx: profiles.ProfileContext | None = None) -> dict[str, Any]:
     template = weighted_choice(_LOG_TEMPLATES)
-    actor_login, actor_name = random.choice(_ACTORS)
-    domain = random.choice(["example.com", "acme.corp", "testorg.io"])
-    actor_login = f"{actor_login}@{domain}"
+    pu = ctx.pick_user() if ctx else None
+    if pu:
+        actor_login = pu.get("email") or f"{pu.get('username', 'user')}@{pu.get('domain', 'example.com').lower()}.com"
+        actor_name = pu.get("name", pu.get("username", "Unknown"))
+        client_ip = pu.get("workstation_ip") or generate_ip()
+        city = pu.get("city", "New York")
+    else:
+        actor_login, actor_name = random.choice(_ACTORS)
+        domain = random.choice(["example.com", "acme.corp", "testorg.io"])
+        actor_login = f"{actor_login}@{domain}"
+        client_ip = generate_ip()
+        city = random.choice(["New York", "London", "Tokyo", "Berlin", "Sydney"])
 
     return {
         "uuid": generate_uuid(),
@@ -93,10 +103,10 @@ def _generate_log() -> dict[str, Any]:
             "displayName": actor_name,
         },
         "client": {
-            "ipAddress": generate_ip(),
+            "ipAddress": client_ip,
             "geographicalContext": {
                 "country": generate_country_code(),
-                "city": random.choice(["New York", "London", "Tokyo", "Berlin", "Sydney"]),
+                "city": city,
             },
             "userAgent": {
                 "rawUserAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -126,8 +136,9 @@ def _generate_log() -> dict[str, Any]:
 
 
 def get_logs_response(since: str | None = None, limit: int = 100) -> tuple[list[dict[str, Any]], str | None]:
+    ctx = profiles.get_context("okta")
     count = min(limit, 100)
-    logs = [_generate_log() for _ in range(count)]
+    logs = [_generate_log(ctx) for _ in range(count)]
     logs.sort(key=lambda x: x["published"], reverse=True)
     # Return a Link header next URL hint (caller decides full URL)
     next_url = f"?since={now_minus_minutes_iso(0)}&limit={limit}" if count == limit else None

@@ -3,6 +3,7 @@
 import random
 from typing import Any
 
+import profiles
 from generators import (
     generate_email,
     generate_uuid,
@@ -246,6 +247,7 @@ def get_projects_response(org: str | None = None) -> dict[str, Any]:
 
 
 def get_audit_logs_response(org: str | None = None, limit: int = 100, page: int = 1) -> list[dict[str, Any]]:
+    ctx = profiles.get_context("snyk")
     count = min(limit, 100)
     events = []
     actions = [

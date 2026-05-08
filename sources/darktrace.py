@@ -3,6 +3,7 @@
 import random
 from typing import Any
 
+import profiles
 from generators import (
     generate_hostname,
     generate_ip,
@@ -32,12 +33,14 @@ _DEVICE_LABELS = ["Desktop", "Laptop", "Server", "Mobile Phone", "Network Equipm
 _SEVERITIES = [0, 0, 0, 1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 
 
-def _generate_model_breach() -> dict[str, Any]:
+def _generate_model_breach(ctx: profiles.ProfileContext | None = None) -> dict[str, Any]:
     model_name, category, severity = random.choice(_MODELS)
     ts_ms = now_epoch_ms() - random.randint(0, 3600000)
-    src_ip = generate_ip()
-    dst_ip = generate_ip()
-    hostname = generate_hostname()
+    pm = ctx.pick_machine() if ctx else None
+    pc2 = ctx.pick_c2() if ctx else None
+    src_ip = pm.get("ip") if pm else generate_ip()
+    hostname = pm.get("primary_workstation", generate_hostname()) if pm else generate_hostname()
+    dst_ip = pc2.get("ip_c2") if pc2 else generate_ip()
 
     return {
         "pbid": random.randint(100000, 999999),
@@ -144,8 +147,9 @@ def _generate_analyst_incident() -> dict[str, Any]:
 
 
 def get_model_breaches(limit: int = 50, minscore: float = 0.0) -> list[dict[str, Any]]:
+    ctx = profiles.get_context("darktrace")
     count = min(limit, 50)
-    breaches = [_generate_model_breach() for _ in range(count)]
+    breaches = [_generate_model_breach(ctx) for _ in range(count)]
     return [b for b in breaches if b["score"] >= minscore]
 
 

@@ -10,6 +10,7 @@ import random
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import profiles
 from sources.synthetic import seeded_uuid
 
 _HOSTS = [
@@ -69,7 +70,7 @@ def _hash(rng: random.Random) -> str:
     return seeded_uuid(rng).hex + seeded_uuid(rng).hex[:32]
 
 
-def generate(n: int, seed: int | None = None) -> list[dict]:
+def generate(n: int, seed: int | None = None, ctx: profiles.ProfileContext | None = None) -> list[dict]:
     rng = random.Random(seed) if seed is not None else random.Random()
     now = datetime.now(timezone.utc)
     out: list[dict] = []
@@ -77,8 +78,10 @@ def generate(n: int, seed: int | None = None) -> list[dict]:
         ts = now - timedelta(seconds=rng.randint(0, 600))
         action, mitre = _weighted_action(rng)
         proc, proc_path, parent = rng.choice(_PROCESSES)
-        host = rng.choice(_HOSTS)
-        user = rng.choice(_USERS)
+        pm = ctx.pick_machine() if ctx else None
+        pu = ctx.pick_user() if ctx else None
+        host = pm.get("primary_workstation", rng.choice(_HOSTS)) if pm else rng.choice(_HOSTS)
+        user = pu.get("username", rng.choice(_USERS)) if pu else rng.choice(_USERS)
         risk = rng.choices([1, 2, 3, 4, 5], weights=[55, 25, 12, 5, 3])[0]
 
         rec: dict = {
@@ -100,9 +103,12 @@ def generate(n: int, seed: int | None = None) -> list[dict]:
         if action in ("file_write", "file_read"):
             rec["file"] = {"path": rng.choice(_FILE_PATHS), "hash": {"sha256": _hash(rng)}}
         if action == "network_connect":
+            pc2 = ctx.pick_c2() if ctx else None
+            dst_ip = pc2.get("ip_c2") if pc2 else f"{rng.randint(1,223)}.{rng.randint(0,255)}.{rng.randint(0,255)}.{rng.randint(1,254)}"
+            dst_port = int(pc2.get("port", 0)) if pc2 and pc2.get("port") else rng.choice([22, 80, 443, 445, 3389, 5985, 8080, 9090])
             rec["destination"] = {
-                "ip":   f"{rng.randint(1,223)}.{rng.randint(0,255)}.{rng.randint(0,255)}.{rng.randint(1,254)}",
-                "port": rng.choice([22, 80, 443, 445, 3389, 5985, 8080, 9090]),
+                "ip":   dst_ip,
+                "port": dst_port,
             }
         if action == "dns_query":
             rec["dns"] = {"question": {"name": rng.choice([

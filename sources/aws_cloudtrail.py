@@ -3,6 +3,7 @@
 import random
 from typing import Any
 
+import profiles
 from generators import (
     generate_email,
     generate_ip,
@@ -45,7 +46,7 @@ _EVENT_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
 }
 
 
-def _generate_event() -> dict[str, Any]:
+def _generate_event(ctx: profiles.ProfileContext | None = None) -> dict[str, Any]:
     template = weighted_choice(_EVENT_TEMPLATES)
     region = random.choice(_REGIONS)
     account_id = random.choice(_ACCOUNT_IDS)
@@ -60,7 +61,9 @@ def _generate_event() -> dict[str, Any]:
     is_root = template.get("_isRoot", False)
     no_mfa = template.get("_noMFA", False)
 
-    user_name = "root" if is_root else random.choice(_IAM_USERS)
+    pu = ctx.pick_user() if ctx and not is_root else None
+    user_name = "root" if is_root else (pu.get("username", random.choice(_IAM_USERS)) if pu else random.choice(_IAM_USERS))
+    source_ip = pu.get("workstation_ip") if pu else None
     user_arn = f"arn:aws:iam::{account_id}:{'root' if is_root else f'user/{user_name}'}"
 
     user_identity: dict[str, Any] = {
@@ -88,7 +91,7 @@ def _generate_event() -> dict[str, Any]:
         "eventSource": source,
         "eventName": action,
         "awsRegion": region,
-        "sourceIPAddress": generate_ip(),
+        "sourceIPAddress": source_ip or generate_ip(),
         "userAgent": random.choice(
             [
                 "aws-cli/2.13.0 Python/3.11.4",
@@ -112,8 +115,9 @@ def _generate_event() -> dict[str, Any]:
 
 
 def get_events_response(limit: int = 50) -> dict[str, Any]:
+    ctx = profiles.get_context("aws_cloudtrail")
     count = min(limit, 50)
-    events = [_generate_event() for _ in range(count)]
+    events = [_generate_event(ctx) for _ in range(count)]
     events.sort(key=lambda x: x["eventTime"], reverse=True)
     return {
         "Events": [

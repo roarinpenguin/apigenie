@@ -3,6 +3,7 @@
 import random
 from typing import Any
 
+import profiles
 from generators import (
     generate_ip,
     generate_uuid,
@@ -89,13 +90,15 @@ _ISSUE_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
 }
 
 
-def _generate_issue() -> dict[str, Any]:
+def _generate_issue(ctx: profiles.ProfileContext | None = None) -> dict[str, Any]:
     template = weighted_choice(_ISSUE_TEMPLATES)
+    pm = ctx.pick_machine() if ctx else None
     resource_type = random.choice(_RESOURCE_TYPES)
     cloud = random.choice(_CLOUDS)
     project = random.choice(_PROJECTS)
     issue_id = generate_uuid()
     resource_id = generate_uuid()
+    entity_name = pm.get("primary_workstation", f"{resource_type.lower()}-{generate_uuid()[:8]}") if pm else f"{resource_type.lower()}-{generate_uuid()[:8]}"
 
     return {
         "id": issue_id,
@@ -109,14 +112,14 @@ def _generate_issue() -> dict[str, Any]:
         "projects": [{"id": generate_uuid(), "name": project, "slug": project}],
         "entity": {
             "id": resource_id,
-            "name": f"{resource_type.lower()}-{generate_uuid()[:8]}",
+            "name": entity_name,
             "type": resource_type,
         },
         "entitySnapshot": {
             "id": resource_id,
             "type": resource_type,
             "nativeType": resource_type,
-            "name": f"{resource_type.lower()}-{generate_uuid()[:8]}",
+            "name": entity_name,
             "status": "Active",
             "cloudPlatform": cloud,
             "cloudProviderURL": f"https://console.aws.amazon.com/ec2/v2/home?region=us-east-1#Instances:instanceId={resource_id}",
@@ -146,8 +149,9 @@ def _generate_issue() -> dict[str, Any]:
 
 
 def get_issues_response(first: int = 100, after: str | None = None) -> dict[str, Any]:
+    ctx = profiles.get_context("wiz")
     count = min(first, 100)
-    nodes = [_generate_issue() for _ in range(count)]
+    nodes = [_generate_issue(ctx) for _ in range(count)]
     end_cursor = generate_uuid() if count == first else None
     return {
         "data": {

@@ -12,6 +12,7 @@ import random
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import profiles
 from sources.synthetic import seeded_uuid
 
 # (service, dest_port, weight)
@@ -63,7 +64,7 @@ def _public_ip(rng: random.Random) -> str:
     return f"{rng.randint(1,223)}.{rng.randint(0,255)}.{rng.randint(0,255)}.{rng.randint(1,254)}"
 
 
-def generate(n: int, seed: int | None = None) -> list[dict]:
+def generate(n: int, seed: int | None = None, ctx: profiles.ProfileContext | None = None) -> list[dict]:
     rng = random.Random(seed) if seed is not None else random.Random()
     now = datetime.now(timezone.utc)
     out: list[dict] = []
@@ -71,8 +72,13 @@ def generate(n: int, seed: int | None = None) -> list[dict]:
         ts = now - timedelta(seconds=rng.randint(0, 600))
         svc, port = _weighted_service(rng)
         proto = rng.choice(_PROTOS) if svc != "dns" else "udp"
-        orig_h = _internal_ip(rng)
-        resp_h = _public_ip(rng) if rng.random() < 0.65 else _internal_ip(rng)
+        pm = ctx.pick_machine() if ctx else None
+        pc2 = ctx.pick_c2() if ctx else None
+        orig_h = pm.get("ip", _internal_ip(rng)) if pm else _internal_ip(rng)
+        if pc2 and rng.random() < 0.65:
+            resp_h = pc2.get("ip_c2", _public_ip(rng))
+        else:
+            resp_h = _public_ip(rng) if rng.random() < 0.65 else _internal_ip(rng)
         duration = round(rng.expovariate(1.0 / 8.0), 3)
         bytes_in  = rng.randint(64, 50_000)
         bytes_out = rng.randint(64, 200_000)

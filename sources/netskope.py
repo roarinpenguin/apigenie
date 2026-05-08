@@ -3,6 +3,7 @@
 import random
 from typing import Any
 
+import profiles
 from generators import (
     generate_country_code,
     generate_email,
@@ -110,13 +111,20 @@ _ALERT_TEMPLATES: dict[str, dict[str, Any]] = {
 }
 
 
-def _generate_alert(alert_type: str | None = None) -> dict[str, Any]:
+def _generate_alert(alert_type: str | None = None, ctx: profiles.ProfileContext | None = None) -> dict[str, Any]:
     if alert_type and alert_type in _ALERT_TEMPLATES:
         template = _ALERT_TEMPLATES[alert_type]
     else:
         template = random.choice(list(_ALERT_TEMPLATES.values()))
     app = random.choice(_APPS)
-    user = random.choice(_USERS)
+    pu = ctx.pick_user() if ctx else None
+    pm = ctx.pick_machine() if ctx else None
+    pc2 = ctx.pick_c2() if ctx else None
+    pmal = ctx.pick_malware() if ctx else None
+    user = pu.get("email", random.choice(_USERS)) if pu else random.choice(_USERS)
+    srcip = pm.get("ip") if pm else generate_ip()
+    hostname = pm.get("primary_workstation", generate_hostname()) if pm else generate_hostname()
+    dstip = pc2.get("ip_c2") if pc2 else generate_ip()
     ts = now_epoch() - random.randint(0, 3600)
 
     base = {
@@ -131,9 +139,9 @@ def _generate_alert(alert_type: str | None = None) -> dict[str, Any]:
         "category": template["category"],
         "user": user,
         "src_country": generate_country_code(),
-        "srcip": generate_ip(),
-        "dstip": generate_ip(),
-        "hostname": generate_hostname(),
+        "srcip": srcip,
+        "dstip": dstip,
+        "hostname": hostname,
         "device": random.choice(["Windows Device", "Mac Device", "iOS Device", "Android Device"]),
         "os": random.choice(["Windows 10", "macOS 12", "iOS 16", "Android 12"]),
         "browser": random.choice(["Chrome", "Firefox", "Safari", "Edge"]),
@@ -150,13 +158,16 @@ def _generate_alert(alert_type: str | None = None) -> dict[str, Any]:
         "connection_id": generate_uuid(),
     }
     base.update(template)
+    if pmal and template.get("alert_type") == "Malware":
+        base["malware_name"] = pmal.get("filename", base.get("malware_name", "Trojan.Generic"))
     return base
 
 
 def get_alerts_response(limit: int = 100, alert_type: str | None = None) -> dict[str, Any]:
     """Return alerts in the Netskope v2 envelope: {result, status, total}."""
+    ctx = profiles.get_context("netskope")
     count = min(limit, 100)
-    alerts = [_generate_alert(alert_type=alert_type) for _ in range(count)]
+    alerts = [_generate_alert(alert_type=alert_type, ctx=ctx) for _ in range(count)]
     return {
         "result": alerts,
         "status": "success",

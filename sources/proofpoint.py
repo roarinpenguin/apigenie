@@ -3,6 +3,7 @@
 import random
 from typing import Any
 
+import profiles
 from generators import (
     generate_email,
     generate_ip,
@@ -59,10 +60,19 @@ _LOG_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
 }
 
 
-def _generate_message(since_seconds: int = 3600) -> dict[str, Any]:
+def _generate_message(since_seconds: int = 3600, ctx: profiles.ProfileContext | None = None) -> dict[str, Any]:
     template = weighted_choice(_LOG_TEMPLATES)
     threat_name, threat_type = random.choice(_THREATS)
-    sender = random.choice(_SENDERS)
+    pms = ctx.pick_mail_sender() if ctx else None
+    pmal = ctx.pick_malware() if ctx else None
+    if pms:
+        sender = pms.get("mail_address", random.choice(_SENDERS))
+        subject_override = pms.get("subject")
+    else:
+        sender = random.choice(_SENDERS)
+        subject_override = None
+    if pmal and template.get("phishScore", 0) > 50:
+        threat_name = pmal.get("filename", threat_name)
     recipient = random.choice(_RECIPIENTS)
     ts = now_minus_minutes_iso(random.randint(0, since_seconds // 60))
 
@@ -118,7 +128,7 @@ def _generate_message(since_seconds: int = 3600) -> dict[str, Any]:
         "sender": sender,
         "senderIP": generate_ip(),
         "spamScore": template["spamScore"],
-        "subject": random.choice(_SUBJECTS),
+        "subject": subject_override or random.choice(_SUBJECTS),
         "toAddresses": [recipient],
         "xmailer": None,
         "threats": threats,
@@ -126,11 +136,12 @@ def _generate_message(since_seconds: int = 3600) -> dict[str, Any]:
 
 
 def get_logs_response(since_seconds: int = 3600) -> dict[str, Any]:
+    ctx = profiles.get_context("proofpoint")
     count = random.randint(5, 30)
     since_ts = now_minus_minutes_iso(since_seconds // 60)
     now = now_iso()
 
-    messages = [_generate_message(since_seconds) for _ in range(count)]
+    messages = [_generate_message(since_seconds, ctx) for _ in range(count)]
     blocked = [m for m in messages if m["quarantineFolder"] or "blocked" in str(m.get("threats", ""))]
 
     return {

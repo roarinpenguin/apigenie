@@ -3,6 +3,7 @@
 import random
 from typing import Any
 
+import profiles
 from generators import (
     generate_ip,
     generate_uuid,
@@ -47,13 +48,14 @@ _LOG_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
 }
 
 
-def _generate_log() -> dict[str, Any]:
+def _generate_log(ctx: profiles.ProfileContext | None = None) -> dict[str, Any]:
     template = weighted_choice(_LOG_TEMPLATES)
     ts_ms = now_epoch_ms() - random.randint(0, 3600000)
     web_acl = random.choice(_WEB_ACLS)
     path = random.choice(_PATHS)
     method = random.choice(_HTTP_METHODS)
-    src_ip = generate_ip()
+    pc2 = ctx.pick_c2() if ctx and template["action"] == "BLOCK" else None
+    src_ip = pc2.get("ip_c2") if pc2 else generate_ip()
 
     # Inject attack payloads for blocked requests
     query_string = ""
@@ -107,7 +109,8 @@ def _generate_log() -> dict[str, Any]:
 
 
 def get_logs_response(limit: int = 100) -> list[dict[str, Any]]:
+    ctx = profiles.get_context("aws_waf")
     count = min(limit, 100)
-    logs = [_generate_log() for _ in range(count)]
+    logs = [_generate_log(ctx) for _ in range(count)]
     logs.sort(key=lambda x: x["timestamp"], reverse=True)
     return logs

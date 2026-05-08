@@ -3,6 +3,7 @@
 import random
 from typing import Any
 
+import profiles
 from generators import (
     generate_country_code,
     generate_email,
@@ -110,11 +111,19 @@ def _make_user_principal(login: str) -> str:
 
 
 def get_audit_logs_response(limit: int = 50, skip: int = 0) -> dict[str, Any]:
+    ctx = profiles.get_context("azure_ad")
     count = min(limit, 50)
     logs = []
     for _ in range(count):
         template = weighted_choice(_AUDIT_TEMPLATES)
-        user_login, user_name = random.choice(_USERS)
+        pu = ctx.pick_user() if ctx else None
+        if pu:
+            user_login = pu.get("username", "user")
+            user_name = pu.get("name", user_login)
+            user_ip = pu.get("workstation_ip") or generate_ip()
+        else:
+            user_login, user_name = random.choice(_USERS)
+            user_ip = generate_ip()
         logs.append(
             {
                 "id": generate_uuid(),
@@ -131,7 +140,7 @@ def get_audit_logs_response(limit: int = 50, skip: int = 0) -> dict[str, Any]:
                         "id": generate_uuid(),
                         "displayName": user_name,
                         "userPrincipalName": _make_user_principal(user_login),
-                        "ipAddress": generate_ip(),
+                        "ipAddress": user_ip,
                     }
                 },
                 "targetResources": [
@@ -149,11 +158,21 @@ def get_audit_logs_response(limit: int = 50, skip: int = 0) -> dict[str, Any]:
 
 
 def get_signin_logs_response(limit: int = 50, skip: int = 0) -> dict[str, Any]:
+    ctx = profiles.get_context("azure_ad")
     count = min(limit, 50)
     logs = []
     for _ in range(count):
         template = weighted_choice(_SIGNIN_TEMPLATES)
-        user_login, user_name = random.choice(_USERS)
+        pu = ctx.pick_user() if ctx else None
+        if pu:
+            user_login = pu.get("username", "user")
+            user_name = pu.get("name", user_login)
+            signin_ip = pu.get("workstation_ip") or generate_ip()
+            signin_city = pu.get("city", "Seattle")
+        else:
+            user_login, user_name = random.choice(_USERS)
+            signin_ip = generate_ip()
+            signin_city = random.choice(["Seattle", "London", "Tokyo", "Paris", "Sydney"])
         log = {
             "id": generate_uuid(),
             "createdDateTime": now_iso(),
@@ -162,7 +181,7 @@ def get_signin_logs_response(limit: int = 50, skip: int = 0) -> dict[str, Any]:
             "userId": generate_uuid(),
             "appId": generate_uuid(),
             "appDisplayName": random.choice(["Microsoft Azure Portal", "Microsoft Teams", "Office 365"]),
-            "ipAddress": generate_ip(),
+            "ipAddress": signin_ip,
             "clientAppUsed": random.choice(["Browser", "Mobile Apps and Desktop clients", "Exchange ActiveSync"]),
             "correlationId": generate_uuid(),
             "conditionalAccessStatus": template["conditionalAccessStatus"],
@@ -179,7 +198,7 @@ def get_signin_logs_response(limit: int = 50, skip: int = 0) -> dict[str, Any]:
                 "browser": random.choice(["Chrome 120.0.0", "Firefox 121.0", "Safari 17.0"]),
             },
             "location": {
-                "city": random.choice(["Seattle", "London", "Tokyo", "Paris", "Sydney"]),
+                "city": signin_city,
                 "state": "",
                 "countryOrRegion": generate_country_code(),
                 "geoCoordinates": {},
