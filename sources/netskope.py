@@ -127,32 +127,82 @@ _TYPE_ALIASES = {
 
 
 def _generate_alert(alert_type: str | None = None, ctx: profiles.ProfileContext | None = None) -> dict[str, Any]:
+    try:
+        return _generate_alert_inner(alert_type, ctx)
+    except Exception:
+        import logging, traceback
+        logging.getLogger("netskope.gen").error("ALERT GEN FAILED:\n%s", traceback.format_exc())
+        ts = now_epoch()
+        return {
+            "_id": generate_uuid(), "_insertion_epoch_timestamp": ts,
+            "timestamp": ts, "alert": "yes", "alert_id": generate_uuid(),
+            "type": "alert", "alert_type": alert_type or "policy",
+            "alert_name": "Security Alert", "action": "alert",
+            "severity": "medium", "category": "Security",
+            "user": "admin@corp.local", "srcip": "10.0.0.1",
+            "dstip": "10.0.0.2", "hostname": "host-01",
+            "app": "Unknown", "appcategory": "Security",
+        }
+
+
+def _generate_alert_inner(alert_type: str | None = None, ctx: profiles.ProfileContext | None = None) -> dict[str, Any]:
     resolved_type = _TYPE_ALIASES.get(alert_type, alert_type) if alert_type else None
     if resolved_type and resolved_type in _ALERT_TEMPLATES:
-        template = dict(_ALERT_TEMPLATES[resolved_type])  # copy to avoid mutation
+        template = dict(_ALERT_TEMPLATES[resolved_type])
     else:
         template = dict(random.choice(list(_ALERT_TEMPLATES.values())))
     app = random.choice(_APPS)
-    pu = ctx.pick_user() if ctx else None
-    pm = ctx.pick_machine() if ctx else None
-    pc2 = ctx.pick_c2() if ctx else None
-    pmal = ctx.pick_malware() if ctx else None
-    user = pu.get("email", random.choice(_USERS)) if pu and isinstance(pu, dict) else random.choice(_USERS)
-    srcip = pm.get("ip", generate_ip()) if pm and isinstance(pm, dict) else generate_ip()
-    hostname = pm.get("primary_workstation", generate_hostname()) if pm and isinstance(pm, dict) else generate_hostname()
-    dstip = pc2.get("ip_c2", generate_ip()) if pc2 and isinstance(pc2, dict) else generate_ip()
+
+    # Safely extract profile entities — every pick can return None, str, or dict
+    user = random.choice(_USERS)
+    srcip = generate_ip()
+    hostname = generate_hostname()
+    dstip = generate_ip()
+    malware_name = None
+
+    if ctx:
+        try:
+            pu = ctx.pick_user()
+            if isinstance(pu, dict):
+                user = pu.get("email", user)
+        except Exception:
+            pass
+        try:
+            pm = ctx.pick_machine()
+            if isinstance(pm, dict):
+                srcip = pm.get("ip", srcip)
+                hostname = pm.get("primary_workstation", hostname)
+        except Exception:
+            pass
+        try:
+            pc2 = ctx.pick_c2()
+            if isinstance(pc2, dict):
+                dstip = pc2.get("ip_c2", dstip)
+        except Exception:
+            pass
+        try:
+            pmal = ctx.pick_malware()
+            if isinstance(pmal, dict):
+                malware_name = pmal.get("filename")
+        except Exception:
+            pass
+
     ts = now_epoch() - random.randint(0, 3600)
 
-    base = {
+    alert = {
         "_id": generate_uuid(),
         "_insertion_epoch_timestamp": ts,
         "timestamp": ts,
         "alert": "yes",
         "alert_id": generate_uuid(),
         "type": "alert",
+        "alert_type": template.get("alert_type", "policy"),
+        "alert_name": template.get("alert_name", "Security Alert"),
+        "action": template.get("action", "alert"),
+        "severity": template.get("severity", "medium"),
         "app": app,
-        "appcategory": template["category"],
-        "category": template["category"],
+        "appcategory": template.get("category", "Security"),
+        "category": template.get("category", "Security"),
         "user": user,
         "src_country": generate_country_code(),
         "srcip": srcip,
@@ -173,10 +223,9 @@ def _generate_alert(alert_type: str | None = None, ctx: profiles.ProfileContext 
         "organization_unit": random.choice(["Engineering", "Sales", "HR", "Finance", "IT"]),
         "connection_id": generate_uuid(),
     }
-    base.update(template)
-    if pmal and template.get("alert_type") == "Malware":
-        base["malware_name"] = pmal.get("filename", base.get("malware_name", "Trojan.Generic"))
-    return base
+    if malware_name:
+        alert["malware_name"] = malware_name
+    return alert
 
 
 def get_alerts_response(limit: int = 100, alert_type: str | None = None) -> dict[str, Any]:
