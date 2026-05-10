@@ -89,9 +89,10 @@ def generate_native(n: int, ctx: Any = None) -> list[dict]:
         sev_num = _SEV_MAP.get(v["severity"], 2)
 
         log = {
-            # Core fields S1 maps
-            "loguid": loguid,                     # → finding_info.uid
-            "origin": gw_ip,                      # → device.ip
+            # Core fields S1 maps (web_api mapper, NOT syslog mapper)
+            "id": str(random.randint(100000, 999999)),  # → finding_info.uid (web_api uses 'id', syslog uses 'loguid')
+            "loguid": loguid,                     # kept for completeness
+            "origin": gw_ip,                      # → device.ip / finding_info.src_url
             "originsicname": f"CN={gw_name},O=Checkpoint-MGMT..apigenie",  # → device.name
             "sequencenum": str(random.randint(1, 100)),  # → metadata.sequence
             "time": time_iso,                     # → metadata.original_time (ISO for web_api)
