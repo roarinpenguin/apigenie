@@ -137,16 +137,17 @@ def generate_native(n: int, ctx: Any = None) -> list[dict]:
             "log_id": str(random.randint(1, 9999)),  # → metadata.uid
             "ifname": random.choice(["eth0", "eth1", "bond0"]),
 
-            # Device / resource fields for OCSF resources[] requirement
-            "device": {
-                "ip": gw_ip,
-                "name": gw_name,
-                "type": "Firewall",
-                "uid": gw_name,
-            },
-            "resources": [
-                {"uid": gw_name, "name": gw_name, "type": "firewall"},
-            ],
+            # CP Management API gateway metadata (not in syslog, only in show-logs)
+            # Real CP management servers include these — S1 likely uses them for resources[]
+            "__gateway_name": gw_name,
+            "__gateway_uid": str(uuid.uuid4()),
+            "__gateway_cluster_name": "",
+            "orig_log_server_ip": gw_ip,
+            "orig_log_server_sic_name": f"CN={gw_name},O=Checkpoint-MGMT..apigenie",
+            "domain_name": "SMC User",
+            "mgmt_server_object_uid": str(uuid.uuid4()),
+            "inzone": "External",
+            "outzone": "Internal",
         }
         logs.append(log)
     return logs
