@@ -691,6 +691,7 @@ async def mimecast_discover(request: Request) -> dict[str, Any]:
 
 
 @app.get("/groups")
+@app.get("/aianalyst/groups")
 async def darktrace_groups(request: Request) -> list[dict[str, Any]]:
     return [
         {"id": i, "name": f"Device Group {i}", "size": random.randint(5, 150),
