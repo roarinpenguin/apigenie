@@ -145,6 +145,46 @@ async def oauth2_token(request: Request) -> JSONResponse:
 # =============================================================================
 
 
+# Okta token-validation endpoints — S1 calls these to verify the API token
+# before accepting the integration config.
+@app.get("/api/v1/users/me")
+async def okta_users_me(_auth: BearerAuth) -> dict[str, Any]:
+    return {
+        "id": "00u1f56a461wDW8Xu0h7",
+        "status": "ACTIVE",
+        "profile": {
+            "login": "admin@apigenie.local",
+            "firstName": "ApiGenie",
+            "lastName": "Admin",
+            "email": "admin@apigenie.local",
+        },
+        "_links": {"self": {"href": f"https://{DOMAIN}/api/v1/users/00u1f56a461wDW8Xu0h7"}},
+    }
+
+
+@app.get("/api/v1/org")
+async def okta_org(_auth: BearerAuth) -> dict[str, Any]:
+    return {
+        "id": "0oa1f56a461wDW8Xu0h7",
+        "subdomain": "apigenie",
+        "name": "ApiGenie Mock Org",
+        "status": "ACTIVE",
+        "website": f"https://{DOMAIN}",
+        "_links": {"self": {"href": f"https://{DOMAIN}/api/v1/org"}},
+    }
+
+
+@app.get("/api/v1/meta/types/event")
+async def okta_event_types(_auth: BearerAuth) -> list[dict[str, Any]]:
+    """Okta event types catalog — S1 may call this to enumerate supported events."""
+    return [{"id": et, "category": "security", "published": True}
+            for et in ["policy.evaluate_sign_on", "security.attack.start",
+                        "security.attack.end", "security.threat.detected",
+                        "security.session.detect_client_roaming",
+                        "user.account.report_suspicious_activity_by_enduser",
+                        "zone.deactivate", "zone.delete"]]
+
+
 @app.get("/api/v1/logs")
 async def okta_system_logs(
     _auth: BearerAuth,
