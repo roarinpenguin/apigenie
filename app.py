@@ -817,17 +817,18 @@ async def checkpoint_login(request: Request) -> dict[str, Any]:
 
 @app.post("/web_api/show-logs")
 async def checkpoint_show_logs(request: Request) -> dict[str, Any]:
-    """Check Point show-logs — matches real CP Management API response format."""
+    """Check Point show-logs — native CP Management API format for S1 ingestion."""
     body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
     limit = min(body.get("limit", 25), 100)
-    alerts = generate_alerts("checkpoint_ngfw", n=limit, ctx=_alert_ctx("checkpoint_ngfw"))
+    from sources.alerts.checkpoint_ngfw import generate_native as _cp_native
+    logs = _cp_native(limit, ctx=_alert_ctx("checkpoint_ngfw"))
     import uuid as _uuid
     return {
         "query-id": str(_uuid.uuid4()),
-        "logs-count": len(alerts),
+        "logs-count": len(logs),
         "from": 0,
-        "to": len(alerts),
-        "logs": alerts,
+        "to": len(logs),
+        "logs": logs,
         "status": "succeeded",
     }
 
