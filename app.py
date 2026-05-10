@@ -185,6 +185,34 @@ async def okta_event_types(_auth: BearerAuth) -> list[dict[str, Any]]:
                         "zone.deactivate", "zone.delete"]]
 
 
+# S1 alert ingestion prepends /api/v1/imaas/ to the vendor API path.
+# Alias all Okta paths under that prefix.
+@app.get("/api/v1/imaas/api/v1/users/me")
+async def okta_imaas_users_me(_auth: BearerAuth) -> dict[str, Any]:
+    return await okta_users_me(_auth)
+
+@app.get("/api/v1/imaas/api/v1/org")
+async def okta_imaas_org(_auth: BearerAuth) -> dict[str, Any]:
+    return await okta_org(_auth)
+
+@app.get("/api/v1/imaas/api/v1/meta/types/event")
+async def okta_imaas_event_types(_auth: BearerAuth) -> list[dict[str, Any]]:
+    return await okta_event_types(_auth)
+
+@app.get("/api/v1/imaas/api/v1/logs")
+async def okta_imaas_logs(
+    _auth: BearerAuth,
+    since: str | None = None,
+    until: str | None = None,
+    limit: int = Query(100, le=1000),
+) -> Response:
+    logs, next_url = okta_logs(since=since, limit=limit)
+    headers = {}
+    if next_url:
+        headers["Link"] = f'<{next_url}>; rel="next"'
+    return JSONResponse(content=logs, headers=headers)
+
+
 @app.get("/api/v1/logs")
 async def okta_system_logs(
     _auth: BearerAuth,
