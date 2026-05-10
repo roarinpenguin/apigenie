@@ -81,7 +81,9 @@ def generate_native(n: int, ctx: Any = None) -> list[dict]:
         malware = ctx.pick_malware() if ctx else None
         threat = malware.get("filename", random.choice(_THREAT_NAMES[v["blade"]])) if malware else random.choice(_THREAT_NAMES[v["blade"]])
         action = random.choice(_ACTIONS)
-        now_epoch = int(_time.time()) - random.randint(0, 300)
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone.utc) - timedelta(seconds=random.randint(0, 300))
+        time_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
         loguid = f"{{0x{uuid.uuid4().hex[:8]},0x{uuid.uuid4().hex[:4]},0x{uuid.uuid4().hex[:8]},0x{uuid.uuid4().hex[:16]}}}"
         sev_num = _SEV_MAP.get(v["severity"], 2)
@@ -92,7 +94,7 @@ def generate_native(n: int, ctx: Any = None) -> list[dict]:
             "origin": gw_ip,                      # → device.ip
             "originsicname": f"CN={gw_name},O=Checkpoint-MGMT..apigenie",  # → device.name
             "sequencenum": str(random.randint(1, 100)),  # → metadata.sequence
-            "time": str(now_epoch),               # → metadata.original_time
+            "time": time_iso,                     # → metadata.original_time (ISO for web_api)
             "version": "5",                       # → metadata.product.version
             "product": v["blade"],                # → metadata.product.feature.name + activity_name
             "severity": str(sev_num),             # → severity_id (0→1,1→2,2→3,3→4,4→5)
