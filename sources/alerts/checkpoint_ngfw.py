@@ -137,15 +137,29 @@ def generate_native(n: int, ctx: Any = None) -> list[dict]:
             "log_id": str(random.randint(1, 9999)),  # → metadata.uid
             "ifname": random.choice(["eth0", "eth1", "bond0"]),
 
-            # CP Management API gateway metadata (not in syslog, only in show-logs)
-            # Real CP management servers include these — S1 likely uses them for resources[]
-            "__gateway_name": gw_name,
-            "__gateway_uid": str(uuid.uuid4()),
-            "__gateway_cluster_name": "",
-            "orig_log_server_ip": gw_ip,
-            "orig_log_server_sic_name": f"CN={gw_name},O=Checkpoint-MGMT..apigenie",
-            "domain_name": "SMC User",
-            "mgmt_server_object_uid": str(uuid.uuid4()),
+            # CP Management API resolves objects inline (not in syslog, only in show-logs)
+            # S1 maps these resolved objects to OCSF resources[]
+            "origin_object": {
+                "uid": str(uuid.uuid4()),
+                "name": gw_name,
+                "type": "simple-gateway",
+                "ipv4-address": gw_ip,
+                "domain": {"domain-type": "local domain", "name": "SMC User", "uid": str(uuid.uuid4())},
+                "sic-name": f"CN={gw_name},O=Checkpoint-MGMT..apigenie",
+            },
+            "src_machine_object": {
+                "uid": str(uuid.uuid4()),
+                "name": f"host-{random.randint(1,99):02d}",
+                "type": "host",
+                "ipv4-address": src_ip,
+            },
+            "dst_machine_object": {
+                "uid": str(uuid.uuid4()),
+                "name": f"server-{random.randint(1,99):02d}",
+                "type": "host",
+                "ipv4-address": dst_ip,
+            },
+            "originsicname": f"CN={gw_name},O=Checkpoint-MGMT..apigenie",
             "inzone": "External",
             "outzone": "Internal",
         }
