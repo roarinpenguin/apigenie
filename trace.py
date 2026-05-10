@@ -184,4 +184,13 @@ class TraceMiddleware(BaseHTTPMiddleware):
         _agg_observe(client_ip, source, response.status_code, ts_iso)
         request_log.append({**entry, "source": source})
         telemetry.record(source)
+
+        # Enriched access log — includes user-agent for docker log filtering
+        import logging
+        ua = request.headers.get("user-agent", "-")
+        logging.getLogger("trace.access").info(
+            "%s | %s %s | %s | %sms | %s | ua=%s",
+            source, request.method, path, response.status_code,
+            duration_ms, client_ip, ua,
+        )
         return response
