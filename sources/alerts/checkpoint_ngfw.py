@@ -60,8 +60,14 @@ _THREAT_NAMES = {
 _COUNTRIES = ["CN", "RU", "KP", "IR", "US", "DE", "BR", "IN", "NG", "UA"]
 
 
+_SEV_MAP = {"critical": 4, "high": 3, "medium": 2, "low": 1, "informational": 0}
+
+
 def generate_native(n: int, ctx: Any = None) -> list[dict]:
-    """Return Check Point native log format matching the real CP show-logs API."""
+    """Return Check Point native log format matching S1's exact field mapping.
+
+    Field names and value types are taken from S1's internal CP→OCSF mapping doc.
+    """
     import time as _time
     weights = [v["weight"] for v in VARIANTS]
     logs = []
@@ -70,66 +76,65 @@ def generate_native(n: int, ctx: Any = None) -> list[dict]:
         src_ip = _pick_ip(ctx, "c2")
         dst_ip = f"10.{random.randint(1,254)}.{random.randint(1,254)}.{random.randint(1,254)}"
         machine = _pick_machine(ctx)
-        gw = machine.get("primary_workstation", "fw-dmz-01.corp.local") if machine else "fw-dmz-01.corp.local"
+        gw_name = machine.get("primary_workstation", "Checkpoint-GW") if machine else "Checkpoint-GW"
+        gw_ip = machine.get("ip", "10.1.1.200") if machine else "10.1.1.200"
         malware = ctx.pick_malware() if ctx else None
         threat = malware.get("filename", random.choice(_THREAT_NAMES[v["blade"]])) if malware else random.choice(_THREAT_NAMES[v["blade"]])
         action = random.choice(_ACTIONS)
-        from datetime import datetime, timezone, timedelta
-        now = datetime.now(timezone.utc) - timedelta(seconds=random.randint(0, 300))
-        time_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        now_epoch = int(_time.time()) - random.randint(0, 300)
 
-        log_id = str(random.randint(100000, 999999))
         loguid = f"{{0x{uuid.uuid4().hex[:8]},0x{uuid.uuid4().hex[:4]},0x{uuid.uuid4().hex[:8]},0x{uuid.uuid4().hex[:16]}}}"
-        src_port = str(random.randint(30000, 65000))
-        dst_port = str(random.choice([80, 443, 8080, 22, 53]))
+        sev_num = _SEV_MAP.get(v["severity"], 2)
 
-        logs.append({
-            "id": log_id,
-            "time": time_iso,
-            "type": "Log",
-            "action": action.capitalize(),
-            "origin": gw,
-            "origin_sic_name": f"CN={gw},O=apigenie.roarinpenguin.com",
-            "ifdir": random.choice(["inbound", "outbound"]),
-            "ifname": random.choice(["eth0", "eth1", "bond0"]),
-            "logid": str(random.randint(1, 99999)),
-            "loguid": loguid,
-            "sequencenum": str(random.randint(1, 100)),
-            "version": "5",
-            "src": src_ip,
-            "dst": dst_ip,
-            "proto": random.choice(["6", "17"]),
-            "service": dst_port,
-            "s_port": src_port,
-            "product": v["blade"],
-            "blade_name": v["blade"],
-            "attack": threat,
-            "attack_info": v["name"],
-            "severity": v["severity"],
-            "confidence_level": random.choice(["Low", "Medium", "High", "Critical"]),
-            "protection_name": threat,
-            "protection_type": "anomaly" if v["blade"] == "IPS" else "signature",
-            "policy_name": "Production_DMZ_Policy",
-            "policy_date": "2026-01-15",
+        log = {
+            # Core fields S1 maps
+            "loguid": loguid,                     # → finding_info.uid
+            "origin": gw_ip,                      # → device.ip
+            "originsicname": f"CN={gw_name},O=Checkpoint-MGMT..apigenie",  # → device.name
+            "sequencenum": str(random.randint(1, 100)),  # → metadata.sequence
+            "time": str(now_epoch),               # → metadata.original_time
+            "version": "5",                       # → metadata.product.version
+            "product": v["blade"],                # → metadata.product.feature.name + activity_name
+            "severity": str(sev_num),             # → severity_id (0→1,1→2,2→3,3→4,4→5)
+            "ifdir": random.choice(["inbound", "outbound"]),  # → evidences[0].connection_info.direction
+            "flags": "166216",                    # → unmapped.flags
+
+            # Description/title fields
+            "description": f"{v['name']} — {threat}. Source: {src_ip}, Destination: {dst_ip}",  # → finding_info.desc
+            "contract_name": v["name"],           # → finding_info.title
+
+            # Network fields (VPN-1 & FireWall-1 type)
+            "src": src_ip,                        # → evidences[0].src_endpoint.ip
+            "dst": dst_ip,                        # → evidences[0].dst_endpoint.ip
+            "s_port": str(random.randint(30000, 65000)),  # → evidences[0].src_endpoint.port
+            "service": str(random.choice([80, 443, 8080, 22, 53])),  # → evidences[0].src_endpoint.svc_name
+            "proto": random.choice(["6", "17"]),  # → evidences[0].connection_info.protocol_num
+
+            # Geo fields
+            "src_country": random.choice(_COUNTRIES),  # → evidences[0].src_endpoint.location.country
+            "dst_country": "US",                  # → evidences[0].dst_endpoint.location.country
+
+            # Policy/rule
+            "policy_name": "Production_DMZ_Policy",  # → actor.authorizations[0].policy.name
             "rule_name": f"Rule_{random.randint(1,50)}",
             "rule_uid": f"{{0x{uuid.uuid4().hex[:8]}}}",
-            "rule": str(random.randint(1, 100)),
-            "src_country": random.choice(_COUNTRIES),
-            "dst_country": "US",
-            "message": f"{v['blade']}: {v['name']} - {threat}",
-            "resource": gw,
-            "resource_type": "gateway",
-            "src_machine_name": f"host-{random.randint(1,99):02d}",
-            "dst_machine_name": gw,
-            # Pre-structured OCSF resources — S1 requires this in the final alert
-            "resources": [
-                {
-                    "uid": gw,
-                    "name": gw,
-                    "type": "firewall",
-                }
-            ],
-        })
+
+            # Threat details
+            "attack": threat,
+            "attack_info": v["name"],
+            "confidence_level": random.choice(["Low", "Medium", "High", "Critical"]),  # → confidence_score
+            "protection_name": threat,
+            "protection_type": "anomaly" if v["blade"] == "IPS" else "signature",
+
+            # Action
+            "action": action.capitalize(),
+
+            # Log metadata
+            "type": "Log",
+            "log_id": str(random.randint(1, 9999)),  # → metadata.uid
+            "ifname": random.choice(["eth0", "eth1", "bond0"]),
+        }
+        logs.append(log)
     return logs
 
 
