@@ -842,12 +842,24 @@ async def checkpoint_show_logs(request: Request) -> dict[str, Any]:
     from sources.alerts.checkpoint_ngfw import generate_native as _cp_native
     logs = _cp_native(limit, ctx=_alert_ctx("checkpoint_ngfw"))
     import uuid as _uuid
+    # Real CP API returns resolved objects at response level — S1 uses these for resources[]
+    gw_uid = str(_uuid.uuid4())
     return {
         "query-id": str(_uuid.uuid4()),
         "logs-count": len(logs),
         "from": 0,
         "to": len(logs),
         "logs": logs,
+        "objects-dictionary": [
+            {
+                "uid": gw_uid,
+                "name": "Checkpoint-GW",
+                "type": "simple-gateway",
+                "ipv4-address": "10.1.1.200",
+                "domain": {"domain-type": "local domain", "name": "SMC User", "uid": str(_uuid.uuid4())},
+                "sic-name": "CN=Checkpoint-GW,O=Checkpoint-MGMT..apigenie",
+            },
+        ],
         "status": "succeeded",
     }
 
