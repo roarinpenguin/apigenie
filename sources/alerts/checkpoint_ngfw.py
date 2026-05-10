@@ -136,6 +136,17 @@ def generate_native(n: int, ctx: Any = None) -> list[dict]:
             "type": "Log",
             "log_id": str(random.randint(1, 9999)),  # → metadata.uid
             "ifname": random.choice(["eth0", "eth1", "bond0"]),
+
+            # Device / resource fields for OCSF resources[] requirement
+            "device": {
+                "ip": gw_ip,
+                "name": gw_name,
+                "type": "Firewall",
+                "uid": gw_name,
+            },
+            "resources": [
+                {"uid": gw_name, "name": gw_name, "type": "firewall"},
+            ],
         }
         logs.append(log)
     return logs
