@@ -804,24 +804,33 @@ def _alert_ctx(source_key: str):
 
 @app.post("/web_api/login")
 async def checkpoint_login(request: Request) -> dict[str, Any]:
-    """Check Point session login — matches real CP Management API login response."""
+    """Check Point session login — exact format from CP Management API docs."""
     import uuid as _uuid
-    now_iso = _dt.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now_ms = int(_time.time() * 1000)
+    now_iso = _dt.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%S+0000")
+    session_uid = str(_uuid.uuid4())
     return {
-        "sid": str(_uuid.uuid4()),
-        "url": f"https://{DOMAIN}",
-        "uid": str(_uuid.uuid4()),
+        "sid": f"{_uuid.uuid4().hex[:40]}",
+        "url": f"https://{DOMAIN}:443/web_api",
+        "uid": session_uid,
         "session-timeout": 600,
         "last-login-was-at": {
-            "posix": int(_time.time()) - 3600,
+            "posix": now_ms - 3600000,
             "iso-8601": now_iso,
         },
+        "last-login-from": "127.0.0.1",
         "api-server-version": "1.9",
+        "web-api-version": "1.9",
         "disk-space-message": "",
         "read-only": False,
         "standby": False,
         "user-name": "admin",
         "user-uid": str(_uuid.uuid4()),
+        "domain": {
+            "domain-type": "local domain",
+            "uid": str(_uuid.uuid4()),
+            "name": "SMC User",
+        },
     }
 
 
