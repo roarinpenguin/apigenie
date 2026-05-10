@@ -817,16 +817,41 @@ async def checkpoint_show_logs(request: Request) -> dict[str, Any]:
     return {"logs": alerts, "total": len(alerts), "from": 0, "to": len(alerts)}
 
 
+@app.post("/web_api/show-query-result")
+async def checkpoint_query_result(request: Request) -> dict[str, Any]:
+    """Check Point paging — returns next page of logs."""
+    return {"logs": [], "total": 0, "from": 0, "to": 0}
+
+
+@app.post("/web_api/logout")
+async def checkpoint_logout(request: Request) -> dict[str, Any]:
+    return {"message": "OK"}
+
+
+@app.post("/web_api/show-api-versions")
+async def checkpoint_api_versions(request: Request) -> dict[str, Any]:
+    return {"current-version": "1.9", "supported-versions": ["1.0", "1.1", "1.5", "1.6", "1.7", "1.8", "1.9"]}
+
+
 # ── Cortex XDR  (POST /public_api/v1/incidents/get_incidents — API key) ──────
 
 @app.post("/public_api/v1/incidents/get_incidents")
 async def cortex_xdr_incidents(request: Request) -> dict[str, Any]:
     """Cortex XDR incidents endpoint."""
-    # Auth: X-XSIAM-KEY or Authorization header — we accept any Bearer token
     body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
     limit = min(body.get("request_data", {}).get("search_to", 10), 100)
     alerts = generate_alerts("cortex_xdr", n=limit, ctx=_alert_ctx("cortex_xdr"))
     return {"reply": {"total_count": len(alerts), "result_count": len(alerts), "incidents": alerts}}
+
+
+@app.post("/public_api/v1/incidents/get_incident_extra_data")
+async def cortex_xdr_incident_extra(request: Request) -> dict[str, Any]:
+    return {"reply": {"incident": {}, "alerts": {"total_count": 0, "data": []}}}
+
+
+@app.post("/public_api/v1/audits/management_logs")
+async def cortex_xdr_audit(request: Request) -> dict[str, Any]:
+    return {"reply": {"result_count": 0, "data": []}}
 
 
 # ── MS Entra ID — Identity Protection risk detections ────────────────────────
@@ -862,12 +887,34 @@ async def mimecast_ttp_impersonation(request: Request) -> dict[str, Any]:
 
 
 @app.post("/api/ttp/url/get-logs")
+@app.post("/api/ttp/url/get-all-logs")
 async def mimecast_ttp_url(request: Request) -> dict[str, Any]:
     """Mimecast TTP URL Protection logs."""
     body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
     limit = min(body.get("meta", {}).get("pagination", {}).get("pageSize", 25), 100)
     alerts = generate_alerts("mimecast", n=limit, ctx=_alert_ctx("mimecast"))
     return {"fail": [], "meta": {"status": 200}, "data": alerts}
+
+
+# ── Mimecast discovery + account endpoints ───────────────────────────────────
+
+@app.post("/api/login/discover-authentication")
+async def mimecast_discover_auth(request: Request) -> dict[str, Any]:
+    return {"data": [{"authenticate": [{"type": "UsernamePassword", "uri": f"https://{DOMAIN}/api/login/login"}], "region": {"code": "us"}}], "meta": {"status": 200}, "fail": []}
+
+
+@app.post("/api/login/login")
+async def mimecast_login(request: Request) -> dict[str, Any]:
+    return {"data": [{"accessKey": "apigenie-mimecast-ak", "secretKey": "apigenie-mimecast-sk"}], "meta": {"status": 200}, "fail": []}
+
+
+@app.post("/api/account/get-account")
+async def mimecast_get_account(request: Request) -> dict[str, Any]:
+    return {"data": [{"accountName": "ApiGenie Mock", "region": {"code": "us"}, "packages": ["TTP_ATT", "TTP_IMP", "TTP_URL"]}], "meta": {"status": 200}, "fail": []}
+
+
+# Mimecast + Vectra OAuth2 tokens are served by the generic /oauth/token
+# and /oauth2/token handlers (lines ~694-701). No separate routes needed.
 
 
 # ── Vectra AI  (OAuth2 → detections API) ─────────────────────────────────────
