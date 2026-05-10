@@ -64,11 +64,11 @@ _SEV_MAP = {"critical": 4, "high": 3, "medium": 2, "low": 1, "informational": 0}
 
 
 def generate_native(n: int, ctx: Any = None) -> list[dict]:
-    """Return Check Point native log format matching S1's exact field mapping.
+    """Return Check Point native log in the REAL Management API show-logs format.
 
-    Field names and value types are taken from S1's internal CP→OCSF mapping doc.
+    Based on actual CP Management API response — uses orig (not origin),
+    i_f_dir (not ifdir), and _attr arrays for resolved objects.
     """
-    import time as _time
     weights = [v["weight"] for v in VARIANTS]
     logs = []
     for _ in range(n):
@@ -76,92 +76,109 @@ def generate_native(n: int, ctx: Any = None) -> list[dict]:
         src_ip = _pick_ip(ctx, "c2")
         dst_ip = f"10.{random.randint(1,254)}.{random.randint(1,254)}.{random.randint(1,254)}"
         machine = _pick_machine(ctx)
-        gw_name = machine.get("primary_workstation", "Checkpoint-GW") if machine else "Checkpoint-GW"
+        gw_name = machine.get("primary_workstation", "fw-gw-01") if machine else "fw-gw-01"
         gw_ip = machine.get("ip", "10.1.1.200") if machine else "10.1.1.200"
         malware = ctx.pick_malware() if ctx else None
         threat = malware.get("filename", random.choice(_THREAT_NAMES[v["blade"]])) if malware else random.choice(_THREAT_NAMES[v["blade"]])
-        action = random.choice(_ACTIONS)
+        action = random.choice(["Accept", "Drop", "Reject", "Block"])
         from datetime import datetime, timezone, timedelta
         now = datetime.now(timezone.utc) - timedelta(seconds=random.randint(0, 300))
         time_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        loguid = f"{{0x{uuid.uuid4().hex[:8]},0x{uuid.uuid4().hex[:4]},0x{uuid.uuid4().hex[:8]},0x{uuid.uuid4().hex[:16]}}}"
-        sev_num = _SEV_MAP.get(v["severity"], 2)
+        src_host = f"host-{random.randint(1,99):02d}.corp.local"
+        dst_host = f"server-{random.randint(1,99):02d}.corp.local"
+        log_server_name = "mgmt-logserver-01"
+        log_server_ip = gw_ip
+        log_server_uid = str(uuid.uuid4())
+        src_uid = str(uuid.uuid4())
+        dst_uid = str(uuid.uuid4())
+        rule_uid = str(uuid.uuid4())
+        svc_port = str(random.choice([53, 80, 443, 8080, 22]))
+        svc_name = {"53": "domain-udp", "80": "http", "443": "https", "8080": "http-alt", "22": "ssh"}[svc_port]
+        direction = random.choice(["inbound", "outbound"])
+        conn_dir = "Incoming" if direction == "inbound" else "Outgoing"
+        iface = random.choice(["eth0", "eth1", "bond0", "bond80.100"])
 
         log = {
-            # Core fields S1 maps (web_api mapper, NOT syslog mapper)
-            "id": str(random.randint(100000, 999999)),  # → finding_info.uid (web_api uses 'id', syslog uses 'loguid')
-            "loguid": loguid,                     # kept for completeness
-            "origin": gw_ip,                      # → device.ip / finding_info.src_url
-            "originsicname": f"CN={gw_name},O=Checkpoint-MGMT..apigenie",  # → device.name
-            "sequencenum": str(random.randint(1, 100)),  # → metadata.sequence
-            "time": time_iso,                     # → metadata.original_time (ISO for web_api)
-            "version": "5",                       # → metadata.product.version
-            "product": v["blade"],                # → metadata.product.feature.name + activity_name
-            "severity": str(sev_num),             # → severity_id (0→1,1→2,2→3,3→4,4→5)
-            "ifdir": random.choice(["inbound", "outbound"]),  # → evidences[0].connection_info.direction
-            "flags": "166216",                    # → unmapped.flags
+            "id": str(uuid.uuid4()),
+            "time": time_iso,
+            "type": "Connection",
+            "action": action,
+            "conn_direction": conn_dir,
+            "i_f_dir": direction,
+            "i_f_name": iface,
+            "__interface": iface,
+            "first": "true",
+            "sequencenum": str(random.randint(1, 9999)),
 
-            # Description/title fields
-            "description": f"{v['name']} — {threat}. Source: {src_ip}, Destination: {dst_ip}",  # → finding_info.desc
-            "contract_name": v["name"],           # → finding_info.title
+            # Origin (gateway)
+            "orig": gw_name,
+            "orig_log_server": log_server_ip,
+            "orig_log_server_attr": [
+                {"isCHKPObject": "true", "resolved": log_server_name, "uuid": log_server_uid},
+            ],
 
-            # Network fields (VPN-1 & FireWall-1 type)
-            "src": src_ip,                        # → evidences[0].src_endpoint.ip
-            "dst": dst_ip,                        # → evidences[0].dst_endpoint.ip
-            "s_port": str(random.randint(30000, 65000)),  # → evidences[0].src_endpoint.port
-            "service": str(random.choice([80, 443, 8080, 22, 53])),  # → evidences[0].src_endpoint.svc_name
-            "proto": random.choice(["6", "17"]),  # → evidences[0].connection_info.protocol_num
+            # Source
+            "src": src_ip,
+            "src_attr": [
+                {"isCHKPObject": "true", "resolved": src_host, "uuid": src_uid},
+            ],
+            "s_port": str(random.randint(30000, 65000)),
 
-            # Geo fields
-            "src_country": random.choice(_COUNTRIES),  # → evidences[0].src_endpoint.location.country
-            "dst_country": "US",                  # → evidences[0].dst_endpoint.location.country
+            # Destination
+            "dst": dst_ip,
+            "dst_attr": [
+                {"isCHKPObject": "true", "resolved": dst_host, "uuid": dst_uid},
+            ],
+            "service": svc_port,
+            "service_id": svc_name,
+            "fservice": svc_name,
 
-            # Policy/rule
-            "policy_name": "Production_DMZ_Policy",  # → actor.authorizations[0].policy.name
-            "rule_name": f"Rule_{random.randint(1,50)}",
-            "rule_uid": f"{{0x{uuid.uuid4().hex[:8]}}}",
+            # Protocol
+            "proto": random.choice(["6", "17"]),
+            "proto_attr": [
+                {"isCHKPObject": "false", "resolved": "TCP (6)" if "6" else "UDP (17)"},
+            ],
+
+            # Policy / rule
+            "policy_name": "Production_Policy",
+            "policy_mgmt": "fwm1-mgmt",
+            "policy_date": "2026-01-15T12:00:00Z",
+            "rule": f"{random.randint(1,50)}.{random.randint(1,9)}",
+            "rule_uid": rule_uid,
+            "match_table": [
+                {
+                    "layer_name": "Production Network",
+                    "layer_uuid": str(uuid.uuid4()),
+                    "match_id": str(random.randint(1, 100)),
+                    "parent_rule": "0",
+                    "rule": f"{random.randint(1,50)}.{random.randint(1,9)}",
+                    "rule_action": action,
+                    "rule_uid": rule_uid,
+                },
+            ],
+            "layer_name": "Production Network",
+
+            # Product / blade
+            "product": v["blade"],
+            "product_family": "Threat" if "Threat" in v["blade"] else "Access",
 
             # Threat details
             "attack": threat,
             "attack_info": v["name"],
-            "confidence_level": random.choice(["Low", "Medium", "High", "Critical"]),  # → confidence_score
+            "severity": str(_SEV_MAP.get(v["severity"], 2)),
+            "confidence_level": random.choice(["Low", "Medium", "High", "Critical"]),
             "protection_name": threat,
             "protection_type": "anomaly" if v["blade"] == "IPS" else "signature",
+            "description": f"{v['name']} — {threat}",
 
-            # Action
-            "action": action.capitalize(),
-
-            # Log metadata
-            "type": "Log",
-            "log_id": str(random.randint(1, 9999)),  # → metadata.uid
-            "ifname": random.choice(["eth0", "eth1", "bond0"]),
-
-            # CP Management API resolves objects inline (not in syslog, only in show-logs)
-            # S1 maps these resolved objects to OCSF resources[]
-            "origin_object": {
-                "uid": str(uuid.uuid4()),
-                "name": gw_name,
-                "type": "simple-gateway",
-                "ipv4-address": gw_ip,
-                "domain": {"domain-type": "local domain", "name": "SMC User", "uid": str(uuid.uuid4())},
-                "sic-name": f"CN={gw_name},O=Checkpoint-MGMT..apigenie",
-            },
-            "src_machine_object": {
-                "uid": str(uuid.uuid4()),
-                "name": f"host-{random.randint(1,99):02d}",
-                "type": "host",
-                "ipv4-address": src_ip,
-            },
-            "dst_machine_object": {
-                "uid": str(uuid.uuid4()),
-                "name": f"server-{random.randint(1,99):02d}",
-                "type": "host",
-                "ipv4-address": dst_ip,
-            },
-            "originsicname": f"CN={gw_name},O=Checkpoint-MGMT..apigenie",
-            "inzone": "External",
-            "outzone": "Internal",
+            # Metadata
+            "domain": "Global",
+            "db_tag": f"{{{str(uuid.uuid4())}}}",
+            "logid": "0",
+            "marker": f"@A@@B@{int(datetime.now(timezone.utc).timestamp())}@C@{random.randint(1000000,9999999)}",
+            "id_generated_by_indexer": "false",
+            "log_delay": str(int(datetime.now(timezone.utc).timestamp())),
         }
         logs.append(log)
     return logs
