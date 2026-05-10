@@ -78,8 +78,13 @@ def generate_native(n: int, ctx: Any = None) -> list[dict]:
         now = datetime.now(timezone.utc) - timedelta(seconds=random.randint(0, 300))
         time_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
+        log_id = str(random.randint(100000, 999999))
+        loguid = f"{{0x{uuid.uuid4().hex[:8]},0x{uuid.uuid4().hex[:4]},0x{uuid.uuid4().hex[:8]},0x{uuid.uuid4().hex[:16]}}}"
+        src_port = str(random.randint(30000, 65000))
+        dst_port = str(random.choice([80, 443, 8080, 22, 53]))
+
         logs.append({
-            "id": random.randint(100000, 999999),
+            "id": log_id,
             "time": time_iso,
             "type": "Log",
             "action": action.capitalize(),
@@ -87,15 +92,15 @@ def generate_native(n: int, ctx: Any = None) -> list[dict]:
             "origin_sic_name": f"CN={gw},O=apigenie.roarinpenguin.com",
             "ifdir": random.choice(["inbound", "outbound"]),
             "ifname": random.choice(["eth0", "eth1", "bond0"]),
-            "logid": random.randint(1, 99999),
-            "loguid": f"{{0x{uuid.uuid4().hex[:8]},0x{uuid.uuid4().hex[:4]},0x{uuid.uuid4().hex[:8]},0x{uuid.uuid4().hex[:16]}}}",
-            "sequencenum": random.randint(1, 100),
+            "logid": str(random.randint(1, 99999)),
+            "loguid": loguid,
+            "sequencenum": str(random.randint(1, 100)),
             "version": "5",
             "src": src_ip,
             "dst": dst_ip,
             "proto": random.choice(["6", "17"]),
-            "service": str(random.choice([80, 443, 8080, 22, 53])),
-            "s_port": str(random.randint(30000, 65000)),
+            "service": dst_port,
+            "s_port": src_port,
             "product": v["blade"],
             "blade_name": v["blade"],
             "attack": threat,
@@ -112,6 +117,11 @@ def generate_native(n: int, ctx: Any = None) -> list[dict]:
             "src_country": random.choice(_COUNTRIES),
             "dst_country": "US",
             "message": f"{v['blade']}: {v['name']} - {threat}",
+            # Resource fields — S1 maps these to OCSF resources[]
+            "resource": gw,
+            "resource_type": "gateway",
+            "src_machine_name": f"host-{random.randint(1,99):02d}",
+            "dst_machine_name": gw,
         })
     return logs
 
