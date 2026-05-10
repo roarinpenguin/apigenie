@@ -804,23 +804,45 @@ def _alert_ctx(source_key: str):
 
 @app.post("/web_api/login")
 async def checkpoint_login(request: Request) -> dict[str, Any]:
-    """Check Point session login — returns a session ID (mock)."""
-    return {"sid": "apigenie-checkpoint-session-001", "uid": "admin", "url": f"https://{DOMAIN}"}
+    """Check Point session login — matches real CP Management API login response."""
+    return {
+        "sid": "apigenie-checkpoint-session-001",
+        "uid": "admin",
+        "url": f"https://{DOMAIN}",
+        "session-timeout": 600,
+        "last-login-was-at": {"posix": int(_time.time()) - 3600, "iso-8601": "2026-05-10T10:00:00Z"},
+        "api-server-version": "1.9",
+    }
 
 
 @app.post("/web_api/show-logs")
 async def checkpoint_show_logs(request: Request) -> dict[str, Any]:
-    """Check Point show-logs — returns security events."""
+    """Check Point show-logs — matches real CP Management API response format."""
     body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
     limit = min(body.get("limit", 25), 100)
     alerts = generate_alerts("checkpoint_ngfw", n=limit, ctx=_alert_ctx("checkpoint_ngfw"))
-    return {"logs": alerts, "total": len(alerts), "from": 0, "to": len(alerts)}
+    import uuid as _uuid
+    return {
+        "query-id": str(_uuid.uuid4()),
+        "logs-count": len(alerts),
+        "from": 0,
+        "to": len(alerts),
+        "logs": alerts,
+        "status": "succeeded",
+    }
 
 
 @app.post("/web_api/show-query-result")
 async def checkpoint_query_result(request: Request) -> dict[str, Any]:
     """Check Point paging — returns next page of logs."""
-    return {"logs": [], "total": 0, "from": 0, "to": 0}
+    return {
+        "query-id": "",
+        "logs-count": 0,
+        "from": 0,
+        "to": 0,
+        "logs": [],
+        "status": "succeeded",
+    }
 
 
 @app.post("/web_api/logout")
