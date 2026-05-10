@@ -878,17 +878,26 @@ async def checkpoint_api_versions(request: Request) -> dict[str, Any]:
 @app.post("/web_api/show-gateways-and-servers")
 @app.post("/web_api/show-simple-gateways")
 async def checkpoint_gateways(request: Request) -> dict[str, Any]:
+    import uuid as _uuid
     return {
         "from": 0, "to": 1, "total": 1,
         "objects": [{
-            "uid": "gw-001",
-            "name": "fw-dmz-01.corp.local",
+            "uid": str(_uuid.uuid4()),
+            "name": "Checkpoint-GW",
             "type": "simple-gateway",
-            "ipv4-address": "192.168.1.1",
-            "policy": {"access-policy-installed": True, "threat-policy-installed": True},
+            "ipv4-address": "10.1.1.200",
+            "domain": {"domain-type": "local domain", "uid": str(_uuid.uuid4()), "name": "SMC User"},
+            "policy": {
+                "access-policy-installed": True,
+                "access-policy-name": "Production_DMZ_Policy",
+                "threat-policy-installed": True,
+                "threat-policy-name": "Standard Threat Prevention",
+            },
             "version": "R81.20",
             "os-name": "Gaia",
             "hardware": "Open server",
+            "sic-name": "CN=Checkpoint-GW,O=Checkpoint-MGMT..apigenie",
+            "sic-state": "communicating",
         }],
     }
 
