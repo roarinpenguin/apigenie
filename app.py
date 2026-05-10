@@ -805,13 +805,23 @@ def _alert_ctx(source_key: str):
 @app.post("/web_api/login")
 async def checkpoint_login(request: Request) -> dict[str, Any]:
     """Check Point session login — matches real CP Management API login response."""
+    import uuid as _uuid
+    now_iso = _dt.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     return {
-        "sid": "apigenie-checkpoint-session-001",
-        "uid": "admin",
+        "sid": str(_uuid.uuid4()),
         "url": f"https://{DOMAIN}",
+        "uid": str(_uuid.uuid4()),
         "session-timeout": 600,
-        "last-login-was-at": {"posix": int(_time.time()) - 3600, "iso-8601": "2026-05-10T10:00:00Z"},
+        "last-login-was-at": {
+            "posix": int(_time.time()) - 3600,
+            "iso-8601": now_iso,
+        },
         "api-server-version": "1.9",
+        "disk-space-message": "",
+        "read-only": False,
+        "standby": False,
+        "user-name": "admin",
+        "user-uid": str(_uuid.uuid4()),
     }
 
 
@@ -854,6 +864,37 @@ async def checkpoint_logout(request: Request) -> dict[str, Any]:
 @app.post("/web_api/show-api-versions")
 async def checkpoint_api_versions(request: Request) -> dict[str, Any]:
     return {"current-version": "1.9", "supported-versions": ["1.0", "1.1", "1.5", "1.6", "1.7", "1.8", "1.9"]}
+
+
+@app.post("/web_api/show-gateways-and-servers")
+@app.post("/web_api/show-simple-gateways")
+async def checkpoint_gateways(request: Request) -> dict[str, Any]:
+    return {
+        "from": 0, "to": 1, "total": 1,
+        "objects": [{
+            "uid": "gw-001",
+            "name": "fw-dmz-01.corp.local",
+            "type": "simple-gateway",
+            "ipv4-address": "192.168.1.1",
+            "policy": {"access-policy-installed": True, "threat-policy-installed": True},
+            "version": "R81.20",
+            "os-name": "Gaia",
+            "hardware": "Open server",
+        }],
+    }
+
+
+@app.post("/web_api/show-task")
+async def checkpoint_show_task(request: Request) -> dict[str, Any]:
+    return {"tasks": [{"task-id": "1", "status": "succeeded", "progress-percentage": 100}]}
+
+
+# Catch-all for any /web_api/ POST S1 might call — return empty success
+@app.post("/web_api/{command}")
+async def checkpoint_catchall(command: str, request: Request) -> dict[str, Any]:
+    import logging
+    logging.getLogger("checkpoint").info("CP catch-all: %s", command)
+    return {"status": "succeeded", "message": "OK"}
 
 
 # ── Cortex XDR  (POST /public_api/v1/incidents/get_incidents — API key) ──────
