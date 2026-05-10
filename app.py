@@ -834,32 +834,40 @@ async def checkpoint_login(request: Request) -> dict[str, Any]:
     }
 
 
+_cp_last_gen: dict[str, float] = {}  # tracks last generation time per query-id prefix
+
 @app.post("/web_api/show-logs")
 async def checkpoint_show_logs(request: Request) -> dict[str, Any]:
     """Check Point show-logs — native CP Management API format for S1 ingestion."""
     body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
-    limit = min(body.get("limit", 25), 100)
+    import uuid as _uuid
+
+    # Respect alert binding volume cap
+    binding = _profiles.get_alert_binding("checkpoint_ngfw")
+    max_vol = binding.get("max_volume", 10) if binding else 10
+
+    # Throttle: only generate logs once per interval, return empty on re-polls
+    interval = binding.get("interval_seconds", 3600) if binding else 3600
+    now = _time.time()
+    last = _cp_last_gen.get("checkpoint", 0)
+    if now - last < interval and last > 0:
+        # Already generated this interval — return empty (S1 stops paging)
+        return {
+            "query-id": str(_uuid.uuid4()),
+            "logs-count": 0, "from": 0, "to": 0,
+            "logs": [], "status": "succeeded",
+        }
+
+    _cp_last_gen["checkpoint"] = now
+    limit = min(max_vol, body.get("limit", 25))
     from sources.alerts.checkpoint_ngfw import generate_native as _cp_native
     logs = _cp_native(limit, ctx=_alert_ctx("checkpoint_ngfw"))
-    import uuid as _uuid
-    # Real CP API returns resolved objects at response level — S1 uses these for resources[]
-    gw_uid = str(_uuid.uuid4())
     return {
         "query-id": str(_uuid.uuid4()),
         "logs-count": len(logs),
         "from": 0,
         "to": len(logs),
         "logs": logs,
-        "objects-dictionary": [
-            {
-                "uid": gw_uid,
-                "name": "Checkpoint-GW",
-                "type": "simple-gateway",
-                "ipv4-address": "10.1.1.200",
-                "domain": {"domain-type": "local domain", "name": "SMC User", "uid": str(_uuid.uuid4())},
-                "sic-name": "CN=Checkpoint-GW,O=Checkpoint-MGMT..apigenie",
-            },
-        ],
         "status": "succeeded",
     }
 
