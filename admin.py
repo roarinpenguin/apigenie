@@ -33,6 +33,13 @@ COOKIE       = "ag_session"
 # is volume-mounted. Takes precedence over ADMIN_PASSWORD_HASH env var.
 ADMIN_PASSWORD_FILE = Path(os.environ.get("ADMIN_PASSWORD_FILE", "/var/lib/apigenie/admin_pass"))
 
+# Investigation password — separate from the admin login password.
+# Empty by default (gate disabled). Set APIGENIE_INVESTIGATE_PASSWORD or
+# change via the Settings tab to enable the gate. Persisted on disk.
+INVESTIGATE_PASSWORD = os.environ.get("APIGENIE_INVESTIGATE_PASSWORD", "")
+INVESTIGATE_PASSWORD_HASH = os.environ.get("APIGENIE_INVESTIGATE_PASSWORD_HASH", "").strip()
+INVESTIGATE_PASSWORD_FILE = Path(os.environ.get("INVESTIGATE_PASSWORD_FILE", "/var/lib/apigenie/investigate_pass"))
+
 # Public-facing hostname collectors will use to reach this stack. Required at
 # import time because the SOURCES reference dict (curl examples, advertised
 # endpoint URLs) is built once at startup.
@@ -91,6 +98,32 @@ def _check_password(plain: str) -> bool:
         return _verify_password_hash(plain, active_hash)
     # Plaintext fallback for first-boot only. constant-time compare.
     return bool(ADMIN_PASS) and hmac.compare_digest(plain, ADMIN_PASS)
+
+
+def _current_investigate_hash() -> str:
+    """Resolve the active investigation hash: override file > env var > empty."""
+    try:
+        if INVESTIGATE_PASSWORD_FILE.is_file():
+            return INVESTIGATE_PASSWORD_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        pass
+    return INVESTIGATE_PASSWORD_HASH
+
+
+def _investigate_password_configured() -> bool:
+    """Return True if an investigation password has been explicitly set."""
+    if _current_investigate_hash():
+        return True
+    return bool(INVESTIGATE_PASSWORD)
+
+
+def _check_investigate_password(plain: str) -> bool:
+    active_hash = _current_investigate_hash()
+    if active_hash:
+        return _verify_password_hash(plain, active_hash)
+    # Plaintext fallback. constant-time compare.
+    return bool(INVESTIGATE_PASSWORD) and hmac.compare_digest(plain, INVESTIGATE_PASSWORD)
+
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -523,6 +556,16 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
 .geo-side .ip-row:hover{color:var(--mist)}
 .geo-side .ip-row.active{color:var(--lilac);font-weight:600}
 .geo-side .pill{font-family:monospace;font-size:.72rem;color:rgba(224,170,255,.5)}
+/* Observability sub-tabs */
+.obs-tab{background:transparent;border:none;border-bottom:2px solid transparent;color:rgba(224,170,255,.55);padding:8px 16px;cursor:pointer;font-size:.85rem;transition:all .15s}
+.obs-tab:hover{color:var(--mist)}.obs-tab.active{color:var(--mist);border-bottom-color:var(--lilac)}
+.obs-panel{display:none}.obs-panel.active{display:block}
+.obs-range{background:rgba(36,0,70,.6)!important;border:1px solid rgba(199,125,255,.2)!important}
+.obs-range.active{background:rgba(123,44,191,.4)!important;border-color:var(--lilac)!important;color:var(--mist)!important}
+/* Investigation gate */
+.inv-gate{background:rgba(36,0,70,.8);border:1px solid rgba(199,125,255,.25);border-radius:12px;padding:24px;max-width:360px;margin:60px auto;text-align:center}
+.inv-gate input{width:100%;margin:12px 0;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 12px;color:var(--mist);outline:none}
+.inv-gate .err{color:#ff7f7f;font-size:.82rem;margin-top:8px}
 /* Listeners */
 .listener-row{background:rgba(36,0,70,.4);border:1px solid rgba(199,125,255,.18);border-radius:10px;padding:14px 16px;margin-bottom:10px}
 .listener-row.disabled{opacity:.55}
@@ -578,11 +621,10 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
   <div class="brand">⚙ ApiGenie Admin</div>
   <span class="nav-section">Monitor</span>
   <a class="nav-item active" onclick="showTab('requests', this)">📋 Requests</a>
-  <a class="nav-item" onclick="showTab('flows', this); loadFlows()">🔀 Flows</a>
-  <a class="nav-item" onclick="showTab('geo', this); loadGeo()">🌍 GeoMap</a>
+  <a class="nav-item" onclick="showTab('observability', this); initObservability()">📊 Observability</a>
   <a class="nav-item" onclick="showTab('listeners', this); loadListeners()">🎯 Listeners</a>
   <a class="nav-item" onclick="showTab('profiles', this); loadProfiles()">🎭 Log Profiles</a>
-  <a class="nav-item" onclick="showTab('investigate', this); loadBans()">🔍 Investigations</a>
+  <a class="nav-item" onclick="showTab('investigate', this); gateInvestigate()">🔍 Investigations</a>
   <a class="nav-item" onclick="showTab('logs', this)">📜 Container Logs</a>
   <span class="nav-section">Reference</span>
   <a class="nav-item" onclick="showTab('config', this)">🔧 Source Config</a>
@@ -616,43 +658,71 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
       </div>
     </div>
 
-    <!-- FLOWS TAB (Sankey) -->
-    <div class="pane" id="pane-flows">
-      <div class="card">
-        <div class="card-title">Source IP → Log source flow</div>
-        <div class="viz-toolbar">
-          <button class="btn-sm" onclick="loadFlows()">↺ Refresh</button>
-          <label style="font-size:.78rem;color:rgba(224,170,255,.6)">Filter IP
-            <select id="flow-ip" onchange="loadFlows(this.value || null)" style="margin-left:6px"></select>
-          </label>
-          <button class="btn-sm" onclick="loadFlows(null)" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2)">Clear filter</button>
-          <label style="font-size:.78rem;color:rgba(224,170,255,.6)">Min volume
-            <input id="flow-min" type="range" min="1" max="50" value="1" oninput="document.getElementById('flow-min-v').textContent=this.value;renderSankey()" style="vertical-align:middle"/>
-            <span id="flow-min-v" style="font-family:monospace">1</span>
-          </label>
-          <span class="meta" id="flow-meta"></span>
-        </div>
-        <div id="sankey" class="viz"></div>
-        <p style="font-size:.75rem;color:rgba(224,170,255,.45);margin-top:10px">
-          Click an IP node to filter. Double-click an IP to open the 🔍 Investigation panel.
-        </p>
+    <!-- OBSERVABILITY TAB (Flows + GeoMap + Usage) -->
+    <div class="pane" id="pane-observability">
+      <div class="obs-tabs" style="display:flex;gap:0;margin-bottom:16px;border-bottom:1px solid rgba(199,125,255,.2)">
+        <button class="obs-tab active" data-obs="obs-flows" onclick="switchObs(this,'obs-flows')">🔀 Flows</button>
+        <button class="obs-tab" data-obs="obs-geo" onclick="switchObs(this,'obs-geo')">🌍 GeoMap</button>
+        <button class="obs-tab" data-obs="obs-usage" onclick="switchObs(this,'obs-usage')">📈 Usage</button>
       </div>
-    </div>
 
-    <!-- GEOMAP TAB -->
-    <div class="pane" id="pane-geo">
-      <div class="card">
-        <div class="card-title">Geo distribution of source IPs</div>
-        <div class="viz-toolbar">
-          <button class="btn-sm" onclick="loadGeo()">↺ Refresh</button>
-          <span class="meta" id="geo-meta"></span>
+      <!-- SUB: Flows -->
+      <div class="obs-panel active" id="obs-flows">
+        <div class="card">
+          <div class="card-title">Source IP → Log source flow</div>
+          <div class="viz-toolbar">
+            <button class="btn-sm" onclick="loadFlows()">↺ Refresh</button>
+            <label style="font-size:.78rem;color:rgba(224,170,255,.6)">Filter IP
+              <select id="flow-ip" onchange="loadFlows(this.value || null)" style="margin-left:6px"></select>
+            </label>
+            <button class="btn-sm" onclick="loadFlows(null)" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2)">Clear filter</button>
+            <label style="font-size:.78rem;color:rgba(224,170,255,.6)">Min volume
+              <input id="flow-min" type="range" min="1" max="50" value="1" oninput="document.getElementById('flow-min-v').textContent=this.value;renderSankey()" style="vertical-align:middle"/>
+              <span id="flow-min-v" style="font-family:monospace">1</span>
+            </label>
+            <span class="meta" id="flow-meta"></span>
+          </div>
+          <div id="sankey" class="viz"></div>
+          <p style="font-size:.75rem;color:rgba(224,170,255,.45);margin-top:10px">
+            Click an IP node to filter. Double-click an IP to open the 🔍 Investigation panel.
+          </p>
         </div>
-        <div class="geo-split">
-          <div id="geomap" class="viz"></div>
-          <aside class="geo-side" id="geo-side">
-            <h4>Top sources</h4>
-            <div id="geo-list"><p class="empty">Loading…</p></div>
-          </aside>
+      </div>
+
+      <!-- SUB: GeoMap -->
+      <div class="obs-panel" id="obs-geo" style="display:none">
+        <div class="card">
+          <div class="card-title">Geo distribution of source IPs</div>
+          <div class="viz-toolbar">
+            <button class="btn-sm" onclick="loadGeo()">↺ Refresh</button>
+            <span class="meta" id="geo-meta"></span>
+          </div>
+          <div class="geo-split">
+            <div id="geomap" class="viz"></div>
+            <aside class="geo-side" id="geo-side">
+              <h4>Top sources</h4>
+              <div id="geo-list"><p class="empty">Loading…</p></div>
+            </aside>
+          </div>
+        </div>
+      </div>
+
+      <!-- SUB: Usage over Time -->
+      <div class="obs-panel" id="obs-usage" style="display:none">
+        <div class="card">
+          <div class="card-title">Usage over time</div>
+          <div class="viz-toolbar">
+            <button class="btn-sm obs-range active" data-range="1h"  onclick="loadUsage('1h',this)">1h</button>
+            <button class="btn-sm obs-range"        data-range="6h"  onclick="loadUsage('6h',this)">6h</button>
+            <button class="btn-sm obs-range"        data-range="24h" onclick="loadUsage('24h',this)">24h</button>
+            <button class="btn-sm obs-range"        data-range="7d"  onclick="loadUsage('7d',this)">7d</button>
+            <button class="btn-sm obs-range"        data-range="30d" onclick="loadUsage('30d',this)">30d</button>
+            <button class="btn-sm obs-range"        data-range="90d" onclick="loadUsage('90d',this)">90d</button>
+            <button class="btn-sm obs-range"        data-range="1y"  onclick="loadUsage('1y',this)">1y</button>
+            <button class="btn-sm" onclick="loadUsage(null)" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2)">↺ Refresh</button>
+            <span class="meta" id="usage-meta"></span>
+          </div>
+          <div id="usage-chart" class="viz" style="height:400px"></div>
         </div>
       </div>
     </div>
@@ -798,6 +868,26 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
           <span id="pw-msg" style="font-size:.85rem"></span>
         </div>
       </div>
+
+      <div class="card">
+        <div class="card-title">Change investigation password</div>
+        <p style="font-size:.78rem;color:rgba(224,170,255,.45);margin-bottom:10px">
+          The investigation password protects the 🔍 Investigations tab (IP lookup, WHOIS, banning).
+          Not set by default (tab is open). Set a password here to enable the gate.
+        </p>
+        <div class="row"><label style="min-width:140px;font-size:.82rem;color:rgba(224,170,255,.7)">Current password</label>
+          <input id="inv-pw-current" type="password" autocomplete="off" style="flex:1;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 12px;color:var(--mist);outline:none"/>
+        </div>
+        <div class="row"><label style="min-width:140px;font-size:.82rem;color:rgba(224,170,255,.7)">New password</label>
+          <input id="inv-pw-new" type="password" autocomplete="new-password" style="flex:1;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 12px;color:var(--mist);outline:none"/>
+        </div>
+        <div class="row"><label style="min-width:140px;font-size:.82rem;color:rgba(224,170,255,.7)">Confirm new</label>
+          <input id="inv-pw-confirm" type="password" autocomplete="new-password" style="flex:1;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 12px;color:var(--mist);outline:none"/>
+        </div>
+        <div class="row"><button onclick="changeInvPassword()">Save</button>
+          <span id="inv-pw-msg" style="font-size:.85rem"></span>
+        </div>
+      </div>
     </div>
 
   </div>
@@ -816,11 +906,13 @@ function showTab(tab, el) {
   document.getElementById('pane-' + tab).classList.add('active');
   if (el) el.classList.add('active');
   activeTab = tab;
-  const titles = {requests:'Request Inspector', flows:'Flow Sankey', geo:'Geo Distribution', listeners:'Custom Listeners', profiles:'Log Profiles', investigate:'Investigations', logs:'Container Logs', config:'Source Config', settings:'Settings'};
-  // Resize viz canvases — ECharts can't measure a hidden element correctly,
-  // so we trigger a resize when its pane becomes active.
-  if (tab === 'flows' && window._sankey) window._sankey.resize();
-  if (tab === 'geo'   && window._geomap) window._geomap.resize();
+  const titles = {requests:'Request Inspector', observability:'Observability', listeners:'Custom Listeners', profiles:'Log Profiles', investigate:'Investigations', logs:'Container Logs', config:'Source Config', settings:'Settings'};
+  // Resize viz canvases when the Observability tab becomes active.
+  if (tab === 'observability') {
+    if (window._sankey) window._sankey.resize();
+    if (window._geomap) window._geomap.resize();
+    if (window._usagechart) window._usagechart.resize();
+  }
   document.getElementById('page-title').textContent = titles[tab];
 }
 
@@ -1031,6 +1123,37 @@ async function changePassword() {
     document.getElementById('pw-new').value = '';
     document.getElementById('pw-confirm').value = '';
     loadSettings();
+  } catch(e) {
+    msg.style.color = '#ff7f7f';
+    msg.textContent = 'Error: ' + e;
+  }
+}
+
+async function changeInvPassword() {
+  const cur = document.getElementById('inv-pw-current').value;
+  const nw  = document.getElementById('inv-pw-new').value;
+  const cf  = document.getElementById('inv-pw-confirm').value;
+  const msg = document.getElementById('inv-pw-msg');
+  msg.style.color = '#ff7f7f';
+  if (!nw) { msg.textContent = 'Enter a new password.'; return; }
+  if (nw !== cf) { msg.textContent = 'New passwords do not match.'; return; }
+  if (nw.length < 8) { msg.textContent = 'New password must be at least 8 characters.'; return; }
+  msg.style.color = 'rgba(224,170,255,.6)';
+  msg.textContent = 'Saving…';
+  try {
+    const r = await fetch('/admin/api/change-investigate-password', {
+      method:'POST', credentials:'same-origin',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({current:cur, 'new':nw})
+    });
+    const j = await r.json();
+    if (!r.ok) { msg.style.color = '#ff7f7f'; msg.textContent = j.error || ('Error ' + r.status); return; }
+    msg.style.color = '#7fff7f';
+    msg.textContent = 'Investigation password updated.';
+    document.getElementById('inv-pw-current').value = '';
+    document.getElementById('inv-pw-new').value = '';
+    document.getElementById('inv-pw-confirm').value = '';
+    _invUnlocked = false;  // force re-auth on next visit
   } catch(e) {
     msg.style.color = '#ff7f7f';
     msg.textContent = 'Error: ' + e;
@@ -1281,6 +1404,163 @@ function renderGeoSidebar(focusIp) {
     </div>`;
   }).join('');
   wrap.innerHTML = rows || '<p class="empty">No data.</p>';
+}
+
+// ── Observability sub-tab switching ──────────────────────────────────────────
+
+function switchObs(btn, panelId) {
+  document.querySelectorAll('.obs-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.obs-panel').forEach(p => { p.classList.remove('active'); p.style.display = 'none'; });
+  btn.classList.add('active');
+  const panel = document.getElementById(panelId);
+  panel.classList.add('active');
+  panel.style.display = 'block';
+  // Trigger data load + resize for the newly visible panel
+  if (panelId === 'obs-flows')  { loadFlows(); if (window._sankey) window._sankey.resize(); }
+  if (panelId === 'obs-geo')    { loadGeo();   if (window._geomap) window._geomap.resize(); }
+  if (panelId === 'obs-usage')  { loadUsage(); if (window._usagechart) window._usagechart.resize(); }
+}
+
+let _obsInitDone = false;
+function initObservability() {
+  if (_obsInitDone) {
+    // Just resize on re-entry
+    if (window._sankey) window._sankey.resize();
+    return;
+  }
+  _obsInitDone = true;
+  loadFlows();
+}
+
+// ── Usage-over-Time chart ────────────────────────────────────────────────────
+
+let _usageRange = '1h';
+let _usageRaw = null;
+
+// Source → colour palette (consistent with the rest of the UI)
+const _SRC_COLORS = {
+  okta:'#7b2cbf', netskope:'#9d4edd', entra_id:'#c77dff', defender:'#e0aaff',
+  cisco_duo:'#3c096c', gcp_audit:'#5a189a', tenable:'#ff6d00', proofpoint:'#ffb74d',
+  wiz:'#4cc9f0', snyk:'#80ed99', darktrace:'#f72585', azure_platform:'#b388ff',
+  cloudtrail:'#00b4d8', guardduty:'#ef476f', waf:'#ffd166',
+};
+function _srcColor(s) { return _SRC_COLORS[s] || '#c0a0ff'; }
+
+async function loadUsage(range, btn) {
+  if (range) _usageRange = range;
+  // Update active range button
+  if (btn) {
+    document.querySelectorAll('.obs-range').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  }
+  try {
+    const r = await fetch('/admin/api/usage?range=' + encodeURIComponent(_usageRange), {credentials:'same-origin'});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    _usageRaw = await r.json();
+    document.getElementById('usage-meta').textContent =
+      _usageRaw.buckets.length + ' buckets · ' + _usageRaw.bucket_size + ' granularity';
+    renderUsage();
+  } catch(e) {
+    document.getElementById('usage-meta').textContent = 'Error: ' + e;
+  }
+}
+
+function renderUsage() {
+  if (!_usageRaw || typeof echarts === 'undefined') {
+    if (_usageRaw) setTimeout(renderUsage, 200);
+    return;
+  }
+  const dom = document.getElementById('usage-chart');
+  if (!window._usagechart) window._usagechart = echarts.init(dom, null, {renderer:'canvas'});
+
+  // Collect all source names
+  const allSrc = new Set();
+  _usageRaw.buckets.forEach(b => Object.keys(b.sources).forEach(s => allSrc.add(s)));
+  const sources = [...allSrc].sort();
+  const xData = _usageRaw.buckets.map(b => b.ts);
+
+  const series = sources.map(s => ({
+    name: s,
+    type: 'line',
+    stack: 'total',
+    areaStyle: {opacity: 0.35},
+    emphasis: {focus: 'series'},
+    smooth: true,
+    symbol: 'none',
+    lineStyle: {width: 1.5, color: _srcColor(s)},
+    itemStyle: {color: _srcColor(s)},
+    data: _usageRaw.buckets.map(b => b.sources[s] || 0),
+  }));
+
+  window._usagechart.setOption({
+    backgroundColor: 'transparent',
+    tooltip: {trigger:'axis', axisPointer:{type:'cross'}},
+    legend: {data:sources, textStyle:{color:'rgba(224,170,255,.6)',fontSize:11}, top:0, type:'scroll'},
+    grid: {left:50, right:20, top:40, bottom:30, containLabel:true},
+    xAxis: {type:'category', data:xData, axisLabel:{color:'rgba(224,170,255,.45)',fontSize:10,rotate:30}, axisLine:{lineStyle:{color:'rgba(199,125,255,.15)'}}},
+    yAxis: {type:'value', axisLabel:{color:'rgba(224,170,255,.45)',fontSize:10}, splitLine:{lineStyle:{color:'rgba(199,125,255,.06)'}}},
+    series: series,
+  }, true);
+}
+
+// ── Investigation password gate ─────────────────────────────────────────────
+let _invUnlocked = false;
+
+async function gateInvestigate() {
+  if (_invUnlocked) { loadBans(); return; }
+  // Check if the gate is enabled at all
+  try {
+    const gr = await fetch('/admin/api/investigate-gate', {credentials:'same-origin'});
+    const gd = await gr.json();
+    if (!gd.gate_enabled) {
+      // No password configured — skip gate
+      _invUnlocked = true;
+      loadBans();
+      return;
+    }
+  } catch(e) { /* fall through to show gate */ }
+  const pane = document.getElementById('pane-investigate');
+  // Check if the gate has already been shown (user is re-clicking the tab)
+  if (document.getElementById('inv-gate-box')) return;
+  // Build the gate UI
+  const original = pane.innerHTML;
+  pane.dataset.original = original;
+  pane.innerHTML = '<div class="inv-gate" id="inv-gate-box">' +
+    '<h3 style="color:var(--mist);margin-bottom:8px">🔒 Investigation Access</h3>' +
+    '<p style="font-size:.82rem;color:rgba(224,170,255,.55)">Enter the investigation password to continue.</p>' +
+    '<input id="inv-pw" type="password" placeholder="Password…" autocomplete="off" onkeydown="if(event.key===&apos;Enter&apos;)submitInvGate()"/>' +
+    '<button onclick="submitInvGate()">Unlock</button>' +
+    '<div id="inv-gate-err"></div></div>';
+  document.getElementById('inv-pw').focus();
+}
+
+async function submitInvGate() {
+  const pw = document.getElementById('inv-pw').value;
+  if (!pw) return;
+  try {
+    const r = await fetch('/admin/api/investigate-auth', {
+      method:'POST', credentials:'same-origin',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({password:pw})
+    });
+    const d = await r.json();
+    if (!r.ok) {
+      document.getElementById('inv-gate-err').innerHTML = '<span class="err">' + escHtml(d.error||'Wrong password') + '</span>';
+      return;
+    }
+    _invUnlocked = true;
+    const pane = document.getElementById('pane-investigate');
+    pane.innerHTML = pane.dataset.original || '';
+    loadBans();
+    // Resume pending investigation if triggered from Sankey/GeoMap
+    if (window._pendingInvestigateIp) {
+      const ip = window._pendingInvestigateIp;
+      window._pendingInvestigateIp = null;
+      setTimeout(() => investigateIp(ip), 100);
+    }
+  } catch(e) {
+    document.getElementById('inv-gate-err').innerHTML = '<span class="err">Error: ' + escHtml(String(e)) + '</span>';
+  }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1781,17 +2061,57 @@ document.querySelector('#source-chips .chip')?.click();
 window.addEventListener('resize', () => {
   if (window._sankey) window._sankey.resize();
   if (window._geomap) window._geomap.resize();
+  if (window._usagechart) window._usagechart.resize();
 });
 // Wire wizard auth-kind dropdown to show the right fields.
 document.addEventListener('change', (e) => {
   if (e.target && e.target.id === 'wiz-auth-kind') _showAuthFields(e.target.value);
 });
+// First-run check: prompt to set investigation password if not configured.
+(async function checkInvSetup() {
+  try {
+    const r = await fetch('/admin/api/investigate-gate', {credentials:'same-origin'});
+    const d = await r.json();
+    if (!d.gate_enabled) {
+      document.getElementById('inv-setup-modal').classList.remove('hidden');
+      document.getElementById('inv-setup-pw').focus();
+    }
+  } catch(e) {}
+})();
+
+async function submitInvSetup() {
+  const pw  = document.getElementById('inv-setup-pw').value;
+  const cf  = document.getElementById('inv-setup-pw-confirm').value;
+  const err = document.getElementById('inv-setup-err');
+  if (!pw) { err.textContent = 'Enter a password.'; return; }
+  if (pw.length < 8) { err.textContent = 'Must be at least 8 characters.'; return; }
+  if (pw !== cf) { err.textContent = 'Passwords do not match.'; return; }
+  err.textContent = '';
+  try {
+    const r = await fetch('/admin/api/change-investigate-password', {
+      method:'POST', credentials:'same-origin',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({current:'', 'new':pw})
+    });
+    const d = await r.json();
+    if (!r.ok) { err.textContent = d.error || 'Error ' + r.status; return; }
+    document.getElementById('inv-setup-modal').classList.add('hidden');
+    toast('Investigation password set.');
+  } catch(e) { err.textContent = 'Error: ' + e; }
+}
 
 // ── Investigation + Ban functions ────────────────────────────────────────────
 
 function investigateIp(ip) {
   ip = (ip || '').trim();
   if (!ip) { toast('Enter an IP address', true); return; }
+  // If not unlocked, stash IP and open gate
+  if (!_invUnlocked) {
+    window._pendingInvestigateIp = ip;
+    showTab('investigate', document.querySelector('.nav-item[onclick*="investigate"]'));
+    gateInvestigate();
+    return;
+  }
   document.getElementById('inv-ip-input').value = ip;
   // Switch to investigate tab
   showTab('investigate', document.querySelector('.nav-item[onclick*="investigate"]'));
@@ -1940,7 +2260,7 @@ async function loadBans() {
       const capMb = (d2.cap_bytes / 1048576).toFixed(0);
       let h = '<div style="font-size:.92rem">' + mb + ' MB / ' + capMb + ' MB used</div>';
       h += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">';
-      (d2.files||[]).forEach(f => { h += '<span class="pill">' + escHtml(f.name) + ' (' + (f.size/1024).toFixed(0) + ' KB)</span>'; });
+      (d2.files||[]).forEach(f => { h += '<a href="/admin/api/request-logs/' + encodeURIComponent(f.name) + '" class="pill" style="cursor:pointer;text-decoration:none;color:inherit" title="Download ' + escHtml(f.name) + '">⬇ ' + escHtml(f.name) + ' (' + (f.size/1024).toFixed(0) + ' KB)</a>'; });
       h += '</div>';
       box2.innerHTML = h;
     }
@@ -2460,6 +2780,34 @@ function deleteProfile() {
     </div>
   </div>
 </div>
+
+<!-- Investigation password first-run setup modal -->
+<div id="inv-setup-modal" class="modal-overlay hidden">
+  <div class="modal" style="width:min(440px,100%)">
+    <div class="modal-head">
+      <h3>🔒 Set Investigation Password</h3>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:.85rem;color:rgba(224,170,255,.65);margin-bottom:14px">
+        The Investigations tab provides IP lookup, WHOIS, and banning capabilities.
+        Please set a password to protect it.
+      </p>
+      <div class="field"><label>New password</label>
+        <input id="inv-setup-pw" type="password" autocomplete="new-password" placeholder="Min. 8 characters"/>
+      </div>
+      <div class="field"><label>Confirm</label>
+        <input id="inv-setup-pw-confirm" type="password" autocomplete="new-password" placeholder="Repeat password" onkeydown="if(event.key==='Enter')submitInvSetup()"/>
+      </div>
+      <div id="inv-setup-err" style="color:#ff7f7f;font-size:.82rem;min-height:1.2em"></div>
+    </div>
+    <div class="modal-foot">
+      <div class="left"></div>
+      <div class="right">
+        <button onclick="submitInvSetup()">Set password</button>
+      </div>
+    </div>
+  </div>
+</div>
 </body>
 </html>"""
 
@@ -2656,6 +3004,16 @@ async def api_geo(ag_session: str | None = Cookie(None)):
     # Largest first — the UI uses this for default sort and bubble sizing.
     out.sort(key=lambda r: r["total"], reverse=True)
     return JSONResponse({"rows": out, "geoip_source": "mmdb" if geoip._load_mmdb() else "ip-api"})
+
+
+@router.get("/api/usage")
+async def api_usage(range: str = "24h", ag_session: str | None = Cookie(None)):
+    """Usage-over-Time data feed for the Observability tab."""
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import telemetry
+    data = telemetry.query(range)
+    return JSONResponse(data)
 
 
 @router.get("/api/logs/{container}")
@@ -3256,6 +3614,69 @@ async def api_replays_delete(file_id: str, ag_session: str | None = Cookie(None)
     return JSONResponse({"ok": True, "file_id": file_id})
 
 
+# ── Investigation auth ────────────────────────────────────────────────────────
+
+# Per-session set of tokens that have unlocked the investigation tab.
+_investigate_tokens: set[str] = set()
+
+
+@router.get("/api/investigate-gate")
+async def api_investigate_gate(ag_session: str | None = Cookie(None)):
+    """Check whether the investigation gate is enabled."""
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return JSONResponse({"gate_enabled": _investigate_password_configured()})
+
+
+@router.post("/api/investigate-auth")
+async def api_investigate_auth(request: Request, ag_session: str | None = Cookie(None)):
+    """Validate the investigation password (separate from admin login)."""
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    # If no password is configured, auto-pass
+    if not _investigate_password_configured():
+        _investigate_tokens.add(ag_session)
+        return JSONResponse({"ok": True})
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    pw = body.get("password", "")
+    if not _check_investigate_password(pw):
+        return JSONResponse({"error": "Wrong investigation password"}, status_code=403)
+    _investigate_tokens.add(ag_session)
+    return JSONResponse({"ok": True})
+
+
+@router.post("/api/change-investigate-password")
+async def api_change_investigate_password(request: Request, ag_session: str | None = Cookie(None)):
+    """Change the investigation password (requires knowing the current one)."""
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    current = body.get("current", "")
+    new_pw = body.get("new", "")
+    # If a password is already configured, require the current one
+    if _investigate_password_configured():
+        if not _check_investigate_password(current):
+            return JSONResponse({"error": "Current investigation password is incorrect"}, status_code=403)
+    if len(new_pw) < 8:
+        return JSONResponse({"error": "New password must be at least 8 characters"}, status_code=400)
+    new_hash = _hash_password(new_pw)
+    try:
+        INVESTIGATE_PASSWORD_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = INVESTIGATE_PASSWORD_FILE.with_suffix(".tmp")
+        tmp.write_text(new_hash + "\n", encoding="utf-8")
+        tmp.chmod(0o600)
+        tmp.replace(INVESTIGATE_PASSWORD_FILE)
+    except OSError as exc:
+        return JSONResponse({"error": f"Could not persist: {exc}"}, status_code=500)
+    return JSONResponse({"ok": True})
+
+
 # ── Investigation endpoints ──────────────────────────────────────────────────
 
 @router.get("/api/investigate/{ip}")
@@ -3337,6 +3758,25 @@ async def api_request_log_stats(ag_session: str | None = Cookie(None)):
         "cap_bytes": request_log._CAP_BYTES,
         "files": request_log.file_list(),
     })
+
+
+@router.get("/api/request-logs/{filename}")
+async def api_request_log_download(filename: str, ag_session: str | None = Cookie(None)):
+    """Download a daily request log file."""
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    # Sanitise: only allow YYYY-MM-DD.jsonl filenames
+    import re
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}\.jsonl", filename):
+        return JSONResponse({"error": "invalid filename"}, status_code=400)
+    fp = request_log.LOG_DIR / filename
+    if not fp.is_file():
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return Response(
+        content=fp.read_bytes(),
+        media_type="application/x-ndjson",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ── IP Ban endpoints ─────────────────────────────────────────────────────────

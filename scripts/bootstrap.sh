@@ -64,6 +64,7 @@ EXISTING_TLS_EMAIL=""
 EXISTING_ADMIN_HASH=""
 EXISTING_ADMIN_PASS=""
 EXISTING_MAXMIND_KEY=""
+EXISTING_INVESTIGATE_HASH=""
 if [ -f "$ENV_FILE" ]; then
     # Source in a subshell to avoid polluting the namespace, then read each value
     # back via grep (avoids set -u tripping over quoting in the .env).
@@ -77,6 +78,8 @@ if [ -f "$ENV_FILE" ]; then
     EXISTING_ADMIN_HASH="${EXISTING_ADMIN_HASH//\$\$/\$}"
     EXISTING_ADMIN_PASS=$(awk -F= '/^ADMIN_PASSWORD=/ {print $2; exit}' "$ENV_FILE")
     EXISTING_MAXMIND_KEY=$(awk -F= '/^MAXMIND_LICENSE_KEY=/ {print $2; exit}' "$ENV_FILE")
+    EXISTING_INVESTIGATE_HASH=$(awk -F= '/^APIGENIE_INVESTIGATE_PASSWORD=/ {print $2; exit}' "$ENV_FILE")
+    EXISTING_INVESTIGATE_HASH="${EXISTING_INVESTIGATE_HASH//\$\$/\$}"
 fi
 
 say
@@ -105,6 +108,21 @@ if [ -n "$EXISTING_ADMIN_HASH" ]; then
 else
     ask_secret "Admin password" ADMIN_PASS_PLAIN
     ADMIN_HASH=""
+fi
+
+# Investigation password — gates the 🔍 Investigations tab in the admin UI.
+say
+say "Investigation password:"
+say "  ${DIM}Protects the Investigations tab (IP lookup, WHOIS, banning).${RESET}"
+if [ -n "$EXISTING_INVESTIGATE_HASH" ]; then
+    ask "Keep existing investigation password? [Y/n]" "Y" KEEP_INV_PWD
+    case "$KEEP_INV_PWD" in
+        [nN]|[nN][oO]) ask_secret "New investigation password" INVESTIGATE_PASS_PLAIN; INVESTIGATE_HASH="" ;;
+        *)             INVESTIGATE_HASH="$EXISTING_INVESTIGATE_HASH"; INVESTIGATE_PASS_PLAIN=""; ok "Keeping existing investigation password." ;;
+    esac
+else
+    ask_secret "Investigation password" INVESTIGATE_PASS_PLAIN
+    INVESTIGATE_HASH=""
 fi
 
 say
@@ -143,6 +161,12 @@ if [ -n "$ADMIN_PASS_PLAIN" ]; then
     ok "Hash generated."
 fi
 
+if [ -n "$INVESTIGATE_PASS_PLAIN" ]; then
+    say "Hashing investigation password (PBKDF2-SHA256)…"
+    INVESTIGATE_HASH="$(python3 "$ROOT/scripts/hash_password.py" --plain "$INVESTIGATE_PASS_PLAIN")"
+    ok "Hash generated."
+fi
+
 # ─── 3. Write .env ───────────────────────────────────────────────────────────
 if [ -f "$ENV_FILE" ]; then
     cp "$ENV_FILE" "$ENV_FILE.bak"
@@ -163,6 +187,7 @@ fi
 # and silently expand to empty strings, breaking login. See:
 # https://docs.docker.com/compose/compose-file/12-interpolation/
 ADMIN_HASH_ENV="${ADMIN_HASH//\$/\$\$}"
+INVESTIGATE_HASH_ENV="${INVESTIGATE_HASH//\$/\$\$}"
 
 # COMPOSE_PROFILES drives which docker-compose profile-gated services start by
 # default. For letsencrypt mode we want the in-stack certbot manager active.
@@ -189,6 +214,9 @@ ${COMPOSE_PROFILES_LINE}
 ADMIN_USERNAME=${ADMIN_USER}
 ADMIN_PASSWORD=${ADMIN_PASS_FALLBACK}
 ADMIN_PASSWORD_HASH=${ADMIN_HASH_ENV}
+
+# ── Investigation password ──
+APIGENIE_INVESTIGATE_PASSWORD=${INVESTIGATE_HASH_ENV}
 
 # ── Admin GeoMap (optional) ──
 MAXMIND_LICENSE_KEY=${MAXMIND_LICENSE_KEY}

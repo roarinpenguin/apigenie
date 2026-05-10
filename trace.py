@@ -24,6 +24,7 @@ from starlette.requests import Request
 
 import bans
 import request_log
+import telemetry
 
 # source_id → deque of trace entries (newest first)
 REQUEST_TRACE: dict[str, collections.deque] = collections.defaultdict(
@@ -142,6 +143,7 @@ class TraceMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if not TraceMiddleware._log_pruner_started:
             request_log.start_pruner()
+            telemetry.start()
             TraceMiddleware._log_pruner_started = True
 
         path = request.url.path
@@ -181,4 +183,5 @@ class TraceMiddleware(BaseHTTPMiddleware):
         REQUEST_TRACE[source].appendleft(entry)
         _agg_observe(client_ip, source, response.status_code, ts_iso)
         request_log.append({**entry, "source": source})
+        telemetry.record(source)
         return response

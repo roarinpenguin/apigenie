@@ -205,11 +205,11 @@ The **Settings** tab (under *System*) exposes:
 |-----|---------------|
 | **Sources** | One reference card per platform with copy-pasteable endpoint URLs, auth values, and an example `curl` / `kcat` command |
 | **Requests** | Live trace of every inbound HTTP request, grouped by source. Includes Pub/Sub publish heartbeats (under `gcp_audit`) and Kafka produce heartbeats (under `azure_platform`) so you can confirm streaming sources are flowing even though gRPC/Kafka traffic bypasses FastAPI |
-| **Flows** | Sankey diagram of source IPs (left) → log-source names (right) with click-to-filter per IP and a min-volume slider |
-| **GeoMap** | World map with one bubble per source IP (size ∝ volume); click a bubble to drill down into its per-source breakdown |
+| **📊 Observability** | Unified view with three sub-tabs: **Flows** (Sankey: source IPs → log sources), **GeoMap** (world map with IP bubbles), and **Usage** (stacked area chart of request volume over time — 1h to 1y range, backed by persistent SQLite telemetry) |
 | **Container logs** | Tail logs of any container in the stack via `docker logs --follow` (apigenie, nginx, kafka, zookeeper, pubsub-emulator) |
 | **🎯 Listeners** | Stand up a custom HTTP endpoint on the fly to test a hand-rolled SCol Lua source — synthetic data across four telemetry topics (endpoint / identity / cloud / network) or replay an uploaded log file (json / jsonl / csv / syslog / cef) with a configurable time anchor. Design: [`docs/CUSTOM_LISTENERS.md`](docs/CUSTOM_LISTENERS.md) |
 | **Log Profiles** | Define reusable entity pools (users, machines, C2 servers, malware, mail senders), bind them to sources with a tunable signal-to-noise ratio, and generate **correlatable** telemetry across platforms. See [Log Profiles](#log-profiles) below |
+| **🔍 Investigations** | IP lookup (WHOIS, rDNS, GeoIP), request history, anomaly detection, and IP banning. Protected by a **separate investigation password** (prompted on first login if not set; configurable via `APIGENIE_INVESTIGATE_PASSWORD` or the Settings tab). Request log files are downloadable as JSONL |
 
 ### GeoMap data source
 
@@ -238,7 +238,14 @@ MaxMind ships weekly updates; re-running the script (or scheduling it via cron) 
 | `/admin/api/requests/{source}` | JSON request trace for a source (used by the dashboard) |
 | `/admin/api/flows[?ip=…]` | Sankey feed: nodes (IPs + sources) and weighted links |
 | `/admin/api/geo` | GeoMap feed: per-IP totals + lat/lon + per-source breakdown |
+| `/admin/api/usage?range=…` | Usage-over-Time feed (ranges: `1h 6h 24h 7d 30d 90d 1y`) |
 | `/admin/api/logs/{container}` | SSE stream of container logs |
+| `/admin/api/investigate-gate` | Check whether investigation password is configured |
+| `/admin/api/investigate-auth` | Validate investigation password |
+| `/admin/api/investigate/{ip}` | IP investigation context (WHOIS, GeoIP, request history) |
+| `/admin/api/bans` | List / create IP bans |
+| `/admin/api/request-logs/stats` | Request log file metadata |
+| `/admin/api/request-logs/{file}` | Download a daily request log (JSONL) |
 | `/admin/api/profiles` | List / create log profiles |
 | `/admin/api/profiles/{id}` | Read / update / delete a profile |
 | `/admin/api/profiles/{id}/preview` | Preview padded entity pools |
@@ -338,6 +345,7 @@ apigenie/
 ├── admin.py                  # Admin UI router (/admin/*) + source reference cards + SA JSON generator
 ├── auth.py                   # Bearer / Basic / X-ApiKeys / Duo HMAC dependency injectors
 ├── profiles.py               # Log Profiles: CRUD, Star Wars padding, ProfileContext for generators
+├── telemetry.py              # Persistent usage telemetry: SQLite, minute-granularity, 1-year retention
 ├── trace.py                  # Request-tracing middleware → REQUEST_TRACE deque + AGG (client_ip × source) LRU
 ├── geoip.py                  # Hybrid GeoIP resolver: MaxMind .mmdb if present, else ip-api.com
 ├── state.py                  # Thread-safe Tenable export cache (TTL eviction)
@@ -431,6 +439,26 @@ Log Profiles let you define **reusable entity pools** that are blended into gene
 |------|------|
 | Profile JSON files | `./data/profiles/<uuid>.json` |
 | Source↔profile bindings | `./data/source_profiles.json` |
+| Usage telemetry (SQLite) | `./data/telemetry.db` |
+| Investigation password hash | `./data/investigate_pass` |
+| Daily request logs | `./data/request-logs/YYYY-MM-DD.jsonl` |
+
+---
+
+## Investigation password
+
+The 🔍 **Investigations** tab (IP lookup, WHOIS, banning) is protected by a separate password, independent of the admin login.
+
+- **First login after install/upgrade**: if no investigation password is configured, a mandatory setup modal prompts the admin to set one. The hash is persisted to `./data/investigate_pass`.
+- **Bootstrap**: `./scripts/bootstrap.sh` prompts for the investigation password and writes it (hashed) to `.env` as `APIGENIE_INVESTIGATE_PASSWORD`.
+- **Settings tab**: can be changed at any time from the Settings card "Change investigation password".
+- **Env var override**: set `APIGENIE_INVESTIGATE_PASSWORD` in `.env` or as a Docker env var.
+
+---
+
+## Persistent telemetry
+
+The **Usage-over-Time** chart in the Observability tab is backed by a persistent SQLite database (`./data/telemetry.db`). Every API request increments a per-minute, per-source counter. Data is retained for **~1 year** and automatically pruned. The chart supports time ranges from 1 hour to 1 year with adaptive bucket sizes (1 min → 1 day).
 
 ---
 
