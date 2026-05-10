@@ -136,30 +136,19 @@ def _check_error_token(token: str) -> None:
 
 async def require_bearer_auth(request: Request) -> None:
     """Tolerant token auth — checks every header a collector might use."""
-    import logging as _log
-    _authlog = _log.getLogger("auth.bearer")
     token: str | None = None
-    matched_hdr: str | None = None
     for hdr in _TOKEN_HEADERS:
         candidate = request.headers.get(hdr)
         token = _extract_bearer(candidate)
         if token:
-            matched_hdr = hdr
             break
     if not token:
-        # Log which headers were present for debugging
-        present = {h: request.headers.get(h, "")[:20] for h in _TOKEN_HEADERS if request.headers.get(h)}
-        _authlog.warning("AUTH FAIL (no token) path=%s headers_present=%s ua=%s",
-                         request.url.path, present, request.headers.get("user-agent", "?")[:40])
         raise HTTPException(
             status_code=401,
             detail={"error": "unauthorized", "message": "Missing Bearer token"},
         )
     _check_error_token(token)
     if token not in VALID_TOKENS:
-        safe = token[:4] + "…" + token[-4:] if len(token) > 8 else token[:4] + "…"
-        _authlog.warning("AUTH FAIL (bad token) path=%s hdr=%s extracted=%s ua=%s",
-                         request.url.path, matched_hdr, safe, request.headers.get("user-agent", "?")[:40])
         raise HTTPException(
             status_code=401,
             detail={"error": "unauthorized", "message": "Invalid token"},

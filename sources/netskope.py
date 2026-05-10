@@ -111,108 +111,40 @@ _ALERT_TEMPLATES: dict[str, dict[str, Any]] = {
 }
 
 
-_TYPE_ALIASES = {
-    "anomaly": "uba",
-    "watchlist": "policy",
-    "Compromised Credential": "Compromised Credential",
-    "dlp": "DLP",
-    "malware": "Malware",
-    "malsite": "Malsite",
-    "policy": "policy",
-    "quarantine": "quarantine",
-    "uba": "uba",
-    "Security Assessment": "Security Assessment",
-    "Remediation": "Remediation",
-}
-
-
 def _generate_alert(alert_type: str | None = None, ctx: profiles.ProfileContext | None = None) -> dict[str, Any]:
-    try:
-        return _generate_alert_inner(alert_type, ctx)
-    except Exception:
-        import logging, traceback
-        logging.getLogger("netskope.gen").error("ALERT GEN FAILED:\n%s", traceback.format_exc())
-        ts = now_epoch()
-        return {
-            "_id": generate_uuid(), "_insertion_epoch_timestamp": ts,
-            "timestamp": ts, "alert": "yes", "alert_id": generate_uuid(),
-            "type": "alert", "alert_type": alert_type or "policy",
-            "alert_name": "Security Alert", "action": "alert",
-            "severity": "medium", "category": "Security",
-            "user": "admin@corp.local", "srcip": "10.0.0.1",
-            "dstip": "10.0.0.2", "hostname": "host-01",
-            "app": "Unknown", "appcategory": "Security",
-        }
-
-
-def _generate_alert_inner(alert_type: str | None = None, ctx: profiles.ProfileContext | None = None) -> dict[str, Any]:
-    resolved_type = _TYPE_ALIASES.get(alert_type, alert_type) if alert_type else None
-    if resolved_type and resolved_type in _ALERT_TEMPLATES:
-        template = dict(_ALERT_TEMPLATES[resolved_type])
+    if alert_type and alert_type in _ALERT_TEMPLATES:
+        template = _ALERT_TEMPLATES[alert_type]
     else:
-        template = dict(random.choice(list(_ALERT_TEMPLATES.values())))
+        template = random.choice(list(_ALERT_TEMPLATES.values()))
     app = random.choice(_APPS)
-
-    # Safely extract profile entities — every pick can return None, str, or dict
-    user = random.choice(_USERS)
-    srcip = generate_ip()
-    hostname = generate_hostname()
-    dstip = generate_ip()
-    malware_name = None
-
-    if ctx:
-        try:
-            pu = ctx.pick_user()
-            if isinstance(pu, dict):
-                user = pu.get("email", user)
-        except Exception:
-            pass
-        try:
-            pm = ctx.pick_machine()
-            if isinstance(pm, dict):
-                srcip = pm.get("ip", srcip)
-                hostname = pm.get("primary_workstation", hostname)
-        except Exception:
-            pass
-        try:
-            pc2 = ctx.pick_c2()
-            if isinstance(pc2, dict):
-                dstip = pc2.get("ip_c2", dstip)
-        except Exception:
-            pass
-        try:
-            pmal = ctx.pick_malware()
-            if isinstance(pmal, dict):
-                malware_name = pmal.get("filename")
-        except Exception:
-            pass
-
+    pu = ctx.pick_user() if ctx else None
+    pm = ctx.pick_machine() if ctx else None
+    pc2 = ctx.pick_c2() if ctx else None
+    pmal = ctx.pick_malware() if ctx else None
+    user = pu.get("email", random.choice(_USERS)) if pu else random.choice(_USERS)
+    srcip = pm.get("ip") if pm else generate_ip()
+    hostname = pm.get("primary_workstation", generate_hostname()) if pm else generate_hostname()
+    dstip = pc2.get("ip_c2") if pc2 else generate_ip()
     ts = now_epoch() - random.randint(0, 3600)
 
-    alert = {
+    base = {
         "_id": generate_uuid(),
         "_insertion_epoch_timestamp": ts,
         "timestamp": ts,
         "alert": "yes",
         "alert_id": generate_uuid(),
         "type": "alert",
-        "alert_type": template.get("alert_type", "policy"),
-        "alert_name": template.get("alert_name", "Security Alert"),
-        "action": template.get("action", "alert"),
-        "severity": template.get("severity", "medium"),
         "app": app,
-        "appcategory": template.get("category", "Security"),
-        "category": template.get("category", "Security"),
+        "appcategory": template["category"],
+        "category": template["category"],
         "user": user,
         "src_country": generate_country_code(),
         "srcip": srcip,
         "dstip": dstip,
         "hostname": hostname,
+        "device": random.choice(["Windows Device", "Mac Device", "iOS Device", "Android Device"]),
         "os": random.choice(["Windows 10", "macOS 12", "iOS 16", "Android 12"]),
-        "os_version": random.choice(["22H2", "14.1", "17.0", "13"]),
         "browser": random.choice(["Chrome", "Firefox", "Safari", "Edge"]),
-        "browser_version": f"{random.randint(90,130)}.0.{random.randint(1000,9999)}.{random.randint(10,99)}",
-        "device_classification": random.choice(["managed", "unmanaged"]),
         "country": generate_country_code(),
         "object": f"file_{generate_uuid()[:8]}.pdf",
         "object_type": "File",
@@ -225,23 +157,21 @@ def _generate_alert_inner(alert_type: str | None = None, ctx: profiles.ProfileCo
         "organization_unit": random.choice(["Engineering", "Sales", "HR", "Finance", "IT"]),
         "connection_id": generate_uuid(),
     }
-    if malware_name:
-        alert["malware_name"] = malware_name
-    return alert
+    base.update(template)
+    if pmal and template.get("alert_type") == "Malware":
+        base["malware_name"] = pmal.get("filename", base.get("malware_name", "Trojan.Generic"))
+    return base
 
 
 def get_alerts_response(limit: int = 100, alert_type: str | None = None) -> dict[str, Any]:
-    """Return alerts in the real Netskope v2 API format: {ok, result, data}."""
+    """Return alerts in the Netskope v2 envelope: {result, status, total}."""
     ctx = profiles.get_context("netskope")
     count = min(limit, 100)
     alerts = [_generate_alert(alert_type=alert_type, ctx=ctx) for _ in range(count)]
     return {
-        "ok": 1,
-        "result": "success",
+        "result": alerts,
         "status": "success",
-        "data": alerts,
         "total": count,
-        "wait_time": 0,
     }
 
 
