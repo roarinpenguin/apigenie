@@ -117,11 +117,18 @@ def generate_native(n: int, ctx: Any = None) -> list[dict]:
             "src_country": random.choice(_COUNTRIES),
             "dst_country": "US",
             "message": f"{v['blade']}: {v['name']} - {threat}",
-            # Resource fields — S1 maps these to OCSF resources[]
             "resource": gw,
             "resource_type": "gateway",
             "src_machine_name": f"host-{random.randint(1,99):02d}",
             "dst_machine_name": gw,
+            # Pre-structured OCSF resources — S1 requires this in the final alert
+            "resources": [
+                {
+                    "uid": gw,
+                    "name": gw,
+                    "type": "firewall",
+                }
+            ],
         })
     return logs
 
