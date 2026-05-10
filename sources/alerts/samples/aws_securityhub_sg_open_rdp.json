@@ -1,0 +1,114 @@
+{
+  "SchemaVersion": "2.0.0",
+  "Id": "arn:aws:securityhub:eu-west-1:123456789012:security-control-result/sg-open-ports",
+  "ProductArn": "arn:aws:securityhub:eu-west-1:123456789012:product/123456789012/default",
+  "GeneratorId": "aws-security-hub/security-control/s3.1",
+  "AwsAccountId": "123456789012",
+  "Types": [
+    "Software and Configuration Checks/AWS Security Best Practices"
+  ],
+  "CreatedAt": "2026-05-10T12:15:30Z",
+  "UpdatedAt": "2026-05-10T12:15:30Z",
+  "Severity": {
+    "Label": "CRITICAL",
+    "Normalized": 90
+  },
+  "Title": "Security groups should not allow ingress from 0.0.0.0/0 to port 3389",
+  "Description": "This control checks if security groups allow unrestricted inbound access on port 3389 (RDP). Allowing unrestricted access increases the risk of unauthorized access.",
+  "Compliance": {
+    "Status": "FAILED",
+    "RelatedRequirements": [
+      "CIS 4.2",
+      "PCI DSS 1.2"
+    ]
+  },
+  "Remediation": {
+    "Recommendation": {
+      "Text": "Modify the security group rule to restrict RDP access to specific IP ranges",
+      "Url": "https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/authorizing-access-to-an-instance.html"
+    }
+  },
+  "Resources": [
+    {
+      "Type": "AwsEc2:SecurityGroup",
+      "Id": "arn:aws:ec2:eu-west-1:123456789012:security-group/sg-0a1b2c3d4e5f6g7h8",
+      "Partition": "aws",
+      "Region": "eu-west-1",
+      "Details": {
+        "AwsEc2SecurityGroup": {
+          "GroupId": "sg-0a1b2c3d4e5f6g7h8",
+          "GroupName": "production-windows-sg",
+          "VpcId": "vpc-12345678",
+          "IpPermissions": [
+            {
+              "IpProtocol": "tcp",
+              "FromPort": 3389,
+              "ToPort": 3389,
+              "IpRanges": [
+                {
+                  "CidrIp": "0.0.0.0/0",
+                  "Description": "RDP from anywhere"
+                }
+              ]
+            },
+            {
+              "IpProtocol": "tcp",
+              "FromPort": 80,
+              "ToPort": 80,
+              "IpRanges": [
+                {
+                  "CidrIp": "0.0.0.0/0"
+                }
+              ]
+            }
+          ],
+          "OwnerId": "123456789012"
+        }
+      }
+    }
+  ],
+  "FirstObservedAt": "2026-05-01T08:00:00Z",
+  "LastObservedAt": "2026-05-10T12:15:30Z",
+  "RecordState": "ACTIVE",
+  "WorkflowState": "NEW",
+  "Workflow": {
+    "Status": "NEW"
+  },
+  "ocsf_mapping": {
+    "event_class": "Compliance Finding",
+    "event_type": "Policy Finding",
+    "severity_id": 6,
+    "severity": "Critical",
+    "category_uid": 2001,
+    "class_uid": 2006,
+    "activity_id": 2,
+    "activity": "Detect",
+    "status": "New",
+    "status_id": 1,
+    "finding": {
+      "title": "Security groups should not allow ingress from 0.0.0.0/0 to port 3389",
+      "uid": "arn:aws:securityhub:eu-west-1:123456789012:security-control-result/sg-open-ports",
+      "type": "Compliance Finding"
+    },
+    "resources": [
+      {
+        "type": "AwsEc2:SecurityGroup",
+        "uid": "arn:aws:ec2:eu-west-1:123456789012:security-group/sg-0a1b2c3d4e5f6g7h8",
+        "name": "production-windows-sg"
+      }
+    ],
+    "compliance": {
+      "status": "Failure",
+      "requirements": [
+        "CIS 4.2",
+        "PCI DSS 1.2"
+      ]
+    },
+    "metadata": {
+      "product_uid": "securityhub",
+      "product_name": "AWS Security Hub",
+      "vendor_name": "Amazon Web Services",
+      "version": "2.0.0"
+    }
+  }
+}

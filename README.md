@@ -1,6 +1,8 @@
 # <img src="assets/logo.png" width="60" align="center" alt="ApiGenie logo"> ApiGenie
 
-> Self-contained mock server for **11 security platform APIs** plus **Azure Event Hubs (Kafka)** and **GCP Cloud Logging (Pub/Sub)** — built for [Observo](https://observo.ai) source-configuration testing.
+> Self-contained mock API server used in two ways:
+> 1. **Observo Site** pulls **logs** from 11 security platform APIs + Azure Event Hubs (Kafka) + GCP Cloud Logging (Pub/Sub)
+> 2. **SentinelOne Singularity** pulls **alerts** from 11 vendor-native endpoints for Unified Alert Management (UAM) ingestion
 
 ApiGenie exposes realistic, dynamically-varied data through the same authentication shapes the real platforms use (Bearer, Basic, X-ApiKeys, Duo HMAC, OAuth2 client-credentials, Microsoft tenant OAuth, GraphQL, Tenable async export, Kafka SASL/PLAIN, gRPC Pub/Sub). It runs as a single Docker Compose stack — nginx, FastAPI, Kafka + Zookeeper, Pub/Sub emulator — with TLS via Let's Encrypt, a self-signed cert, or your own files.
 
@@ -208,7 +210,7 @@ The **Settings** tab (under *System*) exposes:
 | **📊 Observability** | Unified view with three sub-tabs: **Flows** (Sankey: source IPs → log sources), **GeoMap** (world map with IP bubbles), and **Usage** (stacked area chart of request volume over time — 1h to 1y range, backed by persistent SQLite telemetry) |
 | **Container logs** | Tail logs of any container in the stack via `docker logs --follow` (apigenie, nginx, kafka, zookeeper, pubsub-emulator) |
 | **🎯 Listeners** | Stand up a custom HTTP endpoint on the fly to test a hand-rolled SCol Lua source — synthetic data across four telemetry topics (endpoint / identity / cloud / network) or replay an uploaded log file (json / jsonl / csv / syslog / cef) with a configurable time anchor. Design: [`docs/CUSTOM_LISTENERS.md`](docs/CUSTOM_LISTENERS.md) |
-| **Log Profiles** | Define reusable entity pools (users, machines, C2 servers, malware, mail senders), bind them to sources with a tunable signal-to-noise ratio, and generate **correlatable** telemetry across platforms. See [Log Profiles](#log-profiles) below |
+| **🎭 Profiles** | Define reusable entity pools (users, machines, C2 servers, malware, mail senders). Two binding areas: **Source ↔ Profile** (blend entities into generated logs) and **Alert ↔ Profile** (generate S1 Security Alerts for 13 sources with configurable volume/interval). See [Profiles](#log-profiles) and [Alert Ingestion](#alert-ingestion) below |
 | **🔍 Investigations** | IP lookup (WHOIS, rDNS, GeoIP), request history, anomaly detection, and IP banning. Protected by a **separate investigation password** (prompted on first login if not set; configurable via `APIGENIE_INVESTIGATE_PASSWORD` or the Settings tab). Request log files are downloadable as JSONL |
 
 ### GeoMap data source
@@ -251,6 +253,10 @@ MaxMind ships weekly updates; re-running the script (or scheduling it via cron) 
 | `/admin/api/profiles/{id}/preview` | Preview padded entity pools |
 | `/admin/api/source-profiles` | List source↔profile bindings |
 | `/admin/api/source-profiles/{source}` | Bind / unbind a profile to a source |
+| `/admin/api/alert-sources` | List all 13 alert source adapters |
+| `/admin/api/alert-bindings` | List alert↔profile bindings |
+| `/admin/api/alert-bindings/{source}` | Bind / unbind a profile to an alert source |
+| `/admin/api/alerts/{source}?limit=N` | Generate N S1 Security Alerts on-demand |
 
 ---
 
@@ -359,7 +365,8 @@ apigenie/
 │   ├── gcp_audit.py · tenable.py · proofpoint.py
 │   ├── wiz.py · snyk.py · darktrace.py
 │   ├── aws_cloudtrail.py · aws_waf.py · aws_guardduty.py    # generators only (no HTTP routes — see LocalStack plan)
-│   └── synthetic/            # Synthetic topics for custom listeners (also profile-aware)
+│   ├── synthetic/            # Synthetic topics for custom listeners (also profile-aware)
+│   └── alerts/               # S1 alert generators: 13 source adapters + S1 schema builder
 ├── publishers/
 │   ├── kafka_publisher.py    # Background thread → Kafka topic azure-platform-logs
 │   └── pubsub_publisher.py   # Background thread → Pub/Sub topic audit-logs
@@ -459,6 +466,44 @@ The 🔍 **Investigations** tab (IP lookup, WHOIS, banning) is protected by a se
 ## Persistent telemetry
 
 The **Usage-over-Time** chart in the Observability tab is backed by a persistent SQLite database (`./data/telemetry.db`). Every API request increments a per-minute, per-source counter. Data is retained for **~1 year** and automatically pruned. The chart supports time ranges from 1 hour to 1 year with adaptive bucket sizes (1 min → 1 day).
+
+---
+
+## Alert Ingestion
+
+ApiGenie exposes **vendor-native API endpoints** that SentinelOne Singularity polls for Unified Alert Management (UAM). Each endpoint returns alerts in the vendor's native format, which S1 transforms to OCSF/S1 Security Alert internally.
+
+### Supported alert sources (11)
+
+| Source | S1 Integration | Vendor endpoint | Auth |
+|--------|---------------|----------------|------|
+| **Okta** | Okta Alert Ingestion | `GET /api/v1/logs` | Bearer token |
+| **Netskope** | Netskope Alert Ingestion | `GET /api/v2/events/data/alert` | Bearer token |
+| **MS Entra ID** | Entra ID Identity Protection | `GET /v1.0/identityProtection/riskDetections` | OAuth2 CC |
+| **MS Defender** | Microsoft 365 Alert Ingestion | `GET /v1.0/security/alerts` | OAuth2 CC |
+| **Proofpoint TAP** | Proofpoint TAP Alert Ingestion | `GET /v2/siem/all` | Basic auth |
+| **Check Point NGFW** | Check Point FW Alert Ingestion | `POST /web_api/show-logs` | Session auth |
+| **Cortex XDR** | Cortex XDR Alert Ingestion | `POST /public_api/v1/incidents/get_incidents` | API key |
+| **Mimecast** | Mimecast Alert Ingestion | `POST /api/ttp/*/get-logs` | OAuth2 CC |
+| **Vectra AI** | Vectra AI Alert Ingestion | `GET /api/v3.3/detections` | OAuth2 CC |
+| **ExtraHop RevealX** | ExtraHop Reveal(x) | `GET /api/v1/detections` | API key |
+| **Palo Alto NGFW** | PAN Firewall Alert Ingestion | `GET /api/v2/threat-logs` | API key |
+
+### S1 console configuration
+
+Each source's connection parameters are documented in the **Source Config** tab in the Admin UI. Click a source → the orange **🚨 S1 Alert Ingestion** card shows the exact field values to enter in the SentinelOne console.
+
+### How it works
+
+1. **Bind a profile** to an alert source in the Profiles tab → select max volume and interval
+2. **S1 polls** the vendor-native endpoint → ApiGenie returns alerts using profile entities
+3. **On-demand admin API**: `GET /admin/api/alerts/{source}?limit=N` generates N S1-schema alerts
+4. **Profile entities** (users, machines, C2 IPs, malware) are mapped into alert fields
+5. **`modified_time`** = ingestion time; **`logged_time`** = 1–120 s before
+
+### Sample JSON output
+
+16 realistic sample alerts (native vendor format) are included in `sources/alerts/samples/`.
 
 ---
 

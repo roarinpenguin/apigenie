@@ -158,6 +158,16 @@ SOURCES: dict[str, dict[str, Any]] = {
             {"method": "GET",  "path": "/api/v1/logs",  "desc": "System event logs"},
         ],
         "curl": f'curl -s -H "Authorization: Bearer apigenie-valid-token-001" \\\n  "{BASE}/api/v1/logs?limit=5"',
+        "alert_config": {
+            "platform": "SentinelOne Singularity",
+            "integration": "Okta Alert Ingestion",
+            "fields": {
+                "Tenant OKTA Domain": f"{DOMAIN}",
+                "API Token": "apigenie-valid-token-001",
+            },
+            "alert_types": ["policy.evaluate_sign_on", "security.attack.end", "security.attack.start", "security.session.detect_client_roaming", "security.threat.detected", "user.account.report_suspicious_activity_by_enduser", "zone.deactivate", "zone.delete"],
+            "note": "Enable all event types for full coverage.",
+        },
     },
     "netskope": {
         "name": "Netskope",
@@ -168,6 +178,17 @@ SOURCES: dict[str, dict[str, Any]] = {
             {"method": "GET", "path": "/api/v2/events/data/audit", "desc": "Audit events"},
         ],
         "curl": f'curl -s -H "Authorization: Bearer apigenie-valid-token-001" \\\n  "{BASE}/api/v2/events/data/alert?limit=5"',
+        "alert_config": {
+            "platform": "SentinelOne Singularity",
+            "integration": "Netskope Alert Ingestion",
+            "fields": {
+                "API URL (Required)": f"https://{DOMAIN}/",
+                "API Token (Required)": "apigenie-valid-token-001",
+            },
+            "alert_types": ["UBA", "Compromised Credential", "DLP", "Malware", "Malsite", "Policy", "Quarantine", "Security Assessment"],
+            "advanced": {"Maximum Pull Limit": "2000", "Maximum timeout": "10"},
+            "note": "Enable all alert types. Recommended pull limit: 2000.",
+        },
     },
     "entra_id": {
         "name": "Microsoft Entra ID",
@@ -182,6 +203,16 @@ SOURCES: dict[str, dict[str, Any]] = {
             {"method": "GET",  "path": "/v1.0/auditLogs/signIns",              "desc": "Sign-in logs"},
         ],
         "curl": f'curl -s -H "Authorization: Bearer apigenie-valid-token-001" \\\n  "{BASE}/v1.0/auditLogs/directoryAudits?\\$top=5"',
+        "alert_config": {
+            "platform": "SentinelOne Singularity",
+            "integration": "Microsoft Entra ID Identity Protection",
+            "fields": {
+                "Tenant ID": "apigenie-tenant",
+                "Application (Client) ID": "apigenie-client-id",
+                "Client Secret": "apigenie-client-secret",
+            },
+            "note": "Uses OAuth2 client_credentials. Token endpoint: POST /{tenant}/oauth2/v2.0/token. Risk detections at GET /v1.0/identityProtection/riskDetections.",
+        },
     },
     "defender": {
         "name": "Microsoft Defender",
@@ -196,6 +227,16 @@ SOURCES: dict[str, dict[str, Any]] = {
             f'  "{BASE}/subscriptions/00000000-0000-0000-0000-000000000001'
             f'/providers/Microsoft.Security/alerts"'
         ),
+        "alert_config": {
+            "platform": "SentinelOne Singularity",
+            "integration": "Microsoft 365 Alert Ingestion",
+            "fields": {
+                "Tenant ID": "apigenie-tenant",
+                "Application (Client) ID": "apigenie-client-id",
+                "Client Secret": "apigenie-client-secret",
+            },
+            "note": "Enable 'Ingest Microsoft Security Alerts'. Uses OAuth2 client_credentials → Graph Security API.",
+        },
     },
     "cisco_duo": {
         "name": "Cisco Duo",
@@ -262,6 +303,16 @@ SOURCES: dict[str, dict[str, Any]] = {
             {"method": "GET", "path": "/v2/siem/clicks/blocked",   "desc": "Blocked clicks"},
         ],
         "curl": f'curl -s -u "apigenie-principal-001:apigenie-secret-001" \\\n  "{BASE}/v2/siem/all?sinceSeconds=3600"',
+        "alert_config": {
+            "platform": "SentinelOne Singularity",
+            "integration": "Proofpoint TAP Alert Ingestion",
+            "fields": {
+                "Service Principal": "apigenie-principal-001",
+                "Secret": "apigenie-secret-001",
+            },
+            "advanced": {"Phishing Score": "70", "Spam Score": "70", "Malware Score": "70", "Imposter Score": "70"},
+            "note": "Enable 'Ingest Proofpoint Security Alerts'. Score thresholds default to 70.",
+        },
     },
     # AWS sources (CloudTrail, WAF, GuardDuty) intentionally omitted: real Observo
     # collectors fetch them via SQS-notified S3 polling, which requires LocalStack
@@ -347,6 +398,161 @@ SOURCES: dict[str, dict[str, Any]] = {
             f'PUBSUB_EMULATOR_HOST={DOMAIN}:8085 \\\n'
             'gcloud --project=obs-test pubsub subscriptions pull audit-logs-sub --auto-ack --limit=5'
         ),
+    },
+    "checkpoint_ngfw": {
+        "name": "Check Point NGFW",
+        "auth_type": "Session auth (username + password)",
+        "credentials": {"username": "admin", "password": "apigenie"},
+        "endpoints": [
+            {"method": "POST", "path": "/web_api/login",     "desc": "Session login → returns sid"},
+            {"method": "POST", "path": "/web_api/show-logs",  "desc": "Security event logs"},
+        ],
+        "curl": (
+            f'# 1. Login\n'
+            f'SID=$(curl -sk -X POST -H "Content-Type: application/json" \\\n'
+            f'  -d \'{{"user":"admin","password":"apigenie"}}\' \\\n'
+            f'  "{BASE}/web_api/login" | python3 -c "import json,sys; print(json.load(sys.stdin)[\'sid\'])")\n'
+            f'# 2. Query logs\n'
+            f'curl -sk -X POST -H "Content-Type: application/json" -H "X-chkp-sid: $SID" \\\n'
+            f'  -d \'{{"limit":5}}\' "{BASE}/web_api/show-logs"'
+        ),
+        "alert_config": {
+            "platform": "SentinelOne Singularity",
+            "integration": "Check Point Firewall Alert Ingestion",
+            "fields": {
+                "Check Point FW management server": f"https://{DOMAIN}",
+                "Check Point FW management port": "443",
+                "Check Point FW management server administrator username": "admin",
+                "Check Point FW management server administrator password": "apigenie",
+            },
+            "note": "S1 polls /web_api/show-logs with session auth. Supports Threat Emulation, IPS, Anti-Bot, Anti-Virus, Threat Extraction blades.",
+        },
+    },
+    "cortex_xdr": {
+        "name": "Palo Alto Cortex XDR",
+        "auth_type": "API Key (header)",
+        "credentials": {
+            "API Key Id": "1",
+            "API Key": "apigenie-valid-token-001",
+        },
+        "endpoints": [
+            {"method": "POST", "path": "/public_api/v1/incidents/get_incidents", "desc": "Get incidents"},
+        ],
+        "curl": (
+            f'curl -sk -X POST -H "Content-Type: application/json" \\\n'
+            f'  -H "x-xdr-auth-id: 1" -H "Authorization: Bearer apigenie-valid-token-001" \\\n'
+            f'  -d \'{{"request_data":{{"search_to":5}}}}\' \\\n'
+            f'  "{BASE}/public_api/v1/incidents/get_incidents"'
+        ),
+        "alert_config": {
+            "platform": "SentinelOne Singularity",
+            "integration": "Palo Alto Networks Cortex XDR",
+            "fields": {
+                "Palo Alto Networks Cortex XDR Hostname": f"https://{DOMAIN}",
+                "Palo Alto Networks Cortex XDR API Key Id": "1",
+                "Palo Alto Networks Cortex XDR API Key": "apigenie-valid-token-001",
+            },
+            "note": "S1 polls incidents from Cortex XDR. Incident-centric mapping.",
+        },
+    },
+    "mimecast": {
+        "name": "Mimecast",
+        "auth_type": "OAuth2 client_credentials",
+        "credentials": {
+            "Client ID": "apigenie-client-id",
+            "Client Secret": "apigenie-client-secret",
+        },
+        "endpoints": [
+            {"method": "POST", "path": "/api/ttp/attachment/get-logs",    "desc": "TTP Attachment Protection logs"},
+            {"method": "POST", "path": "/api/ttp/impersonation/get-logs", "desc": "TTP Impersonation Protection logs"},
+            {"method": "POST", "path": "/api/ttp/url/get-logs",           "desc": "TTP URL Protection logs"},
+            {"method": "POST", "path": "/api/login/discover-authentication", "desc": "Discovery endpoint"},
+        ],
+        "curl": (
+            f'curl -sk -X POST -H "Content-Type: application/json" \\\n'
+            f'  -H "Authorization: Bearer apigenie-valid-token-001" \\\n'
+            f'  -d \'{{"meta":{{"pagination":{{"pageSize":5}}}}}}\' \\\n'
+            f'  "{BASE}/api/ttp/attachment/get-logs"'
+        ),
+        "alert_config": {
+            "platform": "SentinelOne Singularity",
+            "integration": "Mimecast Alert Ingestion",
+            "fields": {
+                "Base Url (Required)": f"https://{DOMAIN}/",
+                "Client ID (Required)": "apigenie-client-id",
+                "Client Secret (Required)": "apigenie-client-secret",
+            },
+            "alert_types": ["TTP Attachment Protection", "TTP Impersonation Protect", "TTP URL Alerts"],
+            "note": "Enable OAuth connection. Toggle all three TTP alert types on.",
+        },
+    },
+    "vectra_ai": {
+        "name": "Vectra AI",
+        "auth_type": "OAuth2 client_credentials",
+        "credentials": {
+            "Client Id": "apigenie-client-id",
+            "Client Secret": "apigenie-client-secret",
+        },
+        "endpoints": [
+            {"method": "GET", "path": "/api/v3.3/detections", "desc": "Detections"},
+        ],
+        "curl": (
+            f'curl -sk -H "Authorization: Bearer apigenie-valid-token-001" \\\n'
+            f'  "{BASE}/api/v3.3/detections?page_size=5"'
+        ),
+        "alert_config": {
+            "platform": "SentinelOne Singularity",
+            "integration": "Vectra AI Alert Ingestion",
+            "fields": {
+                "Base URL": f"https://{DOMAIN}",
+                "Client Id": "apigenie-client-id",
+                "Client Secret": "apigenie-client-secret",
+                "API Page Size": "1000",
+            },
+            "note": "Enable Vectra OAuth. S1 polls /api/v3.3/detections. 20-minute processing delay is normal.",
+        },
+    },
+    "extrahop_revealx": {
+        "name": "ExtraHop RevealX",
+        "auth_type": "Bearer token / API Key",
+        "credentials": {"token": "apigenie-valid-token-001"},
+        "endpoints": [
+            {"method": "GET", "path": "/api/v1/detections", "desc": "Detections"},
+        ],
+        "curl": (
+            f'curl -sk -H "Authorization: Bearer apigenie-valid-token-001" \\\n'
+            f'  "{BASE}/api/v1/detections?limit=5"'
+        ),
+        "alert_config": {
+            "platform": "SentinelOne Singularity",
+            "integration": "ExtraHop Reveal(x) Alert Ingestion",
+            "fields": {
+                "Base URL": f"https://{DOMAIN}",
+                "API Key": "apigenie-valid-token-001",
+            },
+            "note": "S1 polls ExtraHop detections API.",
+        },
+    },
+    "palo_alto_ngfw": {
+        "name": "Palo Alto Networks Firewall",
+        "auth_type": "Bearer token / API Key",
+        "credentials": {"token": "apigenie-valid-token-001"},
+        "endpoints": [
+            {"method": "GET", "path": "/api/v2/threat-logs", "desc": "Threat logs"},
+        ],
+        "curl": (
+            f'curl -sk -H "Authorization: Bearer apigenie-valid-token-001" \\\n'
+            f'  "{BASE}/api/v2/threat-logs?limit=5"'
+        ),
+        "alert_config": {
+            "platform": "SentinelOne Singularity",
+            "integration": "Palo Alto Networks Firewall Alert Ingestion",
+            "fields": {
+                "Hostname": f"https://{DOMAIN}",
+                "API Key": "apigenie-valid-token-001",
+            },
+            "note": "S1 polls firewall threat logs. Supports Informational through Critical severity.",
+        },
     },
     "darktrace": {
         "name": "Darktrace",
@@ -543,6 +749,12 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
 .source-chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px}
 .chip{padding:4px 12px;border-radius:999px;font-size:.75rem;border:1px solid rgba(199,125,255,.25);background:rgba(90,24,154,.2);color:rgba(224,170,255,.6);cursor:pointer;transition:all .15s}
 .chip.active,.chip:hover{background:rgba(123,44,191,.4);color:var(--mist);border-color:var(--lilac)}
+.chip .src-tag{font-size:.58rem;padding:1px 5px;border-radius:4px;margin-left:4px;font-weight:600;vertical-align:middle;letter-spacing:.03em}
+.chip .src-tag.tag-log{background:rgba(100,181,246,.2);color:#90caf9;border:1px solid rgba(100,181,246,.3)}
+.chip .src-tag.tag-alert{background:rgba(255,183,77,.2);color:#ffb74d;border:1px solid rgba(255,183,77,.3)}
+.src-filter{display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap}
+.src-filter .fbtn{padding:3px 10px;border-radius:999px;font-size:.7rem;border:1px solid rgba(199,125,255,.25);background:rgba(90,24,154,.15);color:rgba(224,170,255,.5);cursor:pointer}
+.src-filter .fbtn.active{background:rgba(123,44,191,.35);color:var(--mist);border-color:var(--lilac)}
 /* Viz canvases */
 .viz{width:100%;height:560px;background:rgba(0,0,0,.25);border-radius:10px;border:1px solid rgba(199,125,255,.12)}
 .viz-toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:14px}
@@ -623,7 +835,7 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
   <a class="nav-item active" onclick="showTab('requests', this)">📋 Requests</a>
   <a class="nav-item" onclick="showTab('observability', this); initObservability()">📊 Observability</a>
   <a class="nav-item" onclick="showTab('listeners', this); loadListeners()">🎯 Listeners</a>
-  <a class="nav-item" onclick="showTab('profiles', this); loadProfiles()">🎭 Log Profiles</a>
+  <a class="nav-item" onclick="showTab('profiles', this); loadProfiles()">🎭 Profiles</a>
   <a class="nav-item" onclick="showTab('investigate', this); gateInvestigate()">🔍 Investigations</a>
   <a class="nav-item" onclick="showTab('logs', this)">📜 Container Logs</a>
   <span class="nav-section">Reference</span>
@@ -773,16 +985,16 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
       <div id="cfg-detail"><p class="empty">Select a source above</p></div>
     </div>
 
-    <!-- LOG PROFILES TAB -->
+    <!-- PROFILES TAB -->
     <div class="pane" id="pane-profiles">
       <div class="card">
         <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
-          <span>Log Profiles</span>
+          <span>Profiles</span>
           <button onclick="openProfileEditor()">+ New profile</button>
         </div>
         <p style="font-size:.78rem;color:rgba(224,170,255,.45);margin-bottom:14px">
           Profiles define users, machines, C2 servers, malware, and mail senders used to generate correlatable telemetry.
-          Assign a profile to one or more sources to blend profile entities into generated logs at a configurable ratio.
+          Assign a profile to sources and/or alert generators below.
         </p>
         <div id="profiles-list"><p class="empty">Loading…</p></div>
       </div>
@@ -792,6 +1004,14 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
           Assign profiles to sources and tune the signal-to-noise ratio (0–100%).
         </p>
         <div id="bindings-list"><p class="empty">Loading…</p></div>
+      </div>
+      <div class="card">
+        <div class="card-title">🚨 Alert ↔ Profile bindings</div>
+        <p style="font-size:.78rem;color:rgba(224,170,255,.45);margin-bottom:14px">
+          Bind profiles to alert sources. Each produces S1 Security Alerts using profile entities.
+          Configure max volume per interval and enable/disable each source.
+        </p>
+        <div id="alert-bindings-list"><p class="empty">Loading…</p></div>
       </div>
     </div>
 
@@ -906,7 +1126,7 @@ function showTab(tab, el) {
   document.getElementById('pane-' + tab).classList.add('active');
   if (el) el.classList.add('active');
   activeTab = tab;
-  const titles = {requests:'Request Inspector', observability:'Observability', listeners:'Custom Listeners', profiles:'Log Profiles', investigate:'Investigations', logs:'Container Logs', config:'Source Config', settings:'Settings'};
+  const titles = {requests:'Request Inspector', observability:'Observability', listeners:'Custom Listeners', profiles:'Profiles', investigate:'Investigations', logs:'Container Logs', config:'Source Config', settings:'Settings'};
   // Resize viz canvases when the Observability tab becomes active.
   if (tab === 'observability') {
     if (window._sankey) window._sankey.resize();
@@ -916,21 +1136,61 @@ function showTab(tab, el) {
   document.getElementById('page-title').textContent = titles[tab];
 }
 
-// ── Source chips ──────────────────────────────────────────────────────────────
+// ── Source chips with Log/Alert tags + filter ────────────────────────────────
+
+function _srcHasLog(src) {
+  // Log sources have endpoints that are NOT exclusively alert endpoints
+  const alertOnlyPaths = ['/web_api/','/public_api/','/api/ttp/','/api/v3.3/','/api/v1/detections','/api/v2/threat-logs'];
+  const eps = src.endpoints || [];
+  return eps.some(ep => !alertOnlyPaths.some(p => ep.path.startsWith(p)));
+}
+function _srcHasAlert(src) { return !!src.alert_config; }
+
 function buildChips(containerId, onClick) {
   const wrap = document.getElementById(containerId);
   wrap.innerHTML = '';
+  // Filter bar
+  const fbar = document.createElement('div');
+  fbar.className = 'src-filter';
+  ['All','📋 Log','🚨 Alert'].forEach((label, i) => {
+    const b = document.createElement('span');
+    b.className = 'fbtn' + (i === 0 ? ' active' : '');
+    b.textContent = label;
+    b.dataset.filter = ['all','log','alert'][i];
+    b.onclick = () => {
+      fbar.querySelectorAll('.fbtn').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      _filterChips(wrap, b.dataset.filter);
+    };
+    fbar.appendChild(b);
+  });
+  wrap.appendChild(fbar);
+  // Chips
   Object.entries(SOURCES).forEach(([id, src]) => {
     const c = document.createElement('span');
     c.className = 'chip';
-    c.textContent = src.name;
+    const hasLog = _srcHasLog(src);
+    const hasAlert = _srcHasAlert(src);
     c.dataset.id = id;
+    c.dataset.srctype = (hasLog && hasAlert) ? 'both' : hasAlert ? 'alert' : 'log';
+    let html = escHtml(src.name);
+    if (hasLog) html += ' <span class="src-tag tag-log">LOG</span>';
+    if (hasAlert) html += ' <span class="src-tag tag-alert">ALERT</span>';
+    c.innerHTML = html;
     c.onclick = () => {
       wrap.querySelectorAll('.chip').forEach(x => x.classList.remove('active'));
       c.classList.add('active');
       onClick(id);
     };
     wrap.appendChild(c);
+  });
+}
+
+function _filterChips(wrap, filter) {
+  wrap.querySelectorAll('.chip').forEach(c => {
+    const t = c.dataset.srctype;
+    if (filter === 'all') { c.style.display = ''; return; }
+    c.style.display = (t === filter || t === 'both') ? '' : 'none';
   });
 }
 
@@ -1019,9 +1279,36 @@ function showConfig(id) {
 
   const curl = src.curl || '';
 
+  // Alert ingestion config (if present)
+  let alertHtml = '';
+  const ac = src.alert_config;
+  if (ac) {
+    const acFields = Object.entries(ac.fields || {}).map(([k,v]) =>
+      '<div class="cfg-item"><label>' + escHtml(k) + '</label><code>' + escHtml(v) + '</code></div>'
+    ).join('');
+    const acTypes = (ac.alert_types || []).map(t => '<span class="pill">' + escHtml(t) + '</span>').join(' ');
+    const acAdv = ac.advanced ? Object.entries(ac.advanced).map(([k,v]) =>
+      '<div class="cfg-item"><label>' + escHtml(k) + '</label><code>' + escHtml(v) + '</code></div>'
+    ).join('') : '';
+    alertHtml = '<div class="card" style="margin-top:12px;border:1px solid rgba(255,140,50,.25)">' +
+      '<div class="card-title" style="color:#ffb74d">🚨 S1 Alert Ingestion — ' + escHtml(ac.integration) + '</div>' +
+      '<p style="font-size:.78rem;color:rgba(224,170,255,.55);margin-bottom:10px">Configure in: <b>' + escHtml(ac.platform) + '</b> → Integrations → ' + escHtml(ac.integration) + '</p>' +
+      '<div class="card-title" style="font-size:.72rem">Connection parameters</div>' +
+      '<div class="cfg-grid">' + acFields + '</div>' +
+      (acTypes ? '<div class="card-title" style="font-size:.72rem">Alert types / event filters</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">' + acTypes + '</div>' : '') +
+      (acAdv ? '<div class="card-title" style="font-size:.72rem">Advanced settings</div><div class="cfg-grid">' + acAdv + '</div>' : '') +
+      (ac.note ? '<p style="font-size:.75rem;color:rgba(224,170,255,.45);margin-top:8px;font-style:italic">💡 ' + escHtml(ac.note) + '</p>' : '') +
+      '</div>';
+  }
+
+  const hasLog = _srcHasLog(src);
+  const hasAlert = _srcHasAlert(src);
+  const badges = (hasLog ? '<span class="src-tag tag-log" style="font-size:.65rem;margin-left:8px">📋 LOG</span>' : '') +
+                 (hasAlert ? '<span class="src-tag tag-alert" style="font-size:.65rem;margin-left:4px">🚨 ALERT</span>' : '');
+
   wrap.innerHTML = `
     <div class="card">
-      <div class="card-title">${src.name}</div>
+      <div class="card-title">${src.name}${badges}</div>
       <p style="font-size:.82rem;color:rgba(224,170,255,.55);margin-bottom:14px">Auth: ${src.auth_type}</p>
       <div class="card-title" style="font-size:.72rem">Credentials</div>
       <div class="cfg-grid">${creds}</div>
@@ -1032,7 +1319,7 @@ function showConfig(id) {
         <pre id="curl-pre">${escHtml(curl)}</pre>
         <button class="btn-sm copy-btn" onclick="copyCurl()">Copy</button>
       </div>
-    </div>`;
+    </div>` + alertHtml;
 }
 
 function copyCurl() {
@@ -2306,6 +2593,7 @@ async function loadProfiles() {
   } catch(e) { box.innerHTML = '<p class="empty">Failed: '+escHtml(String(e))+'</p>'; }
   // Also load bindings
   await loadBindings();
+  await loadAlertBindings();
 }
 
 async function loadBindings() {
@@ -2376,6 +2664,79 @@ function unbindSource(src) {
   fetch('/admin/api/source-profiles/'+encodeURIComponent(src), {method:'DELETE',credentials:'same-origin'})
     .then(r=>{if(!r.ok&&r.status!==404)throw new Error(r.status);return r.json()})
     .then(()=>{toast('Unbound '+src); loadBindings();})
+    .catch(e=>toast('Failed: '+e,true));
+}
+
+// ── Alert Bindings UI ───────────────────────────────────────────────────────
+
+async function loadAlertBindings() {
+  const box = document.getElementById('alert-bindings-list');
+  if (!box) return;
+  try {
+    const [bndResp, srcResp] = await Promise.all([
+      fetch('/admin/api/alert-bindings', {credentials:'same-origin'}),
+      fetch('/admin/api/alert-sources', {credentials:'same-origin'})
+    ]);
+    const bd = await bndResp.json();
+    const sd = await srcResp.json();
+    const bindings = bd.bindings || {};
+    const sources = sd.sources || [];
+    let h = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:10px">';
+    sources.forEach(s => {
+      const bnd = bindings[s.key];
+      const hasBind = !!bnd;
+      h += '<div style="background:rgba(36,0,70,.4);border:1px solid rgba(199,125,255,'+(hasBind?'.35':'.12')+');border-radius:10px;padding:12px">';
+      h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">';
+      h += '<span style="font-weight:600;color:var(--mist);font-size:.85rem">🚨 '+escHtml(s.vendor)+' — '+escHtml(s.product)+'</span>';
+      if (hasBind) h += '<button class="btn-sm btn-danger" onclick="unbindAlertSource(&apos;'+escHtml(s.key)+'&apos;)">Unbind</button>';
+      h += '</div>';
+      h += '<div style="font-size:.72rem;color:rgba(224,170,255,.45);margin-bottom:6px">'+s.variant_count+' variants: '+s.variants.map(v=>escHtml(v)).join(', ')+'</div>';
+      h += '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">';
+      // Profile selector
+      h += '<select id="abnd-prof-'+escHtml(s.key)+'" style="flex:1;min-width:110px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:5px 8px;color:var(--mist);font-size:.78rem">';
+      h += '<option value="">— none —</option>';
+      _profilesCache.forEach(p => {
+        const sel = (hasBind && bnd.profile_id===p.id) ? ' selected' : '';
+        h += '<option value="'+escHtml(p.id)+'"'+sel+'>'+escHtml(p.name)+'</option>';
+      });
+      h += '</select>';
+      // Max volume
+      h += '<label style="font-size:.72rem;color:rgba(224,170,255,.5)">Max</label>';
+      h += '<input type="number" id="abnd-vol-'+escHtml(s.key)+'" min="1" max="1000" value="'+(hasBind?bnd.max_volume:10)+'" style="width:55px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:4px 6px;color:var(--mist);font-size:.78rem;text-align:center"/>';
+      // Interval
+      h += '<select id="abnd-int-'+escHtml(s.key)+'" style="background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:5px 8px;color:var(--mist);font-size:.78rem">';
+      const intervals = [{v:300,l:'5 min'},{v:900,l:'15 min'},{v:1800,l:'30 min'},{v:3600,l:'1 hour'},{v:7200,l:'2 hours'},{v:14400,l:'4 hours'},{v:86400,l:'24 hours'}];
+      intervals.forEach(iv => {
+        const sel = (hasBind && bnd.interval_seconds===iv.v) ? ' selected' : '';
+        h += '<option value="'+iv.v+'"'+sel+'>'+iv.l+'</option>';
+      });
+      h += '</select>';
+      h += '<button class="btn-sm" onclick="saveAlertBinding(&apos;'+escHtml(s.key)+'&apos;)">Save</button>';
+      h += '</div></div>';
+    });
+    h += '</div>';
+    box.innerHTML = h;
+  } catch(e) { box.innerHTML = '<p class="empty">Failed: '+escHtml(String(e))+'</p>'; }
+}
+
+function saveAlertBinding(key) {
+  const sel = document.getElementById('abnd-prof-'+key);
+  const profId = sel ? sel.value : '';
+  if (!profId) { unbindAlertSource(key); return; }
+  const vol = parseInt(document.getElementById('abnd-vol-'+key).value) || 10;
+  const intv = parseInt(document.getElementById('abnd-int-'+key).value) || 3600;
+  fetch('/admin/api/alert-bindings/'+encodeURIComponent(key), {
+    method:'PUT', credentials:'same-origin', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({profile_id:profId, max_volume:vol, interval_seconds:intv, enabled:true})
+  }).then(r=>{if(!r.ok)throw new Error(r.status);return r.json()})
+    .then(()=>{toast('Alert binding saved'); loadAlertBindings();})
+    .catch(e=>toast('Failed: '+e,true));
+}
+
+function unbindAlertSource(key) {
+  fetch('/admin/api/alert-bindings/'+encodeURIComponent(key), {method:'DELETE',credentials:'same-origin'})
+    .then(r=>{if(!r.ok&&r.status!==404)throw new Error(r.status);return r.json()})
+    .then(()=>{toast('Alert source unbound'); loadAlertBindings();})
     .catch(e=>toast('Failed: '+e,true));
 }
 
@@ -2853,6 +3214,7 @@ async def dashboard(ag_session: str | None = Cookie(None)):
         "credentials": {str(ck): str(cv) for ck, cv in v.get("credentials", {}).items()},
         "endpoints": v.get("endpoints", []),
         "curl": v.get("curl", ""),
+        **({"alert_config": v["alert_config"]} if "alert_config" in v else {}),
     } for k, v in SOURCES.items()})
 
     html = _DASH_HTML.replace("{container_options}", opts).replace("{sources_json}", sources_json)
@@ -3929,3 +4291,75 @@ async def api_source_profiles_unbind(source: str, ag_session: str | None = Cooki
     if profiles.unbind_source(source):
         return JSONResponse({"ok": True})
     return JSONResponse({"error": "not_found"}, status_code=404)
+
+
+# ── Alert Sources + Bindings API ──────────────────────────────────────────────
+
+@router.get("/api/alert-sources")
+async def api_alert_sources(ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from sources.alerts import list_alert_sources
+    return JSONResponse({"sources": list_alert_sources()})
+
+
+@router.get("/api/alert-bindings")
+async def api_alert_bindings_list(ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    bindings = profiles.list_alert_bindings()
+    enriched = {}
+    for src, bnd in bindings.items():
+        p = profiles.get_profile(bnd["profile_id"])
+        enriched[src] = {**bnd, "profile_name": p["name"] if p else "?"}
+    return JSONResponse({"bindings": enriched})
+
+
+@router.put("/api/alert-bindings/{source_key}")
+async def api_alert_bindings_bind(source_key: str, request: Request,
+                                   ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    profile_id = body.get("profile_id", "").strip()
+    if not profile_id:
+        return JSONResponse({"error": "profile_id required"}, status_code=400)
+    if not profiles.get_profile(profile_id):
+        return JSONResponse({"error": "profile not found"}, status_code=404)
+    result = profiles.bind_alert_source(
+        source_key,
+        profile_id,
+        max_volume=int(body.get("max_volume", 10)),
+        interval_seconds=int(body.get("interval_seconds", 3600)),
+        enabled=body.get("enabled", True),
+    )
+    return JSONResponse(result)
+
+
+@router.delete("/api/alert-bindings/{source_key}")
+async def api_alert_bindings_unbind(source_key: str,
+                                     ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if profiles.unbind_alert_source(source_key):
+        return JSONResponse({"ok": True})
+    return JSONResponse({"error": "not_found"}, status_code=404)
+
+
+@router.get("/api/alerts/{source_key}")
+async def api_alerts_generate(source_key: str, limit: int = 5,
+                               ag_session: str | None = Cookie(None)):
+    """Generate alerts on-demand for a given source. Uses the bound profile if set."""
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from sources.alerts import generate_alerts
+    limit = max(1, min(100, limit))
+    ctx = profiles.get_alert_context(source_key)
+    try:
+        alerts = generate_alerts(source_key, n=limit, ctx=ctx)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return JSONResponse({"alerts": alerts, "count": len(alerts)})

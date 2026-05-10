@@ -338,3 +338,74 @@ def get_context(source: str) -> ProfileContext | None:
     if not profile:
         return None
     return ProfileContext(profile, source, binding.get("ratio", 70))
+
+
+# ── Alert bindings ────────────────────────────────────────────────────────────
+# Stored separately from source-profile bindings in alert_bindings.json.
+# Each binding: source_key → {profile_id, max_volume, interval_seconds, enabled}
+
+_ALERT_BINDINGS_FILE = _DATA_ROOT / "alert_bindings.json"
+
+
+def _load_alert_bindings() -> dict[str, Any]:
+    try:
+        if _ALERT_BINDINGS_FILE.is_file():
+            return json.loads(_ALERT_BINDINGS_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        pass
+    return {}
+
+
+def _save_alert_bindings(data: dict[str, Any]) -> None:
+    _ensure_dirs()
+    _ALERT_BINDINGS_FILE.write_text(json.dumps(data, indent=2))
+
+
+def bind_alert_source(
+    source_key: str,
+    profile_id: str,
+    max_volume: int = 10,
+    interval_seconds: int = 3600,
+    enabled: bool = True,
+) -> dict[str, Any]:
+    """Bind an alert source to a profile with volume/interval config."""
+    entry = {
+        "profile_id": profile_id,
+        "max_volume": max(1, min(1000, max_volume)),
+        "interval_seconds": max(60, interval_seconds),
+        "enabled": enabled,
+    }
+    with _lock:
+        bindings = _load_alert_bindings()
+        bindings[source_key] = entry
+        _save_alert_bindings(bindings)
+    return entry
+
+
+def unbind_alert_source(source_key: str) -> bool:
+    with _lock:
+        bindings = _load_alert_bindings()
+        if source_key not in bindings:
+            return False
+        del bindings[source_key]
+        _save_alert_bindings(bindings)
+    return True
+
+
+def get_alert_binding(source_key: str) -> dict[str, Any] | None:
+    return _load_alert_bindings().get(source_key)
+
+
+def list_alert_bindings() -> dict[str, Any]:
+    return _load_alert_bindings()
+
+
+def get_alert_context(source_key: str) -> ProfileContext | None:
+    """Return a ProfileContext for an alert source, or None if unbound."""
+    binding = get_alert_binding(source_key)
+    if not binding or not binding.get("enabled"):
+        return None
+    profile = get_profile(binding["profile_id"])
+    if not profile:
+        return None
+    return ProfileContext(profile, f"alert_{source_key}", binding.get("ratio", 70))

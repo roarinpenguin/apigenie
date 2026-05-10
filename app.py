@@ -715,6 +715,129 @@ async def darktrace_devices(
 
 
 # =============================================================================
+# Alert Ingestion — vendor-mock endpoints for SentinelOne UAM integrations
+#
+# S1 Singularity polls these vendor-native API paths to ingest alerts.
+# Each endpoint returns alerts in the vendor's native JSON format.
+# The S1 platform transforms them to OCSF/S1 Security Alert internally.
+# =============================================================================
+
+from sources.alerts import generate_alerts, load_adapters as _load_alert_adapters
+import profiles as _profiles
+
+
+def _alert_ctx(source_key: str):
+    """Return a ProfileContext for alert generation if a binding exists."""
+    return _profiles.get_alert_context(source_key)
+
+
+# ── Check Point NGFW  (POST /web_api/show-logs — session auth) ───────────────
+
+@app.post("/web_api/login")
+async def checkpoint_login(request: Request) -> dict[str, Any]:
+    """Check Point session login — returns a session ID (mock)."""
+    return {"sid": "apigenie-checkpoint-session-001", "uid": "admin", "url": f"https://{DOMAIN}"}
+
+
+@app.post("/web_api/show-logs")
+async def checkpoint_show_logs(request: Request) -> dict[str, Any]:
+    """Check Point show-logs — returns security events."""
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    limit = min(body.get("limit", 25), 100)
+    alerts = generate_alerts("checkpoint_ngfw", n=limit, ctx=_alert_ctx("checkpoint_ngfw"))
+    return {"logs": alerts, "total": len(alerts), "from": 0, "to": len(alerts)}
+
+
+# ── Cortex XDR  (POST /public_api/v1/incidents/get_incidents — API key) ──────
+
+@app.post("/public_api/v1/incidents/get_incidents")
+async def cortex_xdr_incidents(request: Request) -> dict[str, Any]:
+    """Cortex XDR incidents endpoint."""
+    # Auth: X-XSIAM-KEY or Authorization header — we accept any Bearer token
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    limit = min(body.get("request_data", {}).get("search_to", 10), 100)
+    alerts = generate_alerts("cortex_xdr", n=limit, ctx=_alert_ctx("cortex_xdr"))
+    return {"reply": {"total_count": len(alerts), "result_count": len(alerts), "incidents": alerts}}
+
+
+# ── MS Entra ID — Identity Protection risk detections ────────────────────────
+
+@app.get("/v1.0/identityProtection/riskDetections")
+async def entra_risk_detections(
+    _auth: BearerAuth,
+    top: int = Query(50, alias="$top", le=1000),
+) -> dict[str, Any]:
+    """Microsoft Graph Identity Protection risk detections."""
+    alerts = generate_alerts("microsoft_entra_id", n=top, ctx=_alert_ctx("microsoft_entra_id"))
+    return {"@odata.context": "https://graph.microsoft.com/v1.0/$metadata#riskDetections", "value": alerts}
+
+
+# ── Mimecast TTP  (OAuth2 → TTP log endpoints) ──────────────────────────────
+
+@app.post("/api/ttp/attachment/get-logs")
+async def mimecast_ttp_attachment(request: Request) -> dict[str, Any]:
+    """Mimecast TTP Attachment Protection logs."""
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    limit = min(body.get("meta", {}).get("pagination", {}).get("pageSize", 25), 100)
+    alerts = generate_alerts("mimecast", n=limit, ctx=_alert_ctx("mimecast"))
+    return {"fail": [], "meta": {"status": 200, "pagination": {"pageSize": limit}}, "data": alerts}
+
+
+@app.post("/api/ttp/impersonation/get-logs")
+async def mimecast_ttp_impersonation(request: Request) -> dict[str, Any]:
+    """Mimecast TTP Impersonation Protection logs."""
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    limit = min(body.get("meta", {}).get("pagination", {}).get("pageSize", 25), 100)
+    alerts = generate_alerts("mimecast", n=limit, ctx=_alert_ctx("mimecast"))
+    return {"fail": [], "meta": {"status": 200}, "data": alerts}
+
+
+@app.post("/api/ttp/url/get-logs")
+async def mimecast_ttp_url(request: Request) -> dict[str, Any]:
+    """Mimecast TTP URL Protection logs."""
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    limit = min(body.get("meta", {}).get("pagination", {}).get("pageSize", 25), 100)
+    alerts = generate_alerts("mimecast", n=limit, ctx=_alert_ctx("mimecast"))
+    return {"fail": [], "meta": {"status": 200}, "data": alerts}
+
+
+# ── Vectra AI  (OAuth2 → detections API) ─────────────────────────────────────
+
+@app.get("/api/v3.3/detections")
+async def vectra_detections(
+    request: Request,
+    page_size: int = Query(50, le=1000),
+) -> dict[str, Any]:
+    """Vectra AI detections endpoint."""
+    alerts = generate_alerts("vectra_ai", n=min(page_size, 100), ctx=_alert_ctx("vectra_ai"))
+    return {"count": len(alerts), "results": alerts, "next": None, "previous": None}
+
+
+# ── ExtraHop RevealX  (API key → detections) ────────────────────────────────
+
+@app.get("/api/v1/detections")
+async def extrahop_detections(
+    request: Request,
+    limit: int = Query(50, le=1000),
+) -> dict[str, Any]:
+    """ExtraHop RevealX detections endpoint."""
+    alerts = generate_alerts("extrahop_revealx", n=min(limit, 100), ctx=_alert_ctx("extrahop_revealx"))
+    return {"count": len(alerts), "detections": alerts}
+
+
+# ── Palo Alto NGFW  (API key → threat logs) ──────────────────────────────────
+
+@app.get("/api/v2/threat-logs")
+async def palo_alto_threat_logs(
+    request: Request,
+    limit: int = Query(50, le=1000),
+) -> dict[str, Any]:
+    """Palo Alto Networks Firewall threat logs."""
+    alerts = generate_alerts("palo_alto_ngfw", n=min(limit, 100), ctx=_alert_ctx("palo_alto_ngfw"))
+    return {"@count": len(alerts), "value": alerts}
+
+
+# =============================================================================
 # Custom Listeners — Phase 1 dispatcher
 # See docs/CUSTOM_LISTENERS.md
 #

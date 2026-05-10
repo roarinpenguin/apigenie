@@ -1,0 +1,67 @@
+{
+  "riskId": "58b4ef34-5cbb-4d6c-81ca-c57a6e765f3e",
+  "riskEventType": "anomalousSignIn",
+  "riskLevel": "medium",
+  "riskState": "atRisk",
+  "detectedDateTime": "2026-05-10T13:45:00Z",
+  "requestId": "12345678-1234-1234-1234-123456789012",
+  "userId": "87654321-4321-4321-4321-210987654321",
+  "userPrincipalName": "jsmith@corp.onmicrosoft.com",
+  "userDisplayName": "John Smith",
+  "mail": "jsmith@corp.onmicrosoft.com",
+  "givenName": "John",
+  "surname": "Smith",
+  "department": "Engineering",
+  "jobTitle": "Senior Developer",
+  "location": {\n    "countryOrRegion": "CN",\n    \"state\": \"Shanghai\",\n    \"city\": \"Shanghai\"\n  },\n  \"ipAddress\": \"203.0.113.45\",\n  \"deviceId\": \"ed6d7e3a-8b4c-4d91-a6b2-9c3d5e1f2a4b\",\n  \"deviceDisplayName\": \"UNKNOWN-DEVICE\",\n  \"deviceTrustType\": \"Unknown\",\n  \"deviceOperatingSystem\": \"Unknown\",\n  \"applicationId\": \"8e3a16ce-4b1e-45d0-aade-3f4cc1e9e38d\",\n  \"applicationDisplayName\": \"Office 365 Exchange Online\",\n  \"signInEventTypes\": [\"interactiveSignIn\"],\n  \"clientAppUsed\": \"Browser\",\n  \"osVersion\": \"Unknown\",\n  \"deviceComplianceStatus\": \"unknown\",\n  \"isDeviceManaged\": false,\n  \"isDeviceCompliant\": false,\n  \"mfaDetail\": {\n    \"authDetail\": \"MFA required but not completed\",\n    \"authMethod\": \"Mobile app notification\",\n    \"authMethodStatus\": \"declined\"\n  },\n  \"flaggedForReview\": false,\n  \"processingStatus\": \"notProcessed\",\n  \"riskDetail\": \"Impossible travel to atypical location. User signed in from Shanghai, China at 13:45 UTC, but was detected signing in from New York, United States at 08:30 UTC just 4 hours ago. Traveling that distance in 4 hours is impossible.\",\n  \"detectionTimingType\": \"realtime\",\n  \"detectionSource\": \"aadip\",\n  \"additionalInfo\": {\n    \"lastSignInCountry\": \"US\",\n    \"lastSignInCity\": \"New York\",\n    \"lastSignInTime\": \"2026-05-10T09:30:00Z\",\n    \"impossibleTravelDistance\": \"9988 km\",\n    \"travelTimeRequired\": \"11.5 hours (minimum by flight)\"\n  },\n  \"correlationId\": \"12345678-1234-1234-1234-123456789abc\",\n  "remediationStatus": "none",\n  "remediated": false,\n  "dismissedByAdmin": false,\n  "dismissedByUser": false,\n  "ocsf_mapping": {
+    "event_class": "Authentication Activity",
+    "event_type": "Logon (Authentication)",
+    "severity_id": 3,
+    "severity": "Medium",
+    "category_uid": 4,
+    "class_uid": 4002,
+    "activity_id": 1,
+    "activity": "Logon",
+    "status": "Success",
+    "status_id": 1,
+    "finding": {
+      "uid": "58b4ef34-5cbb-4d6c-81ca-c57a6e765f3e",
+      "name": "Anomalous sign-in from impossible travel location",
+      "type": "Anomaly Detection"
+    },
+    "user": {
+      "name": "jsmith",
+      "email": "jsmith@corp.onmicrosoft.com",
+      "full_name": "John Smith",
+      "uid": "87654321-4321-4321-4321-210987654321"
+    },
+    "device": {
+      "uid": "ed6d7e3a-8b4c-4d91-a6b2-9c3d5e1f2a4b",
+      "name": "UNKNOWN-DEVICE",
+      "is_managed": false
+    },
+    "src_endpoint": {
+      "ip": "203.0.113.45",
+      "location": {
+        "country": "CN",
+        "city": "Shanghai"
+      }
+    },
+    "service": {
+      "name": "Office 365 Exchange Online",
+      "uid": "8e3a16ce-4b1e-45d0-aade-3f4cc1e9e38d"
+    },
+    "auth_protocol": "OIDC",
+    "auth_factors": [
+      "Password",
+      "MFA - Declined"
+    ],
+    "auth_factor_ids": [1, 2],
+    "metadata": {
+      "product_uid": "entra_id_protection",
+      "product_name": "Microsoft Entra ID Protection",
+      "vendor_name": "Microsoft",
+      "version": "1.0"
+    }
+  }
+}
