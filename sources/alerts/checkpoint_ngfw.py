@@ -74,12 +74,13 @@ def generate_native(n: int, ctx: Any = None) -> list[dict]:
         malware = ctx.pick_malware() if ctx else None
         threat = malware.get("filename", random.choice(_THREAT_NAMES[v["blade"]])) if malware else random.choice(_THREAT_NAMES[v["blade"]])
         action = random.choice(_ACTIONS)
-        now_epoch = int(_time.time())
-        ts_offset = random.randint(0, 300)
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone.utc) - timedelta(seconds=random.randint(0, 300))
+        time_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
         logs.append({
             "id": random.randint(100000, 999999),
-            "time": str(now_epoch - ts_offset),
+            "time": time_iso,
             "type": "Log",
             "action": action.capitalize(),
             "origin": gw,
