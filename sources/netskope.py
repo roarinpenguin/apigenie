@@ -164,14 +164,17 @@ def _generate_alert(alert_type: str | None = None, ctx: profiles.ProfileContext 
 
 
 def get_alerts_response(limit: int = 100, alert_type: str | None = None) -> dict[str, Any]:
-    """Return alerts in the Netskope v2 envelope: {result, status, total}."""
+    """Return alerts in the real Netskope v2 API format: {ok, result, data}."""
     ctx = profiles.get_context("netskope")
     count = min(limit, 100)
     alerts = [_generate_alert(alert_type=alert_type, ctx=ctx) for _ in range(count)]
     return {
-        "result": alerts,
+        "ok": 1,
+        "result": "success",
         "status": "success",
+        "data": alerts,
         "total": count,
+        "wait_time": 0,
     }
 
 
