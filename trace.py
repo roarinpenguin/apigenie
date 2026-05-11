@@ -169,6 +169,23 @@ class TraceMiddleware(BaseHTTPMiddleware):
         # client_ip already resolved at the top of dispatch
         ts_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
+        # Capture response body size and preview
+        resp_body_bytes = b""
+        resp_body_preview = ""
+        resp_size = 0
+        async for chunk in response.body_iterator:
+            resp_body_bytes += chunk if isinstance(chunk, bytes) else chunk.encode()
+        resp_size = len(resp_body_bytes)
+        resp_body_preview = resp_body_bytes.decode("utf-8", errors="replace")[:500] if resp_body_bytes else ""
+        # Re-wrap the response with the consumed body
+        from starlette.responses import Response as StarletteResponse
+        response = StarletteResponse(
+            content=resp_body_bytes,
+            status_code=response.status_code,
+            headers=dict(response.headers),
+            media_type=response.media_type,
+        )
+
         entry: dict[str, Any] = {
             "ts": ts_iso,
             "method": request.method,
@@ -179,6 +196,8 @@ class TraceMiddleware(BaseHTTPMiddleware):
             "duration_ms": duration_ms,
             "req_headers": _sanitise_headers(request.headers),
             "req_body": body_str,
+            "resp_size": resp_size,
+            "resp_preview": resp_body_preview,
         }
         REQUEST_TRACE[source].appendleft(entry)
         _agg_observe(client_ip, source, response.status_code, ts_iso)

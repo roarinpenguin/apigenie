@@ -959,6 +959,9 @@ async function loadRequests() {
       const q = e.query ? '?' + e.query : '';
       const hdr = JSON.stringify(e.req_headers, null, 2);
       const body = e.req_body || '';
+      const rSize = e.resp_size != null ? e.resp_size : '?';
+      const rPrev = e.resp_preview || '';
+      const rSizeKb = typeof rSize === 'number' ? (rSize > 1024 ? (rSize/1024).toFixed(1)+'KB' : rSize+'B') : '?';
       html += `<tr>
         <td class="ts">${e.ts.replace('T',' ')}</td>
         <td class="method">${e.method}</td>
@@ -966,8 +969,8 @@ async function loadRequests() {
         <td><span class="badge ${bc}">${e.status}</span></td>
         <td class="dur">${e.duration_ms}</td>
         <td class="ts">${e.client}</td>
-        <td><details><summary>headers${body ? ' + body' : ''}</summary>
-          <pre>${escHtml(hdr)}${body ? '\\n\\n--- Body ---\\n' + escHtml(body.substring(0,800)) : ''}</pre>
+        <td><details><summary>▶ req${body ? '+body' : ''} · ◀ resp ${rSizeKb}</summary>
+          <pre style="color:rgba(224,170,255,.7)">── Request Headers ──\n${escHtml(hdr)}${body ? '\n\n── Request Body ──\n' + escHtml(body.substring(0,800)) : ''}\n\n── Response (${rSizeKb}) ──\n${escHtml(rPrev.substring(0,500))}${rPrev.length >= 500 ? '\n…truncated' : ''}</pre>
         </details></td>
       </tr>`;
     });
@@ -2054,7 +2057,32 @@ async function deleteReplayFile(fileId) {
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 buildChips('source-chips', selectSource);
-buildChips('cfg-chips', showConfig);
+// Inject custom listeners into SOURCES so they appear in Source Config
+(async function loadListenersIntoSources() {
+  try {
+    const r = await fetch('/admin/api/listeners', {credentials:'same-origin'});
+    const d = await r.json();
+    (d.listeners || []).forEach(l => {
+      if (!l.enabled) return;
+      const base = window.location.origin;
+      const url = l.url || (base + '/listener/' + l.id + '/' + l.path.replace(/^\\//, ''));
+      const authHdr = l.auth_kind === 'bearer' ? '-H "Authorization: Bearer apigenie-valid-token-001"' :
+                       l.auth_kind === 'basic' ? '-u "admin:apigenie"' :
+                       l.auth_kind === 'x_api_key' ? '-H "X-Api-Key: apigenie-valid-token-001"' : '';
+      SOURCES['listener_' + l.id] = {
+        name: '🎯 ' + l.name,
+        auth_type: l.auth_kind === 'none' ? 'None' : l.auth_kind.replace(/_/g, ' '),
+        credentials: l.auth_kind === 'bearer' ? {token: 'apigenie-valid-token-001'} :
+                     l.auth_kind === 'basic' ? {username: 'admin', password: 'apigenie'} :
+                     l.auth_kind === 'none' ? {note: 'No auth required'} :
+                     {token: 'apigenie-valid-token-001'},
+        endpoints: [{method: l.method || 'GET', path: '/listener/' + l.id + '/' + l.path.replace(/^\\//, ''), desc: l.data_source || 'Custom listener'}],
+        curl: 'curl -sk ' + (l.method === 'POST' ? '-X POST ' : '') + authHdr + ' \\\n  "' + url + '"',
+      };
+    });
+  } catch(e) {}
+  buildChips('cfg-chips', showConfig);
+})();
 // auto-select first source
 document.querySelector('#source-chips .chip')?.click();
 // Resize viz on window resize so they stay responsive.
