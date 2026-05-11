@@ -21,6 +21,7 @@ PUBLISH_INTERVAL = int(os.environ.get("KAFKA_PUBLISH_INTERVAL", "10"))
 MESSAGES_PER_BATCH = int(os.environ.get("KAFKA_BATCH_SIZE", "5"))
 
 _AZURE_EVENT_TEMPLATES = [
+    # Administrative / Infrastructure
     {
         "category": "Administrative",
         "operationName": "Microsoft.Compute/virtualMachines/write",
@@ -45,6 +46,98 @@ _AZURE_EVENT_TEMPLATES = [
         "level": "Informational",
         "resourceType": "ACTIVITY LOGS",
     },
+    # Entra ID / Azure AD — Sign-in activity
+    {
+        "category": "SignInLogs",
+        "operationName": "Sign-in activity",
+        "level": "Informational",
+        "resourceType": "SIGN-IN LOGS",
+        "_entra": True,
+    },
+    {
+        "category": "SignInLogs",
+        "operationName": "Sign-in activity",
+        "level": "Warning",
+        "resourceType": "SIGN-IN LOGS",
+        "_entra": True,
+        "_risk": True,
+    },
+    # Entra ID — Audit / User management
+    {
+        "category": "AuditLogs",
+        "operationName": "Add user",
+        "level": "Informational",
+        "resourceType": "USER MANAGEMENT",
+        "_entra": True,
+    },
+    {
+        "category": "AuditLogs",
+        "operationName": "Update user",
+        "level": "Informational",
+        "resourceType": "USER MANAGEMENT",
+        "_entra": True,
+    },
+    {
+        "category": "AuditLogs",
+        "operationName": "Delete user",
+        "level": "Warning",
+        "resourceType": "USER MANAGEMENT",
+        "_entra": True,
+    },
+    {
+        "category": "AuditLogs",
+        "operationName": "Add member to group",
+        "level": "Informational",
+        "resourceType": "GROUP MANAGEMENT",
+        "_entra": True,
+    },
+    {
+        "category": "AuditLogs",
+        "operationName": "Reset user password",
+        "level": "Informational",
+        "resourceType": "USER MANAGEMENT",
+        "_entra": True,
+    },
+    # Entra ID — Risky sign-ins
+    {
+        "category": "RiskyUsers",
+        "operationName": "Risky user detected",
+        "level": "Warning",
+        "resourceType": "IDENTITY PROTECTION",
+        "_entra": True,
+        "_risk": True,
+    },
+    # Entra ID — App consent / service principal
+    {
+        "category": "AuditLogs",
+        "operationName": "Consent to application",
+        "level": "Informational",
+        "resourceType": "APPLICATION MANAGEMENT",
+        "_entra": True,
+    },
+    {
+        "category": "AuditLogs",
+        "operationName": "Add service principal",
+        "level": "Informational",
+        "resourceType": "SERVICE PRINCIPAL",
+        "_entra": True,
+    },
+]
+
+
+_ENTRA_USERS = [
+    "jsmith@corp.onmicrosoft.com", "agarcia@corp.onmicrosoft.com",
+    "mchen@corp.onmicrosoft.com", "kwilson@corp.onmicrosoft.com",
+    "rbrown@corp.onmicrosoft.com", "ljohnson@corp.onmicrosoft.com",
+    "tlee@corp.onmicrosoft.com", "nkowalski@corp.onmicrosoft.com",
+]
+_ENTRA_APPS = ["Microsoft Office 365", "Salesforce", "Slack", "AWS Console", "GitHub", "Zoom", "ServiceNow"]
+_ENTRA_LOCATIONS = [
+    {"city": "New York", "state": "NY", "countryOrRegion": "US"},
+    {"city": "London", "countryOrRegion": "GB"},
+    {"city": "Berlin", "countryOrRegion": "DE"},
+    {"city": "Tokyo", "countryOrRegion": "JP"},
+    {"city": "São Paulo", "countryOrRegion": "BR"},
 ]
 
 
@@ -55,7 +148,60 @@ def _generate_azure_event() -> dict:
     template = random.choice(_AZURE_EVENT_TEMPLATES)
     now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     sub_id = "12345678-1234-1234-1234-123456789012"
+    tenant_id = "a5a18162-7e4d-4b85-8f5b-b1e4c8d73d25"
 
+    # Entra ID user activity events
+    if template.get("_entra"):
+        user = random.choice(_ENTRA_USERS)
+        user_id = str(uuid.uuid4())
+        location = random.choice(_ENTRA_LOCATIONS)
+        is_risk = template.get("_risk", False)
+
+        event = {
+            "time": now,
+            "tenantId": tenant_id,
+            "category": template["category"],
+            "operationName": template["operationName"],
+            "operationVersion": "1.0",
+            "resultType": "failure" if is_risk else random.choice(["success", "failure"]),
+            "resultSignature": "None" if is_risk else "None",
+            "correlationId": str(uuid.uuid4()),
+            "level": template["level"],
+            "callerIpAddress": f"{random.randint(1,223)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}",
+            "identity": user,
+            "properties": {
+                "id": str(uuid.uuid4()),
+                "userDisplayName": user.split("@")[0].replace(".", " ").title(),
+                "userPrincipalName": user,
+                "userId": user_id,
+                "appId": str(uuid.uuid4()),
+                "appDisplayName": random.choice(_ENTRA_APPS),
+                "ipAddress": f"{random.randint(1,223)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}",
+                "location": location,
+                "clientAppUsed": random.choice(["Browser", "Mobile Apps and Desktop clients", "Exchange ActiveSync"]),
+                "deviceDetail": {
+                    "deviceId": str(uuid.uuid4()),
+                    "operatingSystem": random.choice(["Windows 10", "macOS", "iOS", "Android", "Linux"]),
+                    "browser": random.choice(["Chrome 130", "Safari 17", "Edge 130", "Firefox 128"]),
+                    "isCompliant": random.choice([True, False]),
+                    "isManaged": random.choice([True, False]),
+                },
+                "status": {
+                    "errorCode": 50126 if is_risk else 0,
+                    "failureReason": "Invalid username or password" if is_risk else None,
+                },
+                "resourceType": template["resourceType"],
+            },
+        }
+        if is_risk:
+            event["properties"]["riskDetail"] = random.choice([
+                "unfamiliarFeatures", "anonymizedIPAddress", "impossibleTravel",
+                "maliciousIPAddress", "leakedCredentials",
+            ])
+            event["properties"]["riskLevelDuringSignIn"] = random.choice(["low", "medium", "high"])
+        return event
+
+    # Standard Azure platform event (infra/policy/security)
     return {
         "time": now,
         "resourceId": f"/subscriptions/{sub_id}/resourceGroups/rg-prod/providers/Microsoft.Compute/virtualMachines/vm-{uuid.uuid4().hex[:8]}",
