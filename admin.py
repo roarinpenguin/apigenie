@@ -959,20 +959,24 @@ async function loadRequests() {
       const q = e.query ? '?' + e.query : '';
       const hdr = JSON.stringify(e.req_headers, null, 2);
       const body = e.req_body || '';
-      const rSize = e.resp_size != null ? e.resp_size : '?';
+      const rSize = e.resp_size != null ? e.resp_size : '';
       const rPrev = e.resp_preview || '';
-      const rSizeKb = typeof rSize === 'number' ? (rSize > 1024 ? (rSize/1024).toFixed(1)+'KB' : rSize+'B') : '?';
-      html += `<tr>
-        <td class="ts">${e.ts.replace('T',' ')}</td>
-        <td class="method">${e.method}</td>
-        <td style="font-family:monospace;font-size:.78rem">${e.path}${q}</td>
-        <td><span class="badge ${bc}">${e.status}</span></td>
-        <td class="dur">${e.duration_ms}</td>
-        <td class="ts">${e.client}</td>
-        <td><details><summary>▶ req${body ? '+body' : ''} · ◀ resp ${rSizeKb}</summary>
-          <pre style="color:rgba(224,170,255,.7)">── Request Headers ──\n${escHtml(hdr)}${body ? '\n\n── Request Body ──\n' + escHtml(body.substring(0,800)) : ''}\n\n── Response (${rSizeKb}) ──\n${escHtml(rPrev.substring(0,500))}${rPrev.length >= 500 ? '\n…truncated' : ''}</pre>
-        </details></td>
-      </tr>`;
+      const rSizeKb = typeof rSize === 'number' ? (rSize > 1024 ? (rSize/1024).toFixed(1)+'KB' : rSize+'B') : '';
+      const respLabel = rSizeKb ? ' · ◀ resp ' + rSizeKb : '';
+      let detail = escHtml(hdr);
+      if (body) detail += '\\n\\n── Request Body ──\\n' + escHtml(body.substring(0,800));
+      if (rPrev) detail += '\\n\\n── Response (' + rSizeKb + ') ──\\n' + escHtml(rPrev.substring(0,500)) + (rPrev.length >= 500 ? '\\n…truncated' : '');
+      html += '<tr>' +
+        '<td class="ts">' + e.ts.replace('T',' ') + '</td>' +
+        '<td class="method">' + e.method + '</td>' +
+        '<td style="font-family:monospace;font-size:.78rem">' + escHtml(e.path + q) + '</td>' +
+        '<td><span class="badge ' + bc + '">' + e.status + '</span></td>' +
+        '<td class="dur">' + e.duration_ms + '</td>' +
+        '<td class="ts">' + e.client + '</td>' +
+        '<td><details><summary>▶ req' + (body ? '+body' : '') + respLabel + '</summary>' +
+        '<pre style="color:rgba(224,170,255,.7)">' + detail + '</pre>' +
+        '</details></td>' +
+        '</tr>';
     });
     html += '</tbody></table>';
     wrap.innerHTML = html;
