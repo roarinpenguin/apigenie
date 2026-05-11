@@ -2057,11 +2057,15 @@ async function deleteReplayFile(fileId) {
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 buildChips('source-chips', selectSource);
-// Inject custom listeners into SOURCES so they appear in Source Config
+buildChips('cfg-chips', showConfig);
+// auto-select first source
+document.querySelector('#source-chips .chip')?.click();
+// Async: inject custom listeners into Source Config (enhances cfg-chips after load)
 (async function loadListenersIntoSources() {
   try {
     const r = await fetch('/admin/api/listeners', {credentials:'same-origin'});
     const d = await r.json();
+    let added = 0;
     (d.listeners || []).forEach(l => {
       if (!l.enabled) return;
       const base = window.location.origin;
@@ -2079,12 +2083,11 @@ buildChips('source-chips', selectSource);
         endpoints: [{method: l.method || 'GET', path: '/listener/' + l.id + '/' + l.path.replace(/^\\//, ''), desc: l.data_source || 'Custom listener'}],
         curl: 'curl -sk ' + (l.method === 'POST' ? '-X POST ' : '') + authHdr + ' \\\n  "' + url + '"',
       };
+      added++;
     });
+    if (added > 0) buildChips('cfg-chips', showConfig);
   } catch(e) {}
-  buildChips('cfg-chips', showConfig);
 })();
-// auto-select first source
-document.querySelector('#source-chips .chip')?.click();
 // Resize viz on window resize so they stay responsive.
 window.addEventListener('resize', () => {
   if (window._sankey) window._sankey.resize();
