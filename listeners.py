@@ -711,7 +711,8 @@ def _syslog_val(v: Any) -> str:
 
 def make_hit(*, ts: str, method: str, path: str, query: str, client: str,
              status: int, identity: str, headers: dict[str, str],
-             body: str, duration_ms: int) -> dict[str, Any]:
+             body: str, duration_ms: int,
+             resp_body: str = "", resp_size: int = 0) -> dict[str, Any]:
     return {
         "ts": ts,
         "method": method,
@@ -723,6 +724,8 @@ def make_hit(*, ts: str, method: str, path: str, query: str, client: str,
         "duration_ms": duration_ms,
         "req_headers": _sanitise_headers(headers.items()),
         "req_body": body[:2000],
+        "resp_size": resp_size,
+        "resp_preview": resp_body[:500],
     }
 
 

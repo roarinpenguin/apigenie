@@ -320,7 +320,13 @@ SOURCES: dict[str, dict[str, Any]] = {
             {"method": "KAFKA", "path": ":9092 (PLAINTEXT)",      "desc": "Legacy plain Kafka — no SASL"},
         ],
         "curl": (
-            f'kcat -b {DOMAIN}:9094 -t azure-platform-logs -C \\\n'
+            f'# Consume (subscriber):\n'
+            f'kcat -b {DOMAIN}:9094 -t azure-platform-logs -C -c 5 \\\n'
+            '  -X security.protocol=SASL_PLAINTEXT -X sasl.mechanism=PLAIN \\\n'
+            '  -X sasl.username=\'$ConnectionString\' \\\n'
+            f'  -X sasl.password=\'Endpoint=sb://{DOMAIN}/;SharedAccessKeyName=mock;SharedAccessKey=apigenie-eh-mock-2026;EntityPath=azure-platform-logs\'\n'
+            f'\n# List consumer groups:\n'
+            f'kcat -b {DOMAIN}:9094 -L \\\n'
             '  -X security.protocol=SASL_PLAINTEXT -X sasl.mechanism=PLAIN \\\n'
             '  -X sasl.username=\'$ConnectionString\' \\\n'
             f'  -X sasl.password=\'Endpoint=sb://{DOMAIN}/;SharedAccessKeyName=mock;SharedAccessKey=apigenie-eh-mock-2026;EntityPath=azure-platform-logs\''
@@ -344,8 +350,15 @@ SOURCES: dict[str, dict[str, Any]] = {
             {"method": "POST",  "path": "/oauth2/token",    "desc": "Fake Google OAuth2 endpoint (keeps non-emulator-aware clients happy)"},
         ],
         "curl": (
+            f'# Pull messages (subscriber):\n'
             f'PUBSUB_EMULATOR_HOST={DOMAIN}:8085 \\\n'
-            'gcloud --project=obs-test pubsub subscriptions pull audit-logs-sub --auto-ack --limit=5'
+            'gcloud --project=obs-test pubsub subscriptions pull audit-logs-sub --auto-ack --limit=5\n'
+            f'\n# List subscriptions:\n'
+            f'PUBSUB_EMULATOR_HOST={DOMAIN}:8085 \\\n'
+            'gcloud --project=obs-test pubsub subscriptions list\n'
+            f'\n# List topics:\n'
+            f'PUBSUB_EMULATOR_HOST={DOMAIN}:8085 \\\n'
+            'gcloud --project=obs-test pubsub topics list'
         ),
     },
     "darktrace": {
@@ -1676,16 +1689,21 @@ async function toggleHits(id) {
     box.innerHTML = d.hits.slice(0, 100).map(h => {
       const cls = 'h-status-' + String(h.status).charAt(0);
       const ts = h.ts ? new Date(h.ts).toLocaleTimeString() : '?';
-      return `<div class="hit-row">
-        <span style="color:rgba(224,170,255,.55)">${escHtml(ts)}</span>
-        <span class="${cls}">${h.status}</span>
-        <span style="color:rgba(224,170,255,.7)">${escHtml(h.method)}</span>
-        <span style="word-break:break-all">${escHtml(h.path)}${h.query ? '?' + escHtml(h.query) : ''}
-          <span class="pill" style="margin-left:6px">${escHtml(h.identity || 'anon')}</span>
-          <span class="pill">${h.duration_ms || 0}ms</span>
-          <span class="pill">${escHtml(h.client || '?')}</span>
-        </span>
-      </div>`;
+      const rSize = h.resp_size || 0;
+      const rKb = rSize > 1024 ? (rSize/1024).toFixed(1)+'KB' : rSize+'B';
+      const rPrev = h.resp_preview || '';
+      return '<div class="hit-row">' +
+        '<span style="color:rgba(224,170,255,.55)">' + escHtml(ts) + '</span>' +
+        '<span class="' + cls + '">' + h.status + '</span>' +
+        '<span style="color:rgba(224,170,255,.7)">' + escHtml(h.method) + '</span>' +
+        '<span style="word-break:break-all">' + escHtml(h.path) + (h.query ? '?' + escHtml(h.query) : '') +
+        ' <span class="pill" style="margin-left:6px">' + escHtml(h.identity || 'anon') + '</span>' +
+        ' <span class="pill">' + (h.duration_ms || 0) + 'ms</span>' +
+        ' <span class="pill">' + escHtml(h.client || '?') + '</span>' +
+        (rSize ? ' <span class="pill" style="background:rgba(100,181,246,.15);border-color:rgba(100,181,246,.3);color:#90caf9">◀ ' + rKb + '</span>' : '') +
+        (rPrev ? '<details style="margin-top:4px"><summary style="font-size:.65rem;color:rgba(224,170,255,.4);cursor:pointer">response preview</summary>' +
+          '<pre style="font-size:.68rem;color:rgba(224,170,255,.6);white-space:pre-wrap;max-height:120px;overflow-y:auto;margin:4px 0">' + escHtml(rPrev.substring(0,500)) + '</pre></details>' : '') +
+        '</span></div>';
     }).join('');
   } catch (e) {
     box.innerHTML = '<div style="color:#ff8080">Failed: ' + escHtml(String(e)) + '</div>';
@@ -2074,17 +2092,22 @@ document.querySelector('#source-chips .chip')?.click();
       if (!l.enabled) return;
       const base = window.location.origin;
       const url = l.url || (base + '/listener/' + l.id + '/' + l.path.replace(/^\\//, ''));
-      const authHdr = l.auth_kind === 'bearer' ? '-H "Authorization: Bearer apigenie-valid-token-001"' :
-                       l.auth_kind === 'basic' ? '-u "admin:apigenie"' :
-                       l.auth_kind === 'x_api_key' ? '-H "X-Api-Key: apigenie-valid-token-001"' : '';
+      const ac = l.auth_config || {};
+      const tok = ac.token || ac.api_key || 'apigenie-valid-token-001';
+      const authHdr = l.auth_kind === 'bearer' ? '-H "Authorization: Bearer ' + tok + '"' :
+                       l.auth_kind === 'basic' ? '-u "' + (ac.username || 'admin') + ':' + (ac.password || 'apigenie') + '"' :
+                       l.auth_kind === 'x_api_key' ? '-H "X-Api-Key: ' + tok + '"' :
+                       l.auth_kind === 'oauth2_cc' ? '-H "Authorization: Bearer ' + tok + '"' : '';
+      const creds = l.auth_kind === 'bearer' ? {token: tok} :
+                    l.auth_kind === 'basic' ? {username: ac.username || 'admin', password: ac.password || 'apigenie'} :
+                    l.auth_kind === 'x_api_key' ? {'API Key': tok} :
+                    l.auth_kind === 'none' ? {note: 'No auth required'} :
+                    {token: tok};
       SOURCES['listener_' + l.id] = {
         name: '🎯 ' + l.name,
         auth_type: l.auth_kind === 'none' ? 'None' : l.auth_kind.replace(/_/g, ' '),
-        credentials: l.auth_kind === 'bearer' ? {token: 'apigenie-valid-token-001'} :
-                     l.auth_kind === 'basic' ? {username: 'admin', password: 'apigenie'} :
-                     l.auth_kind === 'none' ? {note: 'No auth required'} :
-                     {token: 'apigenie-valid-token-001'},
-        endpoints: [{method: l.method || 'GET', path: '/listener/' + l.id + '/' + l.path.replace(/^\\//, ''), desc: l.data_source || 'Custom listener'}],
+        credentials: creds,
+        endpoints: [{method: l.method || 'GET', path: '/listener/' + l.id + '/' + l.path.replace(/^\\//, ''), desc: (l.data_source || 'Custom listener') + ' (' + (l.topic || 'default') + ')'}],
         curl: 'curl -sk ' + (l.method === 'POST' ? '-X POST ' : '') + authHdr + ' \\\n  "' + url + '"',
       };
       added++;

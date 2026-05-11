@@ -746,12 +746,15 @@ async def listener_dispatch(lid: str, rest: str, request: Request):
         if xff:
             client_ip = xff.split(",", 1)[0].strip() or client_ip
         if listener is not None:
+            import json as _json
+            resp_str = body if isinstance(body, str) else _json.dumps(body, default=str)
             entry = _listeners.make_hit(
                 ts=ts_iso, method=request.method, path="/" + rest,
                 query=str(request.query_params) if request.query_params else "",
                 client=client_ip, status=status, identity=identity,
                 headers=dict(request.headers), body=body_str,
                 duration_ms=duration_ms,
+                resp_body=resp_str, resp_size=len(resp_str),
             )
             _listeners.record_hit(lid, entry)
         if isinstance(body, str):
