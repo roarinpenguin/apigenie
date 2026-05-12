@@ -959,11 +959,59 @@ async function loadRequests() {
   if (!activeSource) return;
   const wrap = document.getElementById('req-table-wrap');
   wrap.innerHTML = '<p class="empty">Loading…</p>';
+
+  // Show consumer status panel for bus sources
+  const isBus = activeSource === 'azure_platform' || activeSource === 'gcp_audit';
+  let busHtml = '';
+  if (isBus) {
+    try {
+      const br = await fetch('/admin/api/bus-status', {credentials:'same-origin'});
+      if (br.ok) {
+        const bs = await br.json();
+        busHtml = '<div style="background:rgba(36,0,70,.5);border:1px solid rgba(199,125,255,.2);border-radius:10px;padding:12px;margin-bottom:14px">';
+        busHtml += '<div style="font-weight:600;color:var(--mist);font-size:.85rem;margin-bottom:8px">📡 Consumer / Subscriber Status</div>';
+        if (bs.kafka && !bs.kafka.error && activeSource === 'azure_platform') {
+          const groups = bs.kafka.groups || [];
+          if (groups.length === 0) {
+            busHtml += '<div style="color:rgba(224,170,255,.4);font-size:.78rem">No Kafka consumer groups found</div>';
+          } else {
+            groups.forEach(function(g) {
+              var statusColor = g.active ? '#90ee90' : '#ff8080';
+              var statusText = g.active ? 'ACTIVE' : 'INACTIVE';
+              busHtml += '<div style="display:flex;gap:10px;align-items:center;font-size:.78rem;padding:4px 0">';
+              busHtml += '<span class="pill" style="background:rgba(' + (g.active ? '100,181,246' : '255,100,100') + ',.15);color:' + statusColor + '">' + statusText + '</span>';
+              busHtml += '<span style="color:var(--mist)">' + escHtml(g.group) + '</span>';
+              busHtml += '<span style="color:rgba(224,170,255,.5)">topic: ' + escHtml(g.topic) + '</span>';
+              if (g.lag !== '?') busHtml += '<span style="color:rgba(224,170,255,.5)">lag: <b style="color:' + (parseInt(g.lag) > 100 ? '#ffb070' : '#90ee90') + '">' + g.lag + '</b></span>';
+              if (g.current_offset) busHtml += '<span style="color:rgba(224,170,255,.35)">offset: ' + g.current_offset + '/' + g.log_end_offset + '</span>';
+              busHtml += '</div>';
+            });
+          }
+        }
+        if (bs.pubsub && !bs.pubsub.error && activeSource === 'gcp_audit') {
+          var subs = bs.pubsub.subscriptions || [];
+          if (subs.length === 0) {
+            busHtml += '<div style="color:rgba(224,170,255,.4);font-size:.78rem">No Pub/Sub subscriptions found</div>';
+          } else {
+            subs.forEach(function(s) {
+              busHtml += '<div style="display:flex;gap:10px;align-items:center;font-size:.78rem;padding:4px 0">';
+              busHtml += '<span class="pill" style="background:rgba(100,181,246,.15);color:#90caf9">SUB</span>';
+              busHtml += '<span style="color:var(--mist)">' + escHtml(s.name) + '</span>';
+              busHtml += '<span style="color:rgba(224,170,255,.5)">topic: ' + escHtml(s.topic) + '</span>';
+              busHtml += '</div>';
+            });
+          }
+        }
+        busHtml += '</div>';
+      }
+    } catch(e) {}
+  }
+
   try {
     const r = await fetch('/admin/api/requests/' + activeSource);
-    if (!r.ok) { wrap.innerHTML = '<p class="empty">Error: ' + r.status + ' ' + r.statusText + ' — try signing in again.</p>'; return; }
+    if (!r.ok) { wrap.innerHTML = busHtml + '<p class="empty">Error: ' + r.status + ' ' + r.statusText + ' — try signing in again.</p>'; return; }
     const data = await r.json();
-    if (!data.length) { wrap.innerHTML = '<p class="empty">No requests recorded yet — wait for the collector to call in.</p>'; return; }
+    if (!data.length) { wrap.innerHTML = busHtml + '<p class="empty">No requests recorded yet — wait for the collector to call in.</p>'; return; }
     let html = `<table><thead><tr>
       <th>Time</th><th>Method</th><th>Path</th><th>Status</th><th>ms</th><th>Client</th><th>Detail</th>
     </tr></thead><tbody>`;
@@ -992,7 +1040,7 @@ async function loadRequests() {
         '</tr>';
     });
     html += '</tbody></table>';
-    wrap.innerHTML = html;
+    wrap.innerHTML = busHtml + html;
   } catch(err) { wrap.innerHTML = '<p class="empty">Error: ' + err + '</p>'; }
 }
 
@@ -2989,6 +3037,66 @@ async def api_requests(source: str, ag_session: str | None = Cookie(None)):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     data = list(REQUEST_TRACE.get(source, []))
     return JSONResponse(data)
+
+
+@router.get("/api/bus-status")
+async def api_bus_status(ag_session: str | None = Cookie(None)):
+    """Query Kafka consumer groups and Pub/Sub subscription status."""
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import subprocess, os
+    result = {"kafka": None, "pubsub": None}
+
+    # Kafka consumer groups via kafka-python
+    try:
+        from kafka.admin import KafkaAdminClient
+        from kafka import TopicPartition
+        bootstrap = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092")
+        admin = KafkaAdminClient(bootstrap_servers=bootstrap, request_timeout_ms=5000)
+        group_ids = admin.list_consumer_groups()
+        kafka_info = {"groups": []}
+        for gid, _ in group_ids[:10]:
+            try:
+                offsets = admin.list_consumer_group_offsets(gid)
+                # Get end offsets for lag calculation
+                from kafka import KafkaConsumer
+                c = KafkaConsumer(bootstrap_servers=bootstrap)
+                tps = list(offsets.keys())
+                end_offsets = c.end_offsets(tps) if tps else {}
+                c.close()
+                members = admin.describe_consumer_groups([gid])
+                active = len(members[0].members) > 0 if members else False
+                for tp, om in offsets.items():
+                    eo = end_offsets.get(tp, None)
+                    lag = (eo - om.offset) if eo is not None and om.offset >= 0 else "?"
+                    kafka_info["groups"].append({
+                        "group": gid, "topic": tp.topic, "partition": str(tp.partition),
+                        "current_offset": str(om.offset), "log_end_offset": str(eo or "?"),
+                        "lag": str(lag), "active": active,
+                    })
+            except Exception:
+                kafka_info["groups"].append({"group": gid, "active": False, "topic": "?", "lag": "?"})
+        admin.close()
+        result["kafka"] = kafka_info
+    except Exception as exc:
+        result["kafka"] = {"error": str(exc)}
+
+    # Pub/Sub subscriptions
+    try:
+        emulator = os.environ.get("PUBSUB_EMULATOR_HOST", "pubsub-emulator:8085")
+        import urllib.request
+        url = f"http://{emulator}/v1/projects/obs-test/subscriptions"
+        with urllib.request.urlopen(url, timeout=3) as resp:
+            import json as _j
+            data = _j.loads(resp.read())
+        subs = data.get("subscriptions", [])
+        result["pubsub"] = {"subscriptions": [
+            {"name": s.get("name", "?"), "topic": s.get("topic", "?")} for s in subs
+        ]}
+    except Exception as exc:
+        result["pubsub"] = {"error": str(exc)}
+
+    return JSONResponse(result)
 
 
 # ── Sankey + GeoMap data feeds ──────────────────────────────────────────────
