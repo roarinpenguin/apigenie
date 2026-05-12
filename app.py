@@ -66,6 +66,11 @@ async def lifespan(app: FastAPI):
             logger.info("Background publishers started")
         except Exception as exc:
             logger.warning(f"Could not start background publishers: {exc}")
+    try:
+        import bus_monitor
+        bus_monitor.start()
+    except Exception as exc:
+        logger.warning(f"Could not start bus monitor: {exc}")
     yield
     if _publishers_enabled:
         try:
@@ -74,6 +79,11 @@ async def lifespan(app: FastAPI):
             pubsub_publisher.stop()
         except Exception:
             pass
+    try:
+        import bus_monitor
+        bus_monitor.stop()
+    except Exception:
+        pass
 
 
 app = FastAPI(
@@ -95,6 +105,13 @@ app.include_router(admin_router)
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "apigenie"}
+
+
+# Lightweight bus-source probe — allows seed-fake-traffic.sh and the bus
+# monitor to inject traceable azure_platform entries via HTTP.
+@app.get("/api/bus/azure")
+async def bus_azure_probe() -> dict[str, str]:
+    return {"status": "ok", "source": "azure_platform", "transport": "kafka"}
 
 
 @app.get("/stats")

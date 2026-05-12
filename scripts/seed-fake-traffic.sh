@@ -66,4 +66,34 @@ for i in $(seq 1 "$COUNT"); do
     if (( i % 25 == 0 )); then printf "  %3d/%d\n" "$i" "$COUNT"; fi
 done
 
-echo "✓ Done. Open the admin Flows / GeoMap tabs."
+# ── Bus sources: inject fake consumer traffic via the seed-bus API ──────────
+# The bus monitor tracks Kafka/Pub/Sub consumers, but locally there are no
+# external consumers. This injects synthetic bus traffic so the dashboards
+# show activity for azure_platform and gcp_audit.
+echo ""
+echo "→ Seeding bus source traffic (Kafka / Pub/Sub)…"
+BUS_IPS=("87.121.148.232" "54.211.162.22" "3.213.115.5" "52.95.110.1" "13.107.246.10")
+BUS_SOURCES=("azure_platform" "gcp_audit")
+for i in $(seq 1 40); do
+    ip="${BUS_IPS[RANDOM % ${#BUS_IPS[@]}]}"
+    src="${BUS_SOURCES[RANDOM % ${#BUS_SOURCES[@]}]}"
+    # Spoof a bus-source HTTP call so it registers in the AGG + telemetry
+    if [ "$src" = "azure_platform" ]; then
+        # Hit the bus probe endpoint — maps to azure_platform in trace
+        curl -sk -o /dev/null \
+            -H "X-Forwarded-For: $ip" \
+            "$BASE/api/bus/azure" || true
+    else
+        # Hit a Pub/Sub-related trace path
+        curl -sk -o /dev/null -X POST \
+            -H "X-Forwarded-For: $ip" \
+            -H "Authorization: Bearer apigenie-valid-token-001" \
+            -H "Content-Type: application/json" \
+            -d '{"pageSize":5}' \
+            "$BASE/v2/entries:list" || true
+    fi
+done
+echo "  40 bus entries injected"
+
+echo ""
+echo "✓ Done. Open the admin Flows / GeoMap / Usage tabs."
