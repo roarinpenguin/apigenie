@@ -511,6 +511,7 @@ button:hover,input[type=button]:hover{filter:brightness(1.15)}
 .btn-sm{padding:5px 12px;font-size:.8rem}
 .btn-danger{background:linear-gradient(135deg,#9c1a36,#c0392b)!important;border:none!important}
 .pill{font-family:monospace;font-size:.72rem;background:rgba(123,44,191,.25);border:1px solid rgba(199,125,255,.25);border-radius:8px;padding:2px 8px;color:rgba(224,170,255,.85)}
+.bus-group-row:hover .bus-del-btn{opacity:1!important}
 /* Requests table */
 table{width:100%;border-collapse:collapse}
 th{text-align:left;padding:8px 10px;font-size:.75rem;color:rgba(224,170,255,.5);text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid rgba(199,125,255,.12)}
@@ -947,6 +948,17 @@ function buildChips(containerId, onClick) {
   });
 }
 
+async function deleteConsumerGroup(groupId) {
+  if (!confirm('Delete consumer group "' + groupId + '"? This removes the group and its offsets from Kafka. It will be recreated if a consumer reconnects with the same group ID.')) return;
+  try {
+    const r = await fetch('/admin/api/bus-group/' + encodeURIComponent(groupId), {method:'DELETE', credentials:'same-origin'});
+    const d = await r.json();
+    if (!r.ok) { alert('Error: ' + (d.error || r.status)); return; }
+    toast('Consumer group "' + groupId + '" deleted');
+    loadRequests();
+  } catch(e) { alert('Failed: ' + e); }
+}
+
 // ── Requests ──────────────────────────────────────────────────────────────────
 function selectSource(id) {
   activeSource = id;
@@ -978,9 +990,11 @@ async function loadRequests() {
             groups.forEach(function(g) {
               var statusColor = g.active ? '#90ee90' : '#ff8080';
               var statusText = g.active ? 'ACTIVE' : 'INACTIVE';
-              busHtml += '<div style="display:flex;gap:10px;align-items:center;font-size:.78rem;padding:4px 0">';
+              var gid = escHtml(g.group);
+              busHtml += '<div class="bus-group-row" style="display:flex;gap:10px;align-items:center;font-size:.78rem;padding:4px 0;position:relative">';
               busHtml += '<span class="pill" style="background:rgba(' + (g.active ? '100,181,246' : '255,100,100') + ',.15);color:' + statusColor + '">' + statusText + '</span>';
-              busHtml += '<span style="color:var(--mist)">' + escHtml(g.group) + '</span>';
+              busHtml += '<span style="color:var(--mist)">' + gid + '</span>';
+              busHtml += '<span class="bus-del-btn" onclick="deleteConsumerGroup(&quot;' + gid + '&quot;)" title="Delete consumer group" style="cursor:pointer;opacity:0;transition:opacity .15s;color:#ff8080;font-size:.75rem;padding:0 2px">🗑</span>';
               busHtml += '<span style="color:rgba(224,170,255,.5)">topic: ' + escHtml(g.topic) + '</span>';
               if (g.lag !== '?') busHtml += '<span style="color:rgba(224,170,255,.5)">lag: <b style="color:' + (parseInt(g.lag) > 100 ? '#ffb070' : '#90ee90') + '">' + g.lag + '</b></span>';
               if (g.current_offset) busHtml += '<span style="color:rgba(224,170,255,.35)">offset: ' + g.current_offset + '/' + g.log_end_offset + '</span>';
@@ -3097,6 +3111,27 @@ async def api_bus_status(ag_session: str | None = Cookie(None)):
         result["pubsub"] = {"error": str(exc)}
 
     return JSONResponse(result)
+
+
+@router.delete("/api/bus-group/{group_id}")
+async def api_delete_consumer_group(group_id: str, ag_session: str | None = Cookie(None)):
+    """Delete a Kafka consumer group (must have no active members)."""
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        from kafka.admin import KafkaAdminClient
+        bootstrap = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092")
+        admin = KafkaAdminClient(bootstrap_servers=bootstrap, request_timeout_ms=5000)
+        # Check if group has active members first
+        desc = admin.describe_consumer_groups([group_id])
+        if desc and len(desc[0].members) > 0:
+            admin.close()
+            return JSONResponse({"error": "Group has active members — disconnect consumers first"}, status_code=409)
+        admin.delete_consumer_groups([group_id])
+        admin.close()
+        return JSONResponse({"ok": True, "deleted": group_id})
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
 
 
 # ── Sankey + GeoMap data feeds ──────────────────────────────────────────────
