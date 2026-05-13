@@ -159,7 +159,25 @@ class TraceMiddleware(BaseHTTPMiddleware):
 
         source = get_source(path)
         if source is None:
-            return await call_next(request)
+            # Unrecognised path — capture as intrusion attempt
+            try:
+                import intrusions
+                t0_unk = time.monotonic()
+                unk_body = await request.body()
+                unk_body_str = unk_body.decode("utf-8", errors="replace")[:500] if unk_body else ""
+                response = await call_next(request)
+                intrusions.record(
+                    ip=client_ip, method=request.method, path=path,
+                    query=str(request.query_params) if request.query_params else "",
+                    status=response.status_code,
+                    headers=_sanitise_headers(request.headers),
+                    body=unk_body_str,
+                    duration_ms=int((time.monotonic() - t0_unk) * 1000),
+                    user_agent=request.headers.get("user-agent", ""),
+                )
+                return response
+            except Exception:
+                return await call_next(request)
 
         t0 = time.monotonic()
         body_bytes = await request.body()

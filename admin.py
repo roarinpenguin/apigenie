@@ -486,6 +486,8 @@ body{display:flex;min-height:100vh;background:var(--deep);color:var(--mist);font
 .sidebar .brand{padding:0 20px 20px;font-size:1.1rem;font-weight:700;background:linear-gradient(90deg,#e0aaff,#c77dff);-webkit-background-clip:text;background-clip:text;color:transparent;border-bottom:1px solid rgba(199,125,255,.15)}
 .nav-item{display:block;padding:11px 20px;color:rgba(224,170,255,.7);text-decoration:none;cursor:pointer;border-left:3px solid transparent;transition:all .15s}
 .nav-item:hover,.nav-item.active{color:var(--mist);background:rgba(123,44,191,.2);border-left-color:var(--lilac)}
+.nav-icon{font-size:.85rem;margin-right:4px;display:inline-block;width:20px;text-align:center;filter:saturate(0) brightness(1.2) sepia(1) hue-rotate(230deg) saturate(2.5)}
+.nav-item:hover .nav-icon,.nav-item.active .nav-icon{filter:saturate(0) brightness(1.4) sepia(1) hue-rotate(230deg) saturate(3)}
 .nav-section{padding:16px 20px 6px;font-size:.72rem;color:rgba(224,170,255,.35);text-transform:uppercase;letter-spacing:.08em}
 .sidebar .footer{margin-top:auto;padding:0 12px 12px;display:flex;flex-direction:column;gap:14px}
 .logout a{display:block;padding:9px 14px;text-align:center;border-radius:10px;background:rgba(90,24,154,.3);color:rgba(224,170,255,.6);text-decoration:none;font-size:.85rem;transition:all .15s}
@@ -634,16 +636,17 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
 <nav class="sidebar">
   <div class="brand">⚙ ApiGenie Admin</div>
   <span class="nav-section">Monitor</span>
-  <a class="nav-item active" onclick="showTab('requests', this)">📋 Requests</a>
-  <a class="nav-item" onclick="showTab('observability', this); initObservability()">📊 Observability</a>
-  <a class="nav-item" onclick="showTab('listeners', this); loadListeners()">🎯 Listeners</a>
-  <a class="nav-item" onclick="showTab('profiles', this); loadProfiles()">🎭 Log Profiles</a>
-  <a class="nav-item" onclick="showTab('investigate', this); gateInvestigate()">🔍 Investigations</a>
-  <a class="nav-item" onclick="showTab('logs', this)">📜 Container Logs</a>
-  <span class="nav-section">Reference</span>
-  <a class="nav-item" onclick="showTab('config', this)">🔧 Source Config</a>
-  <span class="nav-section">System</span>
-  <a class="nav-item" onclick="showTab('settings', this); loadSettings()">⚙ Settings</a>
+  <a class="nav-item active" onclick="showTab('observability', this); initObservability()"><span class="nav-icon">📊</span> Observability</a>
+  <a class="nav-item" onclick="showTab('requests', this)"><span class="nav-icon">📋</span> Requests</a>
+  <span class="nav-section">Troubleshooting</span>
+  <a class="nav-item" onclick="showTab('intrusions', this); loadIntrusions()"><span class="nav-icon">🛡</span> Intrusions</a>
+  <a class="nav-item" onclick="showTab('investigate', this); gateInvestigate()"><span class="nav-icon">🔍</span> Investigations</a>
+  <a class="nav-item" onclick="showTab('logs', this)"><span class="nav-icon">📜</span> Container Logs</a>
+  <span class="nav-section">Configuration &amp; Reference</span>
+  <a class="nav-item" onclick="showTab('listeners', this); loadListeners()"><span class="nav-icon">🎯</span> Listeners</a>
+  <a class="nav-item" onclick="showTab('profiles', this); loadProfiles()"><span class="nav-icon">🎭</span> Log Profiles</a>
+  <a class="nav-item" onclick="showTab('config', this)"><span class="nav-icon">🔧</span> Source Details</a>
+  <a class="nav-item" onclick="showTab('settings', this); loadSettings()"><span class="nav-icon">⚙</span> System Settings</a>
   <div class="footer">
     <div class="logout"><a href="/admin/logout">Sign out</a></div>
     <div class="tagline">
@@ -809,6 +812,25 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
       </div>
     </div>
 
+    <!-- INTRUSIONS TAB -->
+    <div class="pane" id="pane-intrusions">
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          Threat Summary
+          <button class="btn-sm" onclick="loadIntrusions()">↻ Refresh</button>
+        </div>
+        <div id="intrusion-stats" style="display:flex;gap:16px;flex-wrap:wrap"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Top Offenders</div>
+        <div id="intrusion-offenders"><p class="empty">Loading...</p></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Recent Intrusion Attempts</div>
+        <div id="intrusion-log" style="max-height:500px;overflow-y:auto"><p class="empty">Loading...</p></div>
+      </div>
+    </div>
+
     <!-- INVESTIGATIONS TAB -->
     <div class="pane" id="pane-investigate">
       <div class="card">
@@ -920,7 +942,7 @@ function showTab(tab, el) {
   document.getElementById('pane-' + tab).classList.add('active');
   if (el) el.classList.add('active');
   activeTab = tab;
-  const titles = {requests:'Request Inspector', observability:'Observability', listeners:'Custom Listeners', profiles:'Log Profiles', investigate:'Investigations', logs:'Container Logs', config:'Source Config', settings:'Settings'};
+  const titles = {requests:'Request Inspector', observability:'Observability', intrusions:'Intrusions', listeners:'Listeners', profiles:'Log Profiles', investigate:'Investigations', logs:'Container Logs', config:'Source Details', settings:'System Settings'};
   // Resize viz canvases when the Observability tab becomes active.
   if (tab === 'observability') {
     if (window._sankey) window._sankey.resize();
@@ -956,6 +978,127 @@ async function deleteConsumerGroup(groupId) {
     if (!r.ok) { alert('Error: ' + (d.error || r.status)); return; }
     toast('Consumer group "' + groupId + '" deleted');
     loadRequests();
+  } catch(e) { alert('Failed: ' + e); }
+}
+
+// ── Intrusions ───────────────────────────────────────────────────────────────
+async function loadIntrusions() {
+  var statsEl = document.getElementById('intrusion-stats');
+  var offEl = document.getElementById('intrusion-offenders');
+  var logEl = document.getElementById('intrusion-log');
+  statsEl.innerHTML = ''; offEl.innerHTML = '<p class="empty">Loading...</p>'; logEl.innerHTML = '';
+  try {
+    var r = await fetch('/admin/api/intrusions', {credentials:'same-origin'});
+    if (!r.ok) { offEl.innerHTML = '<p class="empty">Error: ' + r.status + '</p>'; return; }
+    var d = await r.json();
+    var s = d.stats || {};
+    // Stats cards
+    var catHtml = '';
+    var cats = s.categories || {};
+    Object.keys(cats).forEach(function(c) {
+      catHtml += '<span class="pill" style="margin:2px">' + escHtml(c) + ': ' + cats[c] + '</span>';
+    });
+    statsEl.innerHTML =
+      '<div style="background:rgba(255,80,80,.1);border:1px solid rgba(255,80,80,.2);border-radius:10px;padding:14px;min-width:120px;text-align:center">' +
+        '<div style="font-size:1.8rem;font-weight:700;color:#ff8080">' + (s.total_attempts || 0) + '</div>' +
+        '<div style="font-size:.72rem;color:rgba(224,170,255,.5);text-transform:uppercase">Total Attempts</div>' +
+      '</div>' +
+      '<div style="background:rgba(255,140,0,.1);border:1px solid rgba(255,140,0,.2);border-radius:10px;padding:14px;min-width:120px;text-align:center">' +
+        '<div style="font-size:1.8rem;font-weight:700;color:#ffb347">' + (s.total_unique_ips || 0) + '</div>' +
+        '<div style="font-size:.72rem;color:rgba(224,170,255,.5);text-transform:uppercase">Unique IPs</div>' +
+      '</div>' +
+      '<div style="background:rgba(123,44,191,.15);border:1px solid rgba(199,125,255,.2);border-radius:10px;padding:14px;flex:1">' +
+        '<div style="font-size:.72rem;color:rgba(224,170,255,.5);text-transform:uppercase;margin-bottom:6px">Categories</div>' +
+        catHtml +
+      '</div>';
+
+    // Top offenders
+    var tops = d.top_offenders || [];
+    if (tops.length === 0) {
+      offEl.innerHTML = '<p class="empty">No intrusion attempts recorded yet.</p>';
+    } else {
+      var oh = '';
+      tops.forEach(function(t) {
+        oh += '<div style="display:flex;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid rgba(199,125,255,.08);font-size:.78rem">';
+        oh += '<span style="color:#ff8080;font-weight:700;min-width:40px">' + t.count + '</span>';
+        oh += '<span style="color:var(--mist);font-family:monospace;min-width:120px">' + escHtml(t.ip) + '</span>';
+        if (t.rdns) oh += '<span style="color:rgba(224,170,255,.5);font-size:.72rem">' + escHtml(t.rdns) + '</span>';
+        if (t.geo) oh += '<span class="pill">' + escHtml(t.geo) + '</span>';
+        t.categories.forEach(function(c) {
+          var cColor = c === 'rce_attempt' ? '#ff5050' : c === 'credential_theft' ? '#ff8080' : '#ffb347';
+          oh += '<span class="pill" style="color:' + cColor + '">' + escHtml(c) + '</span>';
+        });
+        oh += '<span style="color:rgba(224,170,255,.35);font-size:.68rem">' + escHtml(t.first_ts) + ' - ' + escHtml(t.last_ts) + '</span>';
+        oh += '<button class="btn-sm btn-danger" style="margin-left:auto;padding:2px 8px;font-size:.68rem" onclick="banFromIntrusions(&quot;' + escHtml(t.ip) + '&quot;)">Ban</button>';
+        oh += '</div>';
+      });
+      offEl.innerHTML = oh;
+    }
+
+    // Recent log
+    var logs = d.log || [];
+    if (logs.length === 0) {
+      logEl.innerHTML = '<p class="empty">No intrusion attempts recorded yet.</p>';
+    } else {
+      var lh = '<table><thead><tr><th>Time</th><th>IP</th><th>Method</th><th>Path</th><th>Status</th><th>Category</th><th>User-Agent</th></tr></thead><tbody>';
+      logs.slice(0, 200).forEach(function(e) {
+        var catColor = e.category === 'rce_attempt' ? '#ff5050' : e.category === 'credential_theft' ? '#ff8080' : '#ffb347';
+        lh += '<tr>' +
+          '<td class="ts">' + escHtml(e.ts || '').replace('T', ' ') + '</td>' +
+          '<td style="font-family:monospace;color:var(--mist)">' + escHtml(e.ip) + (e.rdns ? '<br><span style="font-size:.65rem;color:rgba(224,170,255,.4)">' + escHtml(e.rdns) + '</span>' : '') + '</td>' +
+          '<td class="method">' + escHtml(e.method) + '</td>' +
+          '<td style="font-family:monospace;font-size:.75rem">' + escHtml(e.path) + (e.query ? '?' + escHtml(e.query) : '') + '</td>' +
+          '<td><span class="badge ' + (e.status < 400 ? 'b200' : e.status < 500 ? 'b4xx' : 'b5xx') + '">' + e.status + '</span></td>' +
+          '<td><span style="color:' + catColor + ';font-size:.72rem">' + escHtml(e.category) + '</span></td>' +
+          '<td style="font-size:.68rem;color:rgba(224,170,255,.4);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(e.user_agent || '') + '</td>' +
+          '</tr>';
+      });
+      lh += '</tbody></table>';
+      logEl.innerHTML = lh;
+    }
+  } catch(e) { offEl.innerHTML = '<p class="empty">Error: ' + e + '</p>'; }
+}
+
+function askPassword(title) {
+  return new Promise(function(resolve) {
+    var overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = '<div class="modal" style="width:min(380px,90%)">' +
+      '<div class="modal-head"><h3>' + escHtml(title) + '</h3></div>' +
+      '<div class="modal-body">' +
+      '<input id="ban-pw-input" type="password" placeholder="Investigation password..." autocomplete="off" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:10px 14px;color:var(--mist);outline:none;font-size:.88rem"/>' +
+      '</div>' +
+      '<div class="modal-foot"><div></div><div class="right">' +
+      '<button id="ban-pw-cancel" class="btn-sm" style="background:rgba(90,24,154,.3)">Cancel</button>' +
+      '<button id="ban-pw-ok" class="btn-sm">Confirm</button>' +
+      '</div></div></div>';
+    document.body.appendChild(overlay);
+    var inp = document.getElementById('ban-pw-input');
+    inp.focus();
+    function done(val) { document.body.removeChild(overlay); resolve(val); }
+    document.getElementById('ban-pw-cancel').onclick = function() { done(null); };
+    document.getElementById('ban-pw-ok').onclick = function() { done(inp.value); };
+    inp.onkeydown = function(ev) { if (ev.key === 'Enter') done(inp.value); if (ev.key === 'Escape') done(null); };
+  });
+}
+
+async function banFromIntrusions(ip) {
+  if (!confirm('Ban IP ' + ip + '? All future requests from this IP will be blocked.')) return;
+  try {
+    var gr = await fetch('/admin/api/investigate-gate', {credentials:'same-origin'});
+    var gd = await gr.json();
+    if (gd.gate_enabled) {
+      var pw = await askPassword('Enter investigation password to ban ' + ip);
+      if (pw === null) return;
+      var vr = await fetch('/admin/api/verify-investigate-password', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify({password:pw})});
+      if (!vr.ok) { alert('Invalid investigation password.'); return; }
+    }
+  } catch(e) { alert('Password verification failed: ' + e); return; }
+  try {
+    var r = await fetch('/admin/api/bans', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ip:ip, hours:720, reason:'Banned from Intrusions tab - suspicious scanning activity'})});
+    if (!r.ok) { var d = await r.json(); alert('Error: ' + (d.error || r.status)); return; }
+    toast('Banned ' + ip);
+    loadIntrusions();
   } catch(e) { alert('Failed: ' + e); }
 }
 
@@ -3053,6 +3196,28 @@ async def api_requests(source: str, ag_session: str | None = Cookie(None)):
     return JSONResponse(data)
 
 
+# ── Intrusion tracking API ──────────────────────────────────────────────────
+
+@router.get("/api/intrusions")
+async def api_intrusions(ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import intrusions
+    return JSONResponse({
+        "stats": intrusions.get_stats(),
+        "top_offenders": intrusions.get_top_offenders(30),
+        "log": intrusions.get_log(200),
+    })
+
+
+@router.get("/api/intrusions/log")
+async def api_intrusions_log(limit: int = 200, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import intrusions
+    return JSONResponse(intrusions.get_log(limit))
+
+
 @router.get("/api/bus-status")
 async def api_bus_status(ag_session: str | None = Cookie(None)):
     """Query Kafka consumer groups and Pub/Sub subscription status."""
@@ -3846,6 +4011,23 @@ async def api_investigate_auth(request: Request, ag_session: str | None = Cookie
     if not _check_investigate_password(pw):
         return JSONResponse({"error": "Wrong investigation password"}, status_code=403)
     _investigate_tokens.add(ag_session)
+    return JSONResponse({"ok": True})
+
+
+@router.post("/api/verify-investigate-password")
+async def api_verify_investigate_password(request: Request, ag_session: str | None = Cookie(None)):
+    """Verify the investigation password (used by Intrusions ban flow)."""
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not _investigate_password_configured():
+        return JSONResponse({"ok": True})
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    pw = body.get("password", "")
+    if not _check_investigate_password(pw):
+        return JSONResponse({"error": "Wrong investigation password"}, status_code=403)
     return JSONResponse({"ok": True})
 
 
