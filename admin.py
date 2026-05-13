@@ -1788,7 +1788,22 @@ async function loadSystemDash() {
     var conts = latest.containers || [];
     conts.forEach(function(c) {
       var label = c.name.replace('apigenie-', '').replace('apigenie', 'app');
-      gHtml += _gaugeCard(label, c.memory_mb, ' MB RAM', c.memory_percent, '#5a189a');
+      var ramPct = c.memory_percent || 0;
+      var ramColor = ramPct > 85 ? '#ff5050' : ramPct > 65 ? '#ffb347' : '#9d4edd';
+      var cpuColor = c.cpu_percent > 80 ? '#ff5050' : c.cpu_percent > 50 ? '#ffb347' : '#c77dff';
+      gHtml += '<div style="background:rgba(36,0,70,.5);border:1px solid rgba(199,125,255,.15);border-radius:10px;padding:14px;min-width:155px;flex:1">' +
+        '<div style="font-size:.68rem;color:rgba(224,170,255,.45);text-transform:uppercase;margin-bottom:8px">' + escHtml(label) + '</div>' +
+        '<div style="display:flex;gap:12px;align-items:baseline">' +
+          '<div style="flex:1"><div style="font-size:.6rem;color:rgba(224,170,255,.35);margin-bottom:2px">RAM</div>' +
+            '<div style="font-size:1.2rem;font-weight:700;color:' + ramColor + '">' + c.memory_mb + '<span style="font-size:.65rem;font-weight:400;color:rgba(224,170,255,.5)"> MB</span></div></div>' +
+          '<div style="flex:1"><div style="font-size:.6rem;color:rgba(224,170,255,.35);margin-bottom:2px">CPU</div>' +
+            '<div style="font-size:1.2rem;font-weight:700;color:' + cpuColor + '">' + c.cpu_percent + '<span style="font-size:.65rem;font-weight:400;color:rgba(224,170,255,.5)"> %</span></div></div>' +
+        '</div>' +
+        '<div style="margin-top:8px;height:4px;background:rgba(199,125,255,.1);border-radius:2px;overflow:hidden">' +
+          '<div style="height:100%;width:' + Math.min(ramPct, 100) + '%;background:' + ramColor + ';border-radius:2px"></div>' +
+        '</div>' +
+        '<div style="font-size:.6rem;color:rgba(224,170,255,.3);margin-top:3px">RAM ' + ramPct + '% of ' + (c.memory_limit_mb || '?') + ' MB limit</div>' +
+      '</div>';
     });
     document.getElementById('sys-gauges').innerHTML = gHtml;
 
@@ -1823,12 +1838,12 @@ async function loadSystemDash() {
         grid: {left:60, right:60, top:40, bottom:40},
         xAxis: {type:'category', data:cNames, axisLabel:{color:'rgba(224,170,255,.55)',fontSize:11}, axisLine:{lineStyle:{color:'rgba(199,125,255,.15)'}}},
         yAxis: [
-          {type:'value', name:'RAM (MB)', axisLabel:{color:'#c77dff',fontSize:10}, splitLine:{lineStyle:{color:'rgba(199,125,255,.06)'}}, nameTextStyle:{color:'#c77dff',fontSize:11}},
+          {type:'value', name:'RAM (MB)', axisLabel:{color:'#7b2cbf',fontSize:10}, splitLine:{lineStyle:{color:'rgba(199,125,255,.06)'}}, nameTextStyle:{color:'#7b2cbf',fontSize:11}},
           {type:'value', name:'CPU (%)', axisLabel:{color:'#e0aaff',fontSize:10}, splitLine:{show:false}, nameTextStyle:{color:'#e0aaff',fontSize:11}}
         ],
         series: [
-          {name:'RAM (MB)', type:'bar', data:cMem, barWidth:'30%', itemStyle:{color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'#c77dff'},{offset:1,color:'#5a189a'}]), borderRadius:[4,4,0,0]}},
-          {name:'CPU (%)', type:'bar', yAxisIndex:1, data:cCpu, barWidth:'30%', itemStyle:{color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'#e0aaff'},{offset:1,color:'#7b2cbf'}]), borderRadius:[4,4,0,0]}}
+          {name:'RAM (MB)', type:'bar', data:cMem, barWidth:'30%', itemStyle:{color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'#7b2cbf'},{offset:1,color:'#3c096c'}]), borderRadius:[4,4,0,0]}},
+          {name:'CPU (%)', type:'bar', yAxisIndex:1, data:cCpu, barWidth:'30%', itemStyle:{color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'#e0aaff'},{offset:1,color:'#c77dff'}]), borderRadius:[4,4,0,0]}}
         ]
       }, true);
     } else {
