@@ -1114,11 +1114,15 @@ async function loadIntrusions() {
 function ackPath(path, ip, category) {
   var overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
+  var basePath = path.split('?')[0];
   var opts = '<div style="display:flex;flex-direction:column;gap:8px">' +
     '<p style="font-size:.75rem;color:rgba(224,170,255,.4);margin:0">Select one or more conditions. When multiple are selected, all must match (AND logic).</p>';
   opts += '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.82rem;color:var(--mist)">' +
     '<input type="checkbox" id="ack-chk-path" checked style="accent-color:#c77dff"/> ' +
-    'Path: <code style="color:#c77dff">' + escHtml(path) + '</code></label>';
+    'This exact path: <code style="color:#c77dff">' + escHtml(path) + '</code></label>';
+  opts += '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.82rem;color:var(--mist)">' +
+    '<input type="checkbox" id="ack-chk-prefix" style="accent-color:#c77dff"/> ' +
+    'Similar paths starting with: <code style="color:#c77dff">' + escHtml(basePath) + '</code></label>';
   if (ip) opts += '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.82rem;color:var(--mist)">' +
     '<input type="checkbox" id="ack-chk-ip" style="accent-color:#c77dff"/> ' +
     'IP: <code style="color:#c77dff">' + escHtml(ip) + '</code></label>';
@@ -1142,9 +1146,11 @@ function ackPath(path, ip, category) {
   document.getElementById('ack-ok').onclick = async function() {
     var parts = [];
     var pChk = document.getElementById('ack-chk-path');
+    var pfxChk = document.getElementById('ack-chk-prefix');
     var iChk = document.getElementById('ack-chk-ip');
     var cChk = document.getElementById('ack-chk-cat');
-    if (pChk && pChk.checked) parts.push('path:' + path);
+    if (pfxChk && pfxChk.checked) parts.push('prefix:' + path.split('?')[0]);
+    else if (pChk && pChk.checked) parts.push('path:' + path);
     if (iChk && iChk.checked) parts.push('ip:' + ip);
     if (cChk && cChk.checked) parts.push('cat:' + category);
     if (!parts.length) { alert('Select at least one condition.'); return; }

@@ -91,7 +91,11 @@ def _match_single_condition(cond: str, path: str, ip: str, category: str) -> boo
     """Check if a single condition matches."""
     if cond.startswith("path:"):
         target = cond[5:]
-        return path == target or path.startswith(target)
+        return path == target
+    elif cond.startswith("prefix:"):
+        target = cond[7:]
+        bare = path.split("?")[0]
+        return bare == target or bare.startswith(target)
     elif cond.startswith("ip:"):
         return ip == cond[3:]
     elif cond.startswith("cat:"):
