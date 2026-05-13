@@ -850,6 +850,13 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
         <div class="card-title">Recent Intrusion Attempts</div>
         <div id="intrusion-log" style="max-height:500px;overflow-y:auto"><p class="empty">Loading...</p></div>
       </div>
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="var el=document.getElementById('ack-body');el.style.display=el.style.display==='none'?'block':'none'">
+          <span>Acknowledged Paths <span style="font-size:.72rem;color:rgba(224,170,255,.4)">(suppressed)</span></span>
+          <span style="font-size:.8rem;color:rgba(224,170,255,.4)">expand / collapse</span>
+        </div>
+        <div id="ack-body" style="display:none"><p class="empty">Loading...</p></div>
+      </div>
     </div>
 
     <!-- INVESTIGATIONS TAB -->
@@ -1063,7 +1070,7 @@ async function loadIntrusions() {
     if (logs.length === 0) {
       logEl.innerHTML = '<p class="empty">No intrusion attempts recorded yet.</p>';
     } else {
-      var lh = '<table><thead><tr><th>Time</th><th>IP</th><th>Method</th><th>Path</th><th>Status</th><th>Category</th><th>User-Agent</th></tr></thead><tbody>';
+      var lh = '<table><thead><tr><th>Time</th><th>IP</th><th>Method</th><th>Path</th><th>Status</th><th>Category</th><th>User-Agent</th><th></th></tr></thead><tbody>';
       logs.slice(0, 200).forEach(function(e) {
         var catColor = e.category === 'rce_attempt' ? '#ff5050' : e.category === 'credential_theft' ? '#ff8080' : '#ffb347';
         lh += '<tr>' +
@@ -1074,12 +1081,93 @@ async function loadIntrusions() {
           '<td><span class="badge ' + (e.status < 400 ? 'b200' : e.status < 500 ? 'b4xx' : 'b5xx') + '">' + e.status + '</span></td>' +
           '<td><span style="color:' + catColor + ';font-size:.72rem">' + escHtml(e.category) + '</span></td>' +
           '<td style="font-size:.68rem;color:rgba(224,170,255,.4);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(e.user_agent || '') + '</td>' +
+          '<td><button class="btn-sm" style="padding:1px 6px;font-size:.62rem;background:rgba(90,24,154,.3)" onclick="ackPath(&quot;' + escHtml(e.path) + '&quot;,&quot;' + escHtml(e.ip || '') + '&quot;,&quot;' + escHtml(e.category || '') + '&quot;)">Ack</button></td>' +
           '</tr>';
       });
       lh += '</tbody></table>';
       logEl.innerHTML = lh;
     }
+
+    // Acknowledged paths
+    var acks = d.acknowledged || {};
+    var ackEl = document.getElementById('ack-body');
+    var ackKeys = Object.keys(acks);
+    if (ackKeys.length === 0) {
+      ackEl.innerHTML = '<p class="empty">No acknowledged paths. Click "Ack" on a log entry to suppress future hits for that path.</p>';
+    } else {
+      var ah = '';
+      ackKeys.forEach(function(p) {
+        var a = acks[p];
+        ah += '<div style="display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid rgba(199,125,255,.08);font-size:.78rem">';
+        ah += '<span style="font-family:monospace;color:var(--mist);min-width:180px">' + escHtml(p) + '</span>';
+        if (a.reason) ah += '<span style="color:rgba(224,170,255,.5)">' + escHtml(a.reason) + '</span>';
+        ah += '<span class="pill" style="color:rgba(224,170,255,.45)">' + (a.count || 0) + ' suppressed</span>';
+        ah += '<span style="color:rgba(224,170,255,.3);font-size:.68rem">since ' + escHtml(a.ts || '') + '</span>';
+        ah += '<button class="btn-sm" style="margin-left:auto;padding:1px 6px;font-size:.62rem;background:rgba(120,30,40,.4);color:#ff8080" onclick="unackPath(&quot;' + escHtml(p) + '&quot;)">Remove</button>';
+        ah += '</div>';
+      });
+      ackEl.innerHTML = ah;
+    }
   } catch(e) { offEl.innerHTML = '<p class="empty">Error: ' + e + '</p>'; }
+}
+
+function ackPath(path, ip, category) {
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  var opts = '<div style="display:flex;flex-direction:column;gap:8px">' +
+    '<p style="font-size:.75rem;color:rgba(224,170,255,.4);margin:0">Select one or more conditions. When multiple are selected, all must match (AND logic).</p>';
+  opts += '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.82rem;color:var(--mist)">' +
+    '<input type="checkbox" id="ack-chk-path" checked style="accent-color:#c77dff"/> ' +
+    'Path: <code style="color:#c77dff">' + escHtml(path) + '</code></label>';
+  if (ip) opts += '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.82rem;color:var(--mist)">' +
+    '<input type="checkbox" id="ack-chk-ip" style="accent-color:#c77dff"/> ' +
+    'IP: <code style="color:#c77dff">' + escHtml(ip) + '</code></label>';
+  if (category) opts += '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.82rem;color:var(--mist)">' +
+    '<input type="checkbox" id="ack-chk-cat" style="accent-color:#c77dff"/> ' +
+    'Category: <code style="color:#c77dff">' + escHtml(category) + '</code></label>';
+  opts += '</div>';
+  overlay.innerHTML = '<div class="modal" style="width:min(500px,90%)">' +
+    '<div class="modal-head"><h3>Acknowledge intrusion</h3></div>' +
+    '<div class="modal-body">' +
+    opts +
+    '<div style="margin-top:12px"><label style="font-size:.78rem;color:rgba(224,170,255,.5)">Reason (optional)</label>' +
+    '<input id="ack-reason" type="text" placeholder="e.g. legacy endpoint, known scanner..." style="width:100%;margin-top:4px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 12px;color:var(--mist);outline:none;font-size:.82rem"/></div>' +
+    '</div>' +
+    '<div class="modal-foot"><div></div><div class="right">' +
+    '<button id="ack-cancel" class="btn-sm" style="background:rgba(90,24,154,.3)">Cancel</button>' +
+    '<button id="ack-ok" class="btn-sm">Acknowledge</button>' +
+    '</div></div></div>';
+  document.body.appendChild(overlay);
+  document.getElementById('ack-cancel').onclick = function() { document.body.removeChild(overlay); };
+  document.getElementById('ack-ok').onclick = async function() {
+    var parts = [];
+    var pChk = document.getElementById('ack-chk-path');
+    var iChk = document.getElementById('ack-chk-ip');
+    var cChk = document.getElementById('ack-chk-cat');
+    if (pChk && pChk.checked) parts.push('path:' + path);
+    if (iChk && iChk.checked) parts.push('ip:' + ip);
+    if (cChk && cChk.checked) parts.push('cat:' + category);
+    if (!parts.length) { alert('Select at least one condition.'); return; }
+    var ackValue = parts.join('&');
+    var reason = document.getElementById('ack-reason').value || '';
+    document.body.removeChild(overlay);
+    try {
+      var r = await fetch('/admin/api/intrusions/acknowledge', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path:ackValue, reason:reason})});
+      if (!r.ok) { var d = await r.json(); alert('Error: ' + (d.error || r.status)); return; }
+      toast('Acknowledged: ' + ackValue);
+      loadIntrusions();
+    } catch(e) { alert('Failed: ' + e); }
+  };
+}
+
+async function unackPath(path) {
+  if (!confirm('Remove acknowledgement for "' + path + '"? Future hits will appear in the log again.')) return;
+  try {
+    var r = await fetch('/admin/api/intrusions/acknowledge' + path, {method:'DELETE', credentials:'same-origin'});
+    if (!r.ok) { alert('Error: ' + r.status); return; }
+    toast('Removed: ' + path);
+    loadIntrusions();
+  } catch(e) { alert('Failed: ' + e); }
 }
 
 function askPassword(title) {
@@ -1781,30 +1869,41 @@ async function loadSystemDash() {
     var mem = latest.memory || {};
     var disk = latest.disk || {};
 
-    // Gauges
-    var gHtml = _gaugeCard('CPU', latest.cpu_percent, '%', latest.cpu_percent, '#c77dff') +
+    // Host gauges — horizontal row
+    var gHtml = '<div style="font-size:.65rem;color:rgba(224,170,255,.4);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Host Machine</div>';
+    gHtml += '<div style="display:flex;gap:12px;margin-bottom:14px">';
+    gHtml += _gaugeCard('CPU', latest.cpu_percent, '%', latest.cpu_percent, '#c77dff') +
       _gaugeCard('Memory', mem.used_mb, ' MB', mem.percent, '#9d4edd') +
       _gaugeCard('Disk', disk.used_gb, ' GB', disk.percent, '#7b2cbf');
+    gHtml += '</div>';
+    // Container gauges — horizontal flex wrap
     var conts = latest.containers || [];
-    conts.forEach(function(c) {
-      var label = c.name.replace('apigenie-', '').replace('apigenie', 'app');
-      var ramPct = c.memory_percent || 0;
-      var ramColor = ramPct > 85 ? '#ff5050' : ramPct > 65 ? '#ffb347' : '#9d4edd';
-      var cpuColor = c.cpu_percent > 80 ? '#ff5050' : c.cpu_percent > 50 ? '#ffb347' : '#c77dff';
-      gHtml += '<div style="background:rgba(36,0,70,.5);border:1px solid rgba(199,125,255,.15);border-radius:10px;padding:14px;min-width:155px;flex:1">' +
-        '<div style="font-size:.68rem;color:rgba(224,170,255,.45);text-transform:uppercase;margin-bottom:8px">' + escHtml(label) + '</div>' +
-        '<div style="display:flex;gap:12px;align-items:baseline">' +
-          '<div style="flex:1"><div style="font-size:.6rem;color:rgba(224,170,255,.35);margin-bottom:2px">RAM</div>' +
-            '<div style="font-size:1.2rem;font-weight:700;color:' + ramColor + '">' + c.memory_mb + '<span style="font-size:.65rem;font-weight:400;color:rgba(224,170,255,.5)"> MB</span></div></div>' +
-          '<div style="flex:1"><div style="font-size:.6rem;color:rgba(224,170,255,.35);margin-bottom:2px">CPU</div>' +
-            '<div style="font-size:1.2rem;font-weight:700;color:' + cpuColor + '">' + c.cpu_percent + '<span style="font-size:.65rem;font-weight:400;color:rgba(224,170,255,.5)"> %</span></div></div>' +
-        '</div>' +
-        '<div style="margin-top:8px;height:4px;background:rgba(199,125,255,.1);border-radius:2px;overflow:hidden">' +
-          '<div style="height:100%;width:' + Math.min(ramPct, 100) + '%;background:' + ramColor + ';border-radius:2px"></div>' +
-        '</div>' +
-        '<div style="font-size:.6rem;color:rgba(224,170,255,.3);margin-top:3px">RAM ' + ramPct + '% of ' + (c.memory_limit_mb || '?') + ' MB limit</div>' +
-      '</div>';
-    });
+    if (conts.length) {
+      gHtml += '<div style="font-size:.65rem;color:rgba(224,170,255,.4);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Containers</div>';
+      gHtml += '<div style="display:flex;flex-wrap:wrap;gap:10px">';
+      conts.forEach(function(c) {
+        var label = c.name.replace('apigenie-', '').replace('apigenie', 'app');
+        var ramPct = c.memory_percent || 0;
+        var ramColor = ramPct > 85 ? '#ff5050' : ramPct > 65 ? '#ffb347' : '#9d4edd';
+        var cpuColor = c.cpu_percent > 80 ? '#ff5050' : c.cpu_percent > 50 ? '#ffb347' : '#c77dff';
+        gHtml += '<div style="background:rgba(36,0,70,.5);border:1px solid rgba(199,125,255,.15);border-radius:8px;padding:10px 14px;min-width:150px">' +
+          '<div style="font-size:.62rem;color:rgba(224,170,255,.45);text-transform:uppercase;margin-bottom:4px;font-weight:600">' + escHtml(label) + '</div>' +
+          '<div style="display:flex;gap:14px;align-items:baseline">' +
+            '<div><span style="font-size:.55rem;color:rgba(224,170,255,.35)">RAM </span>' +
+              '<span style="font-size:1rem;font-weight:700;color:' + ramColor + '">' + c.memory_mb + '</span>' +
+              '<span style="font-size:.55rem;color:rgba(224,170,255,.4)"> MB</span></div>' +
+            '<div><span style="font-size:.55rem;color:rgba(224,170,255,.35)">CPU </span>' +
+              '<span style="font-size:1rem;font-weight:700;color:' + cpuColor + '">' + c.cpu_percent + '</span>' +
+              '<span style="font-size:.55rem;color:rgba(224,170,255,.4)"> %</span></div>' +
+          '</div>' +
+          '<div style="margin-top:5px;height:3px;background:rgba(199,125,255,.1);border-radius:2px;overflow:hidden">' +
+            '<div style="height:100%;width:' + Math.min(ramPct, 100) + '%;background:' + ramColor + ';border-radius:2px"></div>' +
+          '</div>' +
+          '<div style="font-size:.52rem;color:rgba(224,170,255,.25);margin-top:2px">' + ramPct + '% of ' + (c.memory_limit_mb || '?') + ' MB</div>' +
+        '</div>';
+      });
+      gHtml += '</div>';
+    }
     document.getElementById('sys-gauges').innerHTML = gHtml;
 
     // CPU + Memory time-series
@@ -3333,6 +3432,7 @@ async def api_intrusions(ag_session: str | None = Cookie(None)):
         "stats": intrusions.get_stats(),
         "top_offenders": intrusions.get_top_offenders(30),
         "log": intrusions.get_log(200),
+        "acknowledged": intrusions.get_acknowledged(),
     })
 
 
@@ -3342,6 +3442,33 @@ async def api_intrusions_log(limit: int = 200, ag_session: str | None = Cookie(N
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     import intrusions
     return JSONResponse(intrusions.get_log(limit))
+
+
+@router.post("/api/intrusions/acknowledge")
+async def api_intrusions_ack(request: Request, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import intrusions
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    path_prefix = body.get("path", "").strip()
+    reason = body.get("reason", "").strip()
+    if not path_prefix:
+        return JSONResponse({"error": "path is required"}, status_code=400)
+    intrusions.acknowledge_path(path_prefix, reason)
+    return JSONResponse({"ok": True, "path": path_prefix})
+
+
+@router.delete("/api/intrusions/acknowledge/{path_prefix:path}")
+async def api_intrusions_unack(path_prefix: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import intrusions
+    if intrusions.unacknowledge_path("/" + path_prefix):
+        return JSONResponse({"ok": True})
+    return JSONResponse({"error": "not found"}, status_code=404)
 
 
 # ── System monitoring API ────────────────────────────────────────────────────

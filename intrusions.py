@@ -9,14 +9,115 @@ data and offers one-click IP banning.
 from __future__ import annotations
 
 import collections
+import json
 import logging
+import os
 import socket
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 log = logging.getLogger(__name__)
+
+# ── Acknowledged paths (persisted to disk) ───────────────────────────────────
+_DATA_ROOT = Path(os.environ.get("APIGENIE_DATA", "/var/lib/apigenie"))
+_ACK_FILE = _DATA_ROOT / "acknowledged_paths.json"
+_ack_lock = threading.Lock()
+# path_prefix → {reason, ts, count}  (count = suppressed since ack)
+_acknowledged: dict[str, dict[str, Any]] = {}
+
+
+def _load_acks() -> None:
+    global _acknowledged
+    try:
+        if _ACK_FILE.is_file():
+            with open(_ACK_FILE) as f:
+                _acknowledged = json.load(f)
+    except Exception as exc:
+        log.debug("Could not load acknowledged paths: %s", exc)
+
+
+def _save_acks() -> None:
+    try:
+        _DATA_ROOT.mkdir(parents=True, exist_ok=True)
+        with open(_ACK_FILE, "w") as f:
+            json.dump(_acknowledged, f, indent=2)
+    except Exception as exc:
+        log.debug("Could not save acknowledged paths: %s", exc)
+
+
+_load_acks()
+
+
+def is_acknowledged(path: str) -> bool:
+    """Check if a path matches any acknowledged prefix."""
+    with _ack_lock:
+        for prefix in _acknowledged:
+            if path == prefix or path.startswith(prefix):
+                return True
+    return False
+
+
+def acknowledge_path(path_prefix: str, reason: str = "") -> None:
+    """Acknowledge a path prefix — future hits will be suppressed."""
+    with _ack_lock:
+        _acknowledged[path_prefix] = {
+            "reason": reason,
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "count": 0,
+        }
+        _save_acks()
+
+
+def unacknowledge_path(path_prefix: str) -> bool:
+    """Remove an acknowledged path prefix."""
+    with _ack_lock:
+        if path_prefix in _acknowledged:
+            del _acknowledged[path_prefix]
+            _save_acks()
+            return True
+    return False
+
+
+def get_acknowledged() -> dict[str, dict[str, Any]]:
+    """Return all acknowledged path prefixes."""
+    with _ack_lock:
+        return dict(_acknowledged)
+
+
+def _match_single_condition(cond: str, path: str, ip: str, category: str) -> bool:
+    """Check if a single condition matches."""
+    if cond.startswith("path:"):
+        target = cond[5:]
+        return path == target or path.startswith(target)
+    elif cond.startswith("ip:"):
+        return ip == cond[3:]
+    elif cond.startswith("cat:"):
+        return category == cond[4:]
+    else:
+        # Legacy: plain path prefix
+        return path == cond or path.startswith(cond)
+
+
+def _find_ack_match(path: str, ip: str, category: str) -> str | None:
+    """Find a matching ack key. Compound keys (joined by &) use AND logic."""
+    with _ack_lock:
+        for key in _acknowledged:
+            conditions = key.split("&")
+            if all(_match_single_condition(c, path, ip, category) for c in conditions):
+                return key
+    return None
+
+
+def _bump_ack_count_key(key: str) -> None:
+    """Increment the suppressed counter for a specific ack key."""
+    with _ack_lock:
+        if key in _acknowledged:
+            _acknowledged[key]["count"] = _acknowledged[key].get("count", 0) + 1
+            _save_acks()
+
 
 # ── Ring buffer of intrusion entries (newest first) ──────────────────────────
 _MAX_ENTRIES = 500
@@ -115,9 +216,13 @@ def classify_path(path: str) -> str:
 def record(*, ip: str, method: str, path: str, query: str,
            status: int, headers: dict[str, str], body: str,
            duration_ms: int, user_agent: str) -> None:
-    """Record an intrusion attempt."""
-    ts_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    """Record an intrusion attempt (skips acknowledged paths/IPs/categories)."""
     category = classify_path(path)
+    ack_key = _find_ack_match(path, ip, category)
+    if ack_key:
+        _bump_ack_count_key(ack_key)
+        return
+    ts_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
     rdns = _reverse_dns(ip)
 
     # Try geo lookup if available
