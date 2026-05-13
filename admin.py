@@ -2855,16 +2855,12 @@ async function loadBindings() {
       h += '<span id="bnd-rv-'+escHtml(src)+'" style="font-family:monospace;font-size:.78rem;min-width:32px">'+(hasBind?bnd.ratio:70)+'%</span>';
       h += '<button class="btn-sm" onclick="saveBinding(&apos;'+escHtml(src)+'&apos;)">Save</button>';
       h += '</div>';
-      // Intensity slider — controls how many logs per API response
+      // Intensity slider — controls how many logs per API response (saved via Save button)
       var curInt = intensities[src] || 50;
-      h += '<div style="display:flex;gap:6px;align-items:center;margin-top:6px">';
-      h += '<span style="font-size:.65rem;color:rgba(224,170,255,.4);min-width:72px">Log volume</span>';
-      h += '<span style="font-size:.55rem;color:rgba(224,170,255,.25)">low</span>';
-      h += '<input type="range" min="1" max="100" value="'+curInt+'" id="bnd-int-'+escHtml(src)+'" style="flex:1" oninput="document.getElementById(&apos;bnd-iv-'+escHtml(src)+'&apos;).textContent=this.value+&apos;%&apos;; document.getElementById(&apos;bnd-ie-'+escHtml(src)+'&apos;).textContent=&apos;~&apos;+Math.max(1,Math.round(this.value))+&apos; logs/req&apos;"/>';
-      h += '<span style="font-size:.55rem;color:rgba(224,170,255,.25)">high</span>';
-      h += '<span id="bnd-iv-'+escHtml(src)+'" style="font-family:monospace;font-size:.75rem;min-width:30px;color:#c77dff">'+curInt+'%</span>';
-      h += '<span id="bnd-ie-'+escHtml(src)+'" style="font-size:.6rem;color:rgba(224,170,255,.35);min-width:68px">~'+Math.max(1,Math.round(curInt))+' logs/req</span>';
-      h += '<button class="btn-sm" style="padding:2px 8px;font-size:.65rem" onclick="saveIntensity(&apos;'+escHtml(src)+'&apos;)">Set</button>';
+      h += '<div style="display:flex;gap:4px;align-items:center;margin-top:4px">';
+      h += '<span style="font-size:.58rem;color:rgba(224,170,255,.35)">Log volume</span>';
+      h += '<input type="range" min="1" max="100" value="'+curInt+'" id="bnd-int-'+escHtml(src)+'" style="flex:1;max-width:120px" oninput="document.getElementById(&apos;bnd-iv-'+escHtml(src)+'&apos;).textContent=this.value+&apos;% (~&apos;+Math.max(1,Math.round(this.value))+&apos; logs/req)&apos;"/>';
+      h += '<span id="bnd-iv-'+escHtml(src)+'" style="font-size:.58rem;color:rgba(224,170,255,.4);white-space:nowrap">'+curInt+'% (~'+Math.max(1,Math.round(curInt))+' logs/req)</span>';
       h += '</div>';
       h += '</div>';
     });
@@ -2879,11 +2875,20 @@ function saveBinding(src) {
   if (!profId) { unbindSource(src); return; }
   const slider = document.getElementById('bnd-ratio-'+src);
   const ratio = slider ? parseInt(slider.value) : 70;
-  fetch('/admin/api/source-profiles/'+encodeURIComponent(src), {
-    method:'PUT', credentials:'same-origin', headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({profile_id:profId, ratio:ratio})
-  }).then(r=>{if(!r.ok)throw new Error(r.status);return r.json()})
-    .then(()=>{toast('Bound '+src); loadBindings();})
+  // Save binding + intensity together
+  var intSlider = document.getElementById('bnd-int-'+src);
+  var intVal = intSlider ? parseInt(intSlider.value) : 50;
+  Promise.all([
+    fetch('/admin/api/source-profiles/'+encodeURIComponent(src), {
+      method:'PUT', credentials:'same-origin', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({profile_id:profId, ratio:ratio})
+    }),
+    fetch('/admin/api/source-intensity/'+encodeURIComponent(src), {
+      method:'PUT', credentials:'same-origin', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({intensity:intVal})
+    })
+  ]).then(([r1,r2])=>{if(!r1.ok||!r2.ok)throw new Error('save failed');return r1.json()})
+    .then(()=>{toast('Saved '+src+' (ratio '+ratio+'%, volume '+intVal+'%)'); loadBindings();})
     .catch(e=>toast('Failed: '+e,true));
 }
 
