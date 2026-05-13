@@ -110,7 +110,7 @@ def _generate_log(ctx: profiles.ProfileContext | None = None) -> dict[str, Any]:
 
 def get_logs_response(limit: int = 100) -> list[dict[str, Any]]:
     ctx = profiles.get_context("aws_waf")
-    count = min(limit, 100)
+    count = profiles.scale_count("aws_waf", min(limit, 100))
     logs = [_generate_log(ctx) for _ in range(count)]
     logs.sort(key=lambda x: x["timestamp"], reverse=True)
     return logs

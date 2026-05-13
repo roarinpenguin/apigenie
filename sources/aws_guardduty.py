@@ -170,7 +170,7 @@ def _generate_finding(ctx: profiles.ProfileContext | None = None) -> dict[str, A
 
 def get_findings_response(limit: int = 50) -> dict[str, Any]:
     ctx = profiles.get_context("aws_guardduty")
-    count = min(limit, 50)
+    count = profiles.scale_count("aws_guardduty", min(limit, 50))
     findings = [_generate_finding(ctx) for _ in range(count)]
     findings.sort(key=lambda x: x["UpdatedAt"], reverse=True)
     return {"Findings": findings}

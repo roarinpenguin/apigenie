@@ -148,7 +148,7 @@ def _generate_analyst_incident() -> dict[str, Any]:
 
 def get_model_breaches(limit: int = 50, minscore: float = 0.0) -> list[dict[str, Any]]:
     ctx = profiles.get_context("darktrace")
-    count = min(limit, 50)
+    count = profiles.scale_count("darktrace", min(limit, 50))
     breaches = [_generate_model_breach(ctx) for _ in range(count)]
     return [b for b in breaches if b["score"] >= minscore]
 

@@ -239,12 +239,14 @@ def list_profiles() -> list[dict[str, Any]]:
 
 # ── Source-profile bindings ───────────────────────────────────────────────────
 
-def bind_source(source: str, profile_id: str, ratio: int = 70) -> dict[str, Any]:
+def bind_source(source: str, profile_id: str, ratio: int = 70, intensity: int | None = None) -> dict[str, Any]:
     """Bind a source to a profile with a blend ratio (0-100)."""
     ratio = max(0, min(100, ratio))
     with _lock:
         bindings = _load_bindings()
-        bindings[source] = {"profile_id": profile_id, "ratio": ratio}
+        existing = bindings.get(source, {})
+        bindings[source] = {"profile_id": profile_id, "ratio": ratio,
+                            "intensity": intensity if intensity is not None else existing.get("intensity", 50)}
         _save_bindings(bindings)
     return bindings[source]
 
@@ -266,6 +268,59 @@ def get_binding(source: str) -> dict[str, Any] | None:
 
 def list_bindings() -> dict[str, Any]:
     return _load_bindings()
+
+
+# ── Per-source intensity (1-100) ─────────────────────────────────────────────
+# Intensity controls how many log entries a source generates per API call.
+# Persisted inside the bindings file alongside profile/ratio.
+# Sources without a binding default to 50.
+
+_INTENSITY_FILE = _DATA_ROOT / "source_intensity.json"
+
+
+def _load_intensity() -> dict[str, int]:
+    try:
+        if _INTENSITY_FILE.is_file():
+            return json.loads(_INTENSITY_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        pass
+    return {}
+
+
+def _save_intensity(data: dict[str, int]) -> None:
+    _ensure_dirs()
+    _INTENSITY_FILE.write_text(json.dumps(data, indent=2))
+
+
+def set_intensity(source: str, value: int) -> int:
+    """Set log intensity for a source (1-100). Returns clamped value."""
+    value = max(1, min(100, value))
+    with _lock:
+        data = _load_intensity()
+        data[source] = value
+        _save_intensity(data)
+    return value
+
+
+def get_intensity(source: str) -> int:
+    """Get log intensity for a source (1-100). Default 50."""
+    data = _load_intensity()
+    return data.get(source, 50)
+
+
+def list_intensities() -> dict[str, int]:
+    """Return all configured intensities."""
+    return _load_intensity()
+
+
+def scale_count(source: str, requested: int) -> int:
+    """Scale a requested log count by the source's intensity.
+
+    intensity=100 → full count, intensity=1 → 1 log, intensity=50 → half.
+    """
+    intensity = get_intensity(source)
+    scaled = max(1, int(requested * intensity / 100))
+    return scaled
 
 
 # ── ProfileContext — the interface generators use ─────────────────────────────

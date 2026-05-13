@@ -196,7 +196,7 @@ def generate_asset_chunks() -> list[list[dict[str, Any]]]:
 
 
 def get_audit_logs_response(limit: int = 100, offset: int = 0) -> dict[str, Any]:
-    count = min(limit, 50)
+    count = profiles.scale_count("tenable", min(limit, 50))
     events = []
     actions = [
         ("scan.create", "Scan created", "info"),

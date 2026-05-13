@@ -113,7 +113,7 @@ def _duo_email(ctx: profiles.ProfileContext | None) -> str:
 
 def get_auth_logs_response(limit: int = 100, mintime: int | None = None, maxtime: int | None = None) -> dict[str, Any]:
     ctx = profiles.get_context("cisco_duo")
-    count = min(limit, 100)
+    count = profiles.scale_count("cisco_duo", min(limit, 100))
     logs = [_make_auth_log(mintime, maxtime, ctx) for _ in range(count)]
     logs.sort(key=lambda x: x["timestamp"], reverse=True)
     next_offset = None

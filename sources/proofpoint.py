@@ -137,7 +137,7 @@ def _generate_message(since_seconds: int = 3600, ctx: profiles.ProfileContext | 
 
 def get_logs_response(since_seconds: int = 3600) -> dict[str, Any]:
     ctx = profiles.get_context("proofpoint")
-    count = random.randint(5, 30)
+    count = profiles.scale_count("proofpoint", random.randint(5, 30))
     since_ts = now_minus_minutes_iso(since_seconds // 60)
     now = now_iso()
 

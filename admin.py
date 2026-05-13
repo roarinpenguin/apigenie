@@ -827,7 +827,7 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
       <div class="card">
         <div class="card-title">Source ↔ Profile bindings</div>
         <p style="font-size:.78rem;color:rgba(224,170,255,.45);margin-bottom:14px">
-          Assign profiles to sources and tune the signal-to-noise ratio (0–100%).
+          Assign profiles to sources, tune signal-to-noise ratio, and control <b>log volume</b> per source (1–100% of max output per API call).
         </p>
         <div id="bindings-list"><p class="empty">Loading…</p></div>
       </div>
@@ -2812,12 +2812,15 @@ async function loadBindings() {
   const box = document.getElementById('bindings-list');
   if (!box) return;
   try {
-    const [bndResp, lstResp] = await Promise.all([
+    const [bndResp, lstResp, intResp] = await Promise.all([
       fetch('/admin/api/source-profiles', {credentials:'same-origin'}),
-      fetch('/admin/api/listeners', {credentials:'same-origin'})
+      fetch('/admin/api/listeners', {credentials:'same-origin'}),
+      fetch('/admin/api/source-intensity', {credentials:'same-origin'})
     ]);
     const d = await bndResp.json();
     const ld = await lstResp.json();
+    const intData = await intResp.json();
+    const intensities = intData.intensities || {};
     const bindings = d.bindings || {};
     const allSources = Object.keys(SOURCES);
     // Append active listeners keyed as listener_{id}
@@ -2851,7 +2854,19 @@ async function loadBindings() {
       h += '<input type="range" min="0" max="100" value="'+(hasBind?bnd.ratio:70)+'" id="bnd-ratio-'+escHtml(src)+'" style="width:80px" oninput="document.getElementById(&apos;bnd-rv-'+escHtml(src)+'&apos;).textContent=this.value+&apos;%&apos;"/>';
       h += '<span id="bnd-rv-'+escHtml(src)+'" style="font-family:monospace;font-size:.78rem;min-width:32px">'+(hasBind?bnd.ratio:70)+'%</span>';
       h += '<button class="btn-sm" onclick="saveBinding(&apos;'+escHtml(src)+'&apos;)">Save</button>';
-      h += '</div></div>';
+      h += '</div>';
+      // Intensity slider — controls how many logs per API response
+      var curInt = intensities[src] || 50;
+      h += '<div style="display:flex;gap:6px;align-items:center;margin-top:6px">';
+      h += '<span style="font-size:.65rem;color:rgba(224,170,255,.4);min-width:72px">Log volume</span>';
+      h += '<span style="font-size:.55rem;color:rgba(224,170,255,.25)">low</span>';
+      h += '<input type="range" min="1" max="100" value="'+curInt+'" id="bnd-int-'+escHtml(src)+'" style="flex:1" oninput="document.getElementById(&apos;bnd-iv-'+escHtml(src)+'&apos;).textContent=this.value+&apos;%&apos;; document.getElementById(&apos;bnd-ie-'+escHtml(src)+'&apos;).textContent=&apos;~&apos;+Math.max(1,Math.round(this.value))+&apos; logs/req&apos;"/>';
+      h += '<span style="font-size:.55rem;color:rgba(224,170,255,.25)">high</span>';
+      h += '<span id="bnd-iv-'+escHtml(src)+'" style="font-family:monospace;font-size:.75rem;min-width:30px;color:#c77dff">'+curInt+'%</span>';
+      h += '<span id="bnd-ie-'+escHtml(src)+'" style="font-size:.6rem;color:rgba(224,170,255,.35);min-width:68px">~'+Math.max(1,Math.round(curInt))+' logs/req</span>';
+      h += '<button class="btn-sm" style="padding:2px 8px;font-size:.65rem" onclick="saveIntensity(&apos;'+escHtml(src)+'&apos;)">Set</button>';
+      h += '</div>';
+      h += '</div>';
     });
     h += '</div>';
     box.innerHTML = h;
@@ -2876,6 +2891,17 @@ function unbindSource(src) {
   fetch('/admin/api/source-profiles/'+encodeURIComponent(src), {method:'DELETE',credentials:'same-origin'})
     .then(r=>{if(!r.ok&&r.status!==404)throw new Error(r.status);return r.json()})
     .then(()=>{toast('Unbound '+src); loadBindings();})
+    .catch(e=>toast('Failed: '+e,true));
+}
+
+function saveIntensity(src) {
+  var slider = document.getElementById('bnd-int-'+src);
+  var val = slider ? parseInt(slider.value) : 50;
+  fetch('/admin/api/source-intensity/'+encodeURIComponent(src), {
+    method:'PUT', credentials:'same-origin', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({intensity:val})
+  }).then(r=>{if(!r.ok)throw new Error(r.status);return r.json();})
+    .then(()=>toast(src+' intensity set to '+val))
     .catch(e=>toast('Failed: '+e,true));
 }
 
@@ -4597,3 +4623,25 @@ async def api_source_profiles_unbind(source: str, ag_session: str | None = Cooki
     if profiles.unbind_source(source):
         return JSONResponse({"ok": True})
     return JSONResponse({"error": "not_found"}, status_code=404)
+
+
+# ── Source intensity API ──────────────────────────────────────────────────────
+
+@router.get("/api/source-intensity")
+async def api_source_intensity_list(ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return JSONResponse({"intensities": profiles.list_intensities()})
+
+
+@router.put("/api/source-intensity/{source}")
+async def api_source_intensity_set(source: str, request: Request, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    value = int(body.get("intensity", 50))
+    result = profiles.set_intensity(source, value)
+    return JSONResponse({"source": source, "intensity": result})

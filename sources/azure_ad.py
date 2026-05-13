@@ -112,7 +112,7 @@ def _make_user_principal(login: str) -> str:
 
 def get_audit_logs_response(limit: int = 50, skip: int = 0) -> dict[str, Any]:
     ctx = profiles.get_context("azure_ad")
-    count = min(limit, 50)
+    count = profiles.scale_count("azure_ad", min(limit, 50))
     logs = []
     for _ in range(count):
         template = weighted_choice(_AUDIT_TEMPLATES)

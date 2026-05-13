@@ -89,7 +89,7 @@ def generate_audit_log(project: str | None = None, ctx: profiles.ProfileContext 
 
 def get_audit_logs_response(limit: int = 50, project: str | None = None) -> dict[str, Any]:
     ctx = profiles.get_context("gcp_audit")
-    count = min(limit, 50)
+    count = profiles.scale_count("gcp_audit", min(limit, 50))
     entries = [generate_audit_log(project, ctx) for _ in range(count)]
     return {"entries": entries}
 

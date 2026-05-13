@@ -71,7 +71,7 @@ _SUBSCRIPTIONS = [generate_uuid() for _ in range(3)]
 
 def get_alerts_response(limit: int = 50) -> dict[str, Any]:
     ctx = profiles.get_context("microsoft_defender")
-    count = min(limit, 50)
+    count = profiles.scale_count("microsoft_defender", min(limit, 50))
     alerts = []
     for _ in range(count):
         template = weighted_choice(_ALERT_TEMPLATES)

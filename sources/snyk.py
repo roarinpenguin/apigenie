@@ -146,7 +146,7 @@ def _generate_issue() -> dict[str, Any]:
 
 
 def get_issues_response(org: str | None = None, limit: int = 100, offset: int = 0) -> dict[str, Any]:
-    count = min(limit, 100)
+    count = profiles.scale_count("snyk", min(limit, 100))
     issues = [_generate_issue() for _ in range(count)]
     # Real Snyk v1 /org/{id}/issues returns the array under 'issues'. Some
     # internal Snyk endpoints and older docs use 'results'. We expose both

@@ -116,7 +116,7 @@ def _generate_event(ctx: profiles.ProfileContext | None = None) -> dict[str, Any
 
 def get_events_response(limit: int = 50) -> dict[str, Any]:
     ctx = profiles.get_context("aws_cloudtrail")
-    count = min(limit, 50)
+    count = profiles.scale_count("aws_cloudtrail", min(limit, 50))
     events = [_generate_event(ctx) for _ in range(count)]
     events.sort(key=lambda x: x["eventTime"], reverse=True)
     return {
