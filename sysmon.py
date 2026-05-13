@@ -5,6 +5,7 @@ No external dependencies (no psutil). Stores a rolling window of samples
 in memory for the admin UI time-series charts.
 """
 
+import http.client
 import json
 import logging
 import os
@@ -168,42 +169,29 @@ class _DockerResponse:
             self.status = 500
 
 
+class _UnixHTTPConnection(http.client.HTTPConnection):
+    """HTTPConnection subclass that connects via a Unix domain socket."""
+
+    def __init__(self, socket_path: str, timeout: int = 5):
+        super().__init__("localhost", timeout=timeout)
+        self._socket_path = socket_path
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(self._socket_path)
+
+
 def _docker_get(path: str) -> dict | list | None:
     """Make a GET request to the Docker daemon via Unix socket."""
     if not os.path.exists(DOCKER_SOCKET):
         return None
     try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.connect(DOCKER_SOCKET)
-        sock.settimeout(5)
-        req = f"GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
-        sock.sendall(req.encode())
-        data = b""
-        while True:
-            chunk = sock.recv(8192)
-            if not chunk:
-                break
-            data += chunk
-        sock.close()
-        text = data.decode("utf-8", errors="replace")
-        body = text.split("\r\n\r\n", 1)[-1]
-        # Handle chunked transfer encoding
-        if "Transfer-Encoding: chunked" in text.split("\r\n\r\n")[0]:
-            decoded = []
-            while body:
-                line_end = body.find("\r\n")
-                if line_end < 0:
-                    break
-                size_str = body[:line_end].strip()
-                if not size_str:
-                    body = body[line_end + 2:]
-                    continue
-                chunk_size = int(size_str, 16)
-                if chunk_size == 0:
-                    break
-                decoded.append(body[line_end + 2:line_end + 2 + chunk_size])
-                body = body[line_end + 2 + chunk_size + 2:]
-            body = "".join(decoded)
+        conn = _UnixHTTPConnection(DOCKER_SOCKET, timeout=5)
+        conn.request("GET", path)
+        resp = conn.getresponse()
+        body = resp.read().decode("utf-8", errors="replace")
+        conn.close()
         return json.loads(body)
     except Exception:
         return None
