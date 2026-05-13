@@ -1875,48 +1875,47 @@ async function loadSystemDash() {
     var mem = latest.memory || {};
     var disk = latest.disk || {};
 
-    // Two-column layout: host left, containers right
     var conts = latest.containers || [];
-    var gHtml = '<div style="display:flex;gap:20px;align-items:flex-start">';
 
-    // LEFT: Host Machine
-    gHtml += '<div style="flex:0 0 auto">';
-    gHtml += '<div style="font-size:.65rem;color:rgba(224,170,255,.4);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Host Machine</div>';
-    gHtml += '<div style="display:flex;flex-direction:column;gap:10px">';
-    gHtml += _gaugeCard('CPU', latest.cpu_percent, '%', latest.cpu_percent, '#c77dff') +
-      _gaugeCard('Memory', mem.used_mb, ' MB', mem.percent, '#9d4edd') +
-      _gaugeCard('Disk', disk.used_gb, ' GB', disk.percent, '#7b2cbf');
-    gHtml += '</div></div>';
+    // Row 1: Host — inline bar with label + 3 metrics
+    var hC = function(lbl, val, unit, pct, col) {
+      var bc = pct > 85 ? '#ff5050' : pct > 65 ? '#ffb347' : col;
+      return '<div style="display:flex;align-items:center;gap:6px;padding:0 14px;border-right:1px solid rgba(199,125,255,.1)">' +
+        '<span style="font-size:.58rem;color:rgba(224,170,255,.4);text-transform:uppercase">' + lbl + '</span>' +
+        '<span style="font-size:1.1rem;font-weight:700;color:' + bc + '">' + val + '</span>' +
+        '<span style="font-size:.55rem;color:rgba(224,170,255,.4)">' + unit + '</span>' +
+        '<div style="width:40px;height:3px;background:rgba(199,125,255,.1);border-radius:2px;overflow:hidden;margin-left:2px">' +
+          '<div style="height:100%;width:' + Math.min(pct,100) + '%;background:' + bc + ';border-radius:2px"></div></div>' +
+        '<span style="font-size:.5rem;color:rgba(224,170,255,.25)">' + pct + '%</span></div>';
+    };
+    var gHtml = '<div style="display:flex;align-items:center;background:rgba(36,0,70,.4);border:1px solid rgba(199,125,255,.12);border-radius:8px;padding:8px 4px;margin-bottom:10px;flex-wrap:wrap">';
+    gHtml += '<span style="font-size:.6rem;color:rgba(224,170,255,.35);text-transform:uppercase;letter-spacing:.06em;padding:0 10px;font-weight:600">Host</span>';
+    gHtml += hC('CPU', latest.cpu_percent, '%', latest.cpu_percent, '#c77dff');
+    gHtml += hC('RAM', mem.used_mb, 'MB', mem.percent, '#9d4edd');
+    gHtml += hC('Disk', disk.used_gb, 'GB', disk.percent, '#7b2cbf');
+    gHtml += '</div>';
 
-    // RIGHT: Containers
+    // Row 2: Containers — inline bar per container
     if (conts.length) {
-      gHtml += '<div style="flex:1;min-width:0">';
-      gHtml += '<div style="font-size:.65rem;color:rgba(224,170,255,.4);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Containers</div>';
-      gHtml += '<div style="display:flex;flex-wrap:wrap;gap:10px">';
+      gHtml += '<div style="display:flex;align-items:center;background:rgba(36,0,70,.4);border:1px solid rgba(199,125,255,.12);border-radius:8px;padding:8px 4px;flex-wrap:wrap;gap:2px 0">';
+      gHtml += '<span style="font-size:.6rem;color:rgba(224,170,255,.35);text-transform:uppercase;letter-spacing:.06em;padding:0 10px;font-weight:600">Containers</span>';
       conts.forEach(function(c) {
         var label = c.name.replace('apigenie-', '').replace('apigenie', 'app');
         var ramPct = c.memory_percent || 0;
-        var ramColor = ramPct > 85 ? '#ff5050' : ramPct > 65 ? '#ffb347' : '#9d4edd';
-        var cpuColor = c.cpu_percent > 80 ? '#ff5050' : c.cpu_percent > 50 ? '#ffb347' : '#c77dff';
-        gHtml += '<div style="background:rgba(36,0,70,.5);border:1px solid rgba(199,125,255,.15);border-radius:8px;padding:10px 14px;min-width:140px;flex:1 1 140px;max-width:200px">' +
-          '<div style="font-size:.62rem;color:rgba(224,170,255,.45);text-transform:uppercase;margin-bottom:4px;font-weight:600">' + escHtml(label) + '</div>' +
-          '<div style="display:flex;gap:14px;align-items:baseline">' +
-            '<div><span style="font-size:.55rem;color:rgba(224,170,255,.35)">RAM </span>' +
-              '<span style="font-size:1rem;font-weight:700;color:' + ramColor + '">' + c.memory_mb + '</span>' +
-              '<span style="font-size:.55rem;color:rgba(224,170,255,.4)"> MB</span></div>' +
-            '<div><span style="font-size:.55rem;color:rgba(224,170,255,.35)">CPU </span>' +
-              '<span style="font-size:1rem;font-weight:700;color:' + cpuColor + '">' + c.cpu_percent + '</span>' +
-              '<span style="font-size:.55rem;color:rgba(224,170,255,.4)"> %</span></div>' +
-          '</div>' +
-          '<div style="margin-top:5px;height:3px;background:rgba(199,125,255,.1);border-radius:2px;overflow:hidden">' +
-            '<div style="height:100%;width:' + Math.min(ramPct, 100) + '%;background:' + ramColor + ';border-radius:2px"></div>' +
-          '</div>' +
-          '<div style="font-size:.52rem;color:rgba(224,170,255,.25);margin-top:2px">' + ramPct + '% of ' + (c.memory_limit_mb || '?') + ' MB</div>' +
+        var ramCol = ramPct > 85 ? '#ff5050' : ramPct > 65 ? '#ffb347' : '#9d4edd';
+        var cpuCol = c.cpu_percent > 80 ? '#ff5050' : c.cpu_percent > 50 ? '#ffb347' : '#c77dff';
+        gHtml += '<div style="display:flex;align-items:center;gap:5px;padding:3px 12px;border-right:1px solid rgba(199,125,255,.08)">' +
+          '<span style="font-size:.6rem;color:rgba(224,170,255,.5);font-weight:600;text-transform:uppercase;min-width:42px">' + escHtml(label) + '</span>' +
+          '<span style="font-size:.5rem;color:rgba(224,170,255,.3)">RAM</span>' +
+          '<span style="font-size:.88rem;font-weight:700;color:' + ramCol + '">' + c.memory_mb + '</span>' +
+          '<span style="font-size:.48rem;color:rgba(224,170,255,.3)">MB</span>' +
+          '<span style="font-size:.5rem;color:rgba(224,170,255,.3);margin-left:4px">CPU</span>' +
+          '<span style="font-size:.88rem;font-weight:700;color:' + cpuCol + '">' + c.cpu_percent + '</span>' +
+          '<span style="font-size:.48rem;color:rgba(224,170,255,.3)">%</span>' +
         '</div>';
       });
-      gHtml += '</div></div>';
+      gHtml += '</div>';
     }
-    gHtml += '</div>';
     document.getElementById('sys-gauges').innerHTML = gHtml;
 
     // CPU + Memory time-series
