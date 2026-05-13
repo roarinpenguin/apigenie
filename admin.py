@@ -681,6 +681,7 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
         <button class="obs-tab active" data-obs="obs-flows" onclick="switchObs(this,'obs-flows')">🔀 Flows</button>
         <button class="obs-tab" data-obs="obs-geo" onclick="switchObs(this,'obs-geo')">🌍 GeoMap</button>
         <button class="obs-tab" data-obs="obs-usage" onclick="switchObs(this,'obs-usage')">📈 Usage</button>
+        <button class="obs-tab" data-obs="obs-system" onclick="switchObs(this,'obs-system'); loadSystemDash()">🖥 System</button>
       </div>
 
       <!-- SUB: Flows -->
@@ -742,6 +743,26 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
           <div id="usage-chart" class="viz" style="height:400px"></div>
         </div>
       </div>
+
+      <!-- SUB: System -->
+      <div class="obs-panel" id="obs-system">
+        <div class="card">
+          <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+            System Resources
+            <button class="btn-sm" onclick="loadSystemDash()">↺ Refresh</button>
+          </div>
+          <div id="sys-gauges" style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">CPU &amp; Memory over Time</div>
+          <div id="sys-cpu-chart" class="viz" style="height:280px"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Container Memory</div>
+          <div id="sys-container-chart" class="viz" style="height:280px"></div>
+        </div>
+      </div>
+
     </div>
 
     <!-- LISTENERS TAB -->
@@ -948,6 +969,8 @@ function showTab(tab, el) {
     if (window._sankey) window._sankey.resize();
     if (window._geomap) window._geomap.resize();
     if (window._usagechart) window._usagechart.resize();
+    if (_sysCpuChart) _sysCpuChart.resize();
+    if (_sysContChart) _sysContChart.resize();
   }
   document.getElementById('page-title').textContent = titles[tab];
 }
@@ -1726,6 +1749,94 @@ function renderUsage() {
     yAxis: {type:'value', axisLabel:{color:'rgba(224,170,255,.45)',fontSize:10}, splitLine:{lineStyle:{color:'rgba(199,125,255,.06)'}}},
     series: series,
   }, true);
+}
+
+// ── System dashboard ─────────────────────────────────────────────────────────
+var _sysCpuChart = null;
+var _sysContChart = null;
+
+function _gaugeCard(label, value, unit, pct, color) {
+  var barColor = pct > 85 ? '#ff5050' : pct > 65 ? '#ffb347' : color;
+  return '<div style="background:rgba(36,0,70,.5);border:1px solid rgba(199,125,255,.15);border-radius:10px;padding:14px;min-width:140px;flex:1">' +
+    '<div style="font-size:.68rem;color:rgba(224,170,255,.45);text-transform:uppercase;margin-bottom:6px">' + escHtml(label) + '</div>' +
+    '<div style="font-size:1.5rem;font-weight:700;color:' + barColor + '">' + value + '<span style="font-size:.75rem;font-weight:400;color:rgba(224,170,255,.5)">' + unit + '</span></div>' +
+    '<div style="margin-top:6px;height:4px;background:rgba(199,125,255,.1);border-radius:2px;overflow:hidden">' +
+    '<div style="height:100%;width:' + Math.min(pct, 100) + '%;background:' + barColor + ';border-radius:2px"></div>' +
+    '</div>' +
+    '<div style="font-size:.65rem;color:rgba(224,170,255,.35);margin-top:4px">' + pct + '%</div>' +
+    '</div>';
+}
+
+async function loadSystemDash() {
+  try {
+    var r = await fetch('/admin/api/sysmon?limit=120', {credentials:'same-origin'});
+    if (!r.ok) return;
+    var d = await r.json();
+    var samples = d.samples || [];
+    if (!samples.length) {
+      document.getElementById('sys-gauges').innerHTML = '<p class="empty">Collecting data... check back in 30 seconds.</p>';
+      return;
+    }
+    var latest = samples[samples.length - 1];
+    var mem = latest.memory || {};
+    var disk = latest.disk || {};
+
+    // Gauges
+    var gHtml = _gaugeCard('CPU', latest.cpu_percent, '%', latest.cpu_percent, '#c77dff') +
+      _gaugeCard('Memory', mem.used_mb, ' MB', mem.percent, '#9d4edd') +
+      _gaugeCard('Disk', disk.used_gb, ' GB', disk.percent, '#7b2cbf');
+    var conts = latest.containers || [];
+    conts.forEach(function(c) {
+      var label = c.name.replace('apigenie-', '').replace('apigenie', 'app');
+      gHtml += _gaugeCard(label, c.memory_mb, ' MB RAM', c.memory_percent, '#5a189a');
+    });
+    document.getElementById('sys-gauges').innerHTML = gHtml;
+
+    // CPU + Memory time-series
+    var times = samples.map(function(s) { return s.ts ? s.ts.replace('T', ' ').substring(11, 19) : ''; });
+    var cpuData = samples.map(function(s) { return s.cpu_percent || 0; });
+    var memData = samples.map(function(s) { return s.memory ? s.memory.percent : 0; });
+
+    if (!_sysCpuChart) _sysCpuChart = echarts.init(document.getElementById('sys-cpu-chart'));
+    _sysCpuChart.setOption({
+      tooltip: {trigger:'axis', backgroundColor:'rgba(26,0,51,.95)', borderColor:'rgba(199,125,255,.3)', textStyle:{color:'#e0aaff',fontSize:12}},
+      legend: {data:['CPU %','Memory %'], textStyle:{color:'rgba(224,170,255,.6)',fontSize:11}, top:0},
+      grid: {left:50, right:20, top:35, bottom:30},
+      xAxis: {type:'category', data:times, axisLabel:{color:'rgba(224,170,255,.45)',fontSize:10}, axisLine:{lineStyle:{color:'rgba(199,125,255,.15)'}}},
+      yAxis: {type:'value', max:100, axisLabel:{color:'rgba(224,170,255,.45)',fontSize:10,formatter:'{value}%'}, splitLine:{lineStyle:{color:'rgba(199,125,255,.06)'}}},
+      series: [
+        {name:'CPU %', type:'line', data:cpuData, smooth:true, showSymbol:false, lineStyle:{color:'#c77dff',width:2}, areaStyle:{color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'rgba(199,125,255,.3)'},{offset:1,color:'rgba(199,125,255,.02)'}])}},
+        {name:'Memory %', type:'line', data:memData, smooth:true, showSymbol:false, lineStyle:{color:'#9d4edd',width:2}, areaStyle:{color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'rgba(157,78,221,.25)'},{offset:1,color:'rgba(157,78,221,.02)'}])}}
+      ]
+    }, true);
+
+    // Container bar chart (latest sample)
+    if (conts.length) {
+      if (!_sysContChart) _sysContChart = echarts.init(document.getElementById('sys-container-chart'));
+      var cNames = conts.map(function(c) { return c.name.replace('apigenie-', '').replace('apigenie', 'app'); });
+      var cMem = conts.map(function(c) { return c.memory_mb; });
+      var cCpu = conts.map(function(c) { return c.cpu_percent; });
+      _sysContChart.setOption({
+        tooltip: {trigger:'axis', backgroundColor:'rgba(26,0,51,.95)', borderColor:'rgba(199,125,255,.3)', textStyle:{color:'#e0aaff',fontSize:12},
+          formatter: function(params) { var s = '<b>' + params[0].axisValue + '</b>'; params.forEach(function(p) { s += '<br/>' + p.marker + ' ' + p.seriesName + ': <b>' + p.value + '</b>'; }); return s; }},
+        legend: {data:['RAM (MB)','CPU (%)'], textStyle:{color:'rgba(224,170,255,.6)',fontSize:11}, top:0},
+        grid: {left:60, right:60, top:40, bottom:40},
+        xAxis: {type:'category', data:cNames, axisLabel:{color:'rgba(224,170,255,.55)',fontSize:11}, axisLine:{lineStyle:{color:'rgba(199,125,255,.15)'}}},
+        yAxis: [
+          {type:'value', name:'RAM (MB)', axisLabel:{color:'#c77dff',fontSize:10}, splitLine:{lineStyle:{color:'rgba(199,125,255,.06)'}}, nameTextStyle:{color:'#c77dff',fontSize:11}},
+          {type:'value', name:'CPU (%)', axisLabel:{color:'#e0aaff',fontSize:10}, splitLine:{show:false}, nameTextStyle:{color:'#e0aaff',fontSize:11}}
+        ],
+        series: [
+          {name:'RAM (MB)', type:'bar', data:cMem, barWidth:'30%', itemStyle:{color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'#c77dff'},{offset:1,color:'#5a189a'}]), borderRadius:[4,4,0,0]}},
+          {name:'CPU (%)', type:'bar', yAxisIndex:1, data:cCpu, barWidth:'30%', itemStyle:{color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'#e0aaff'},{offset:1,color:'#7b2cbf'}]), borderRadius:[4,4,0,0]}}
+        ]
+      }, true);
+    } else {
+      document.getElementById('sys-container-chart').innerHTML = '<p class="empty">No container data — Docker socket not available.</p>';
+    }
+  } catch(e) {
+    document.getElementById('sys-gauges').innerHTML = '<p class="empty">Error: ' + e + '</p>';
+  }
 }
 
 // ── Investigation password gate ─────────────────────────────────────────────
@@ -3216,6 +3327,26 @@ async def api_intrusions_log(limit: int = 200, ag_session: str | None = Cookie(N
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     import intrusions
     return JSONResponse(intrusions.get_log(limit))
+
+
+# ── System monitoring API ────────────────────────────────────────────────────
+
+@router.get("/api/sysmon")
+async def api_sysmon(limit: int = 120, ag_session: str | None = Cookie(None)):
+    """Return system metric samples for charts (default: last 60 min at 30s intervals)."""
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import sysmon
+    return JSONResponse({"samples": sysmon.get_samples(limit)})
+
+
+@router.get("/api/sysmon/latest")
+async def api_sysmon_latest(ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import sysmon
+    latest = sysmon.get_latest()
+    return JSONResponse(latest or {"error": "no data yet"})
 
 
 @router.get("/api/bus-status")

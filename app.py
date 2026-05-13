@@ -71,6 +71,11 @@ async def lifespan(app: FastAPI):
         bus_monitor.start()
     except Exception as exc:
         logger.warning(f"Could not start bus monitor: {exc}")
+    try:
+        import sysmon
+        sysmon.start()
+    except Exception as exc:
+        logger.warning(f"Could not start sysmon: {exc}")
     yield
     if _publishers_enabled:
         try:
@@ -82,6 +87,11 @@ async def lifespan(app: FastAPI):
     try:
         import bus_monitor
         bus_monitor.stop()
+    except Exception:
+        pass
+    try:
+        import sysmon
+        sysmon.stop()
     except Exception:
         pass
 
