@@ -34,7 +34,7 @@ The deployment hostname is fully parameterised: pick any domain, run `./scripts/
 | **Azure Platform (Event Hubs)** | Kafka SASL/PLAIN | `apigenie.roarinpenguin.com:9093` (SASL_SSL) · `:9094` (SASL_PLAINTEXT) · `:9092` (PLAINTEXT, legacy) — topic `azure-platform-logs` |
 | **GCP Cloud Logging (Pub/Sub)** | gRPC | `apigenie.roarinpenguin.com:8443` (TLS, recommended) · `:8085` (plaintext, emulator-aware SDKs only) — project `obs-test`, topic `audit-logs`, subscription `audit-logs-sub` |
 
-A background publisher pushes 5 randomly-generated events into both streams every 10 seconds.
+A background publisher pushes 5 randomly-generated events into both streams every 10 seconds. Kafka events include **Entra ID / Azure AD user activity events** with user principal names, app sign-ins, device details, and risk levels.
 
 ---
 
@@ -199,17 +199,32 @@ The **Settings** tab (under *System*) exposes:
 - a one-click **Renew certificate** button that prints the exact host-side command for your TLS mode;
 - a **Change password** form (verifies current password, writes new hash atomically, persists across restarts).
 
+### Sidebar structure
+
+The admin sidebar is organized into three sections:
+
+**Monitor**
+- Request Inspector, Observability, Intrusions
+
+**Troubleshooting**
+- Listeners, Container Logs, Investigations
+
+**Configuration & Reference**
+- Log Profiles, Source Details, System Settings
+
 ### Dashboard tabs
 
 | Tab | What it shows |
 |-----|---------------|
-| **Sources** | One reference card per platform with copy-pasteable endpoint URLs, auth values, and an example `curl` / `kcat` command |
-| **Requests** | Live trace of every inbound HTTP request, grouped by source. Includes Pub/Sub publish heartbeats (under `gcp_audit`) and Kafka produce heartbeats (under `azure_platform`) so you can confirm streaming sources are flowing even though gRPC/Kafka traffic bypasses FastAPI |
-| **📊 Observability** | Unified view with three sub-tabs: **Flows** (Sankey: source IPs → log sources), **GeoMap** (world map with IP bubbles), and **Usage** (stacked area chart of request volume over time — 1h to 1y range, backed by persistent SQLite telemetry) |
-| **Container logs** | Tail logs of any container in the stack via `docker logs --follow` (apigenie, nginx, kafka, zookeeper, pubsub-emulator) |
-| **🎯 Listeners** | Stand up a custom HTTP endpoint on the fly to test a hand-rolled SCol Lua source — synthetic data across four telemetry topics (endpoint / identity / cloud / network) or replay an uploaded log file (json / jsonl / csv / syslog / cef) with a configurable time anchor. Design: [`docs/CUSTOM_LISTENERS.md`](docs/CUSTOM_LISTENERS.md) |
-| **Log Profiles** | Define reusable entity pools (users, machines, C2 servers, malware, mail senders), bind them to sources with a tunable signal-to-noise ratio, and generate **correlatable** telemetry across platforms. See [Log Profiles](#log-profiles) below |
-| **🔍 Investigations** | IP lookup (WHOIS, rDNS, GeoIP), request history, anomaly detection, and IP banning. Protected by a **separate investigation password** (prompted on first login if not set; configurable via `APIGENIE_INVESTIGATE_PASSWORD` or the Settings tab). Request log files are downloadable as JSONL |
+| **Request Inspector** | Live trace of every inbound HTTP request, grouped by source. Shows request headers, body, **response size and preview**. Includes Pub/Sub and Kafka heartbeats, plus a **Bus Subscribers** panel showing Kafka consumer groups and Pub/Sub subscription status with lag and member counts |
+| **Observability** | Four sub-tabs: **Flows** (Sankey: source IPs → log sources), **GeoMap** (world map with IP bubbles), **Usage** (stacked area chart, 1h–1y range, SQLite-backed), and **System** (real-time host CPU/RAM/disk + per-container resource monitoring via Docker API) |
+| **Intrusions** | Threat detection for unrecognised paths (scanners, bots, attackers). Categorizes attempts (credential_theft, wordpress_scan, rce_attempt, php_scan, etc.), shows top offenders with one-click banning, and supports **acknowledgement** of known-good paths with multi-condition suppression (path, IP, category, prefix — AND logic). Acknowledged paths are persisted and silently counted |
+| **Listeners** | Custom HTTP endpoints for SCol Lua source testing — synthetic data (endpoint / identity / cloud / network) or replay uploaded log files (json / jsonl / csv / syslog / cef). Design: [`docs/CUSTOM_LISTENERS.md`](docs/CUSTOM_LISTENERS.md) |
+| **Container Logs** | Tail logs of any container via `docker logs --follow` |
+| **Investigations** | IP lookup (WHOIS, rDNS, GeoIP), request history, anomaly detection, and IP banning. Protected by a **separate investigation password**. Request log files downloadable as JSONL |
+| **Log Profiles** | Entity pools (users, machines, C2 servers, malware, mail senders) bound to sources with signal-to-noise ratio. **Per-source log volume control** (1–100%) scales how many logs each API response contains. See [Log Profiles](#log-profiles) below |
+| **Source Details** | Reference cards per platform with copy-pasteable endpoints, auth values, and `curl` / `kcat` examples |
+| **System Settings** | Domain, TLS info, password management, cert renewal |
 
 ### GeoMap data source
 
@@ -251,6 +266,14 @@ MaxMind ships weekly updates; re-running the script (or scheduling it via cron) 
 | `/admin/api/profiles/{id}/preview` | Preview padded entity pools |
 | `/admin/api/source-profiles` | List source↔profile bindings |
 | `/admin/api/source-profiles/{source}` | Bind / unbind a profile to a source |
+| `/admin/api/source-intensity` | List all per-source intensity settings |
+| `/admin/api/source-intensity/{source}` | Get / set log volume intensity (1–100) |
+| `/admin/api/intrusions` | Intrusion stats, top offenders, log, acknowledged paths |
+| `/admin/api/intrusions/log` | Recent intrusion attempt log |
+| `/admin/api/intrusions/acknowledge` | Acknowledge (suppress) a path/IP/category |
+| `/admin/api/sysmon` | System resource time-series samples |
+| `/admin/api/sysmon/latest` | Latest CPU, memory, disk, container stats |
+| `/admin/api/bus-status` | Kafka consumer groups + Pub/Sub subscription status |
 
 ---
 
@@ -344,7 +367,11 @@ apigenie/
 ├── app.py                    # FastAPI app: 14 source routes, OAuth2, fake Google token endpoint
 ├── admin.py                  # Admin UI router (/admin/*) + source reference cards + SA JSON generator
 ├── auth.py                   # Bearer / Basic / X-ApiKeys / Duo HMAC dependency injectors
-├── profiles.py               # Log Profiles: CRUD, Star Wars padding, ProfileContext for generators
+├── profiles.py               # Log Profiles: CRUD, Star Wars padding, ProfileContext, per-source intensity
+├── intrusions.py             # Intrusion tracking: path classification, per-IP aggregation, acknowledgement
+├── sysmon.py                 # System resource monitor: CPU, memory, disk, Docker container stats
+├── bus_monitor.py            # Kafka consumer-group + Pub/Sub subscription status poller
+├── bans.py                   # IP ban management (persistent JSON)
 ├── telemetry.py              # Persistent usage telemetry: SQLite, minute-granularity, 1-year retention
 ├── trace.py                  # Request-tracing middleware → REQUEST_TRACE deque + AGG (client_ip × source) LRU
 ├── geoip.py                  # Hybrid GeoIP resolver: MaxMind .mmdb if present, else ip-api.com
@@ -399,6 +426,8 @@ apigenie/
 | `APIGENIE_LISTENER_HITS_CAP` | `200` | Per-listener in-memory ring buffer for the live trace pane *(custom Listeners feature)* |
 | `APIGENIE_LISTENER_HITS_DISK_CAP` | `5000` | Per-listener on-disk hit log line cap before rotation *(custom Listeners feature)* |
 | `APIGENIE_REPLAY_MAX_MB` | `100` | Hard cap (MB) on a single replay-mode log file upload *(custom Listeners feature)* |
+| `SYSMON_INTERVAL` | `30` | Seconds between system resource samples |
+| `SYSMON_MAX_SAMPLES` | `2880` | Max samples retained in memory (~24h at 30s intervals) |
 | `PUBSUB_EMULATOR_HOST` | `pubsub-emulator:8085` | Pub/Sub emulator (in-Docker) |
 | `GCP_PROJECT_ID` | `obs-test` | Pub/Sub project |
 | `PUBSUB_TOPIC_ID` | `audit-logs` | Pub/Sub topic |
@@ -431,7 +460,8 @@ Log Profiles let you define **reusable entity pools** that are blended into gene
 1. **Create a profile** via the Admin UI *Log Profiles* tab or `POST /admin/api/profiles` — define as few or many entities as you want.
 2. **Star Wars padding** — entity lists shorter than the limit are automatically filled with themed characters (Mandalorian, Rebels, Andor, etc.) so the pool is always full.
 3. **Bind to sources** — assign a profile to one or more sources with a signal-to-noise **ratio** (0–100%). At 80%, roughly 80% of generated events use profile entities and 20% use random noise.
-4. **Deterministic seeding** — the same profile + source combination always produces the same entity sequence (useful for reproducible demos).
+4. **Log volume control** — set per-source **intensity** (1–100%) to scale how many log entries each API response contains. At 100% a source returns the full batch (e.g. 100 Okta logs); at 25%, ~25 logs per request. Useful for balancing ingestion load across many pipelines.
+5. **Deterministic seeding** — the same profile + source combination always produces the same entity sequence (useful for reproducible demos).
 
 ### Storage
 
@@ -439,6 +469,9 @@ Log Profiles let you define **reusable entity pools** that are blended into gene
 |------|------|
 | Profile JSON files | `./data/profiles/<uuid>.json` |
 | Source↔profile bindings | `./data/source_profiles.json` |
+| Per-source intensity | `./data/source_intensity.json` |
+| Acknowledged intrusion paths | `./data/acknowledged_paths.json` |
+| IP ban list | `./data/bans.json` |
 | Usage telemetry (SQLite) | `./data/telemetry.db` |
 | Investigation password hash | `./data/investigate_pass` |
 | Daily request logs | `./data/request-logs/YYYY-MM-DD.jsonl` |
