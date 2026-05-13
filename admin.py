@@ -1875,16 +1875,22 @@ async function loadSystemDash() {
     var mem = latest.memory || {};
     var disk = latest.disk || {};
 
-    // Host gauges — horizontal row
-    var gHtml = '<div style="font-size:.65rem;color:rgba(224,170,255,.4);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Host Machine</div>';
-    gHtml += '<div style="display:flex;gap:12px;margin-bottom:14px">';
+    // Two-column layout: host left, containers right
+    var conts = latest.containers || [];
+    var gHtml = '<div style="display:flex;gap:20px;align-items:flex-start">';
+
+    // LEFT: Host Machine
+    gHtml += '<div style="flex:0 0 auto">';
+    gHtml += '<div style="font-size:.65rem;color:rgba(224,170,255,.4);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Host Machine</div>';
+    gHtml += '<div style="display:flex;flex-direction:column;gap:10px">';
     gHtml += _gaugeCard('CPU', latest.cpu_percent, '%', latest.cpu_percent, '#c77dff') +
       _gaugeCard('Memory', mem.used_mb, ' MB', mem.percent, '#9d4edd') +
       _gaugeCard('Disk', disk.used_gb, ' GB', disk.percent, '#7b2cbf');
-    gHtml += '</div>';
-    // Container gauges — horizontal flex wrap
-    var conts = latest.containers || [];
+    gHtml += '</div></div>';
+
+    // RIGHT: Containers
     if (conts.length) {
+      gHtml += '<div style="flex:1;min-width:0">';
       gHtml += '<div style="font-size:.65rem;color:rgba(224,170,255,.4);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Containers</div>';
       gHtml += '<div style="display:flex;flex-wrap:wrap;gap:10px">';
       conts.forEach(function(c) {
@@ -1892,7 +1898,7 @@ async function loadSystemDash() {
         var ramPct = c.memory_percent || 0;
         var ramColor = ramPct > 85 ? '#ff5050' : ramPct > 65 ? '#ffb347' : '#9d4edd';
         var cpuColor = c.cpu_percent > 80 ? '#ff5050' : c.cpu_percent > 50 ? '#ffb347' : '#c77dff';
-        gHtml += '<div style="background:rgba(36,0,70,.5);border:1px solid rgba(199,125,255,.15);border-radius:8px;padding:10px 14px;min-width:150px">' +
+        gHtml += '<div style="background:rgba(36,0,70,.5);border:1px solid rgba(199,125,255,.15);border-radius:8px;padding:10px 14px;min-width:140px;flex:1 1 140px;max-width:200px">' +
           '<div style="font-size:.62rem;color:rgba(224,170,255,.45);text-transform:uppercase;margin-bottom:4px;font-weight:600">' + escHtml(label) + '</div>' +
           '<div style="display:flex;gap:14px;align-items:baseline">' +
             '<div><span style="font-size:.55rem;color:rgba(224,170,255,.35)">RAM </span>' +
@@ -1908,8 +1914,9 @@ async function loadSystemDash() {
           '<div style="font-size:.52rem;color:rgba(224,170,255,.25);margin-top:2px">' + ramPct + '% of ' + (c.memory_limit_mb || '?') + ' MB</div>' +
         '</div>';
       });
-      gHtml += '</div>';
+      gHtml += '</div></div>';
     }
+    gHtml += '</div>';
     document.getElementById('sys-gauges').innerHTML = gHtml;
 
     // CPU + Memory time-series
