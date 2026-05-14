@@ -326,17 +326,110 @@
             to   { opacity: 1; transform: translateY(0); }
         }
         .stat-num {
-            font-size: 1.6rem;
+            font-size: 1.25rem;
             font-weight: 700;
             font-family: "JetBrains Mono", monospace;
             line-height: 1;
         }
         .stat-lbl {
-            font-size: 0.78rem;
+            font-size: 0.68rem;
             text-transform: uppercase;
             letter-spacing: 0.06em;
             opacity: 0.85;
-            margin-top: 6px;
+            margin-top: 4px;
+        }
+
+        /* ── Architecture diagram ─────────────────────────────────────────── */
+        .arch {
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0;
+            margin: 20px 0 6px;
+            min-height: 340px;
+        }
+        .arch-col {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            z-index: 2;
+            flex: 0 0 auto;
+        }
+        .arch-hub {
+            z-index: 2;
+            flex: 0 0 auto;
+            width: 100px;
+            height: 100px;
+            border-radius: var(--r-lg);
+            background: var(--surface);
+            box-shadow:
+                8px 8px 18px var(--shadow-dark),
+                -8px -8px 18px var(--shadow-light);
+            display: grid;
+            place-items: center;
+            margin: 0 28px;
+        }
+        .arch-hub img {
+            width: 64px;
+            height: 64px;
+            object-fit: contain;
+            mix-blend-mode: multiply;
+        }
+        .arch-chip {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: 10px;
+            background: var(--surface);
+            box-shadow:
+                4px 4px 10px var(--shadow-dark),
+                -4px -4px 10px var(--shadow-light);
+            font-size: 0.72rem;
+            font-weight: 600;
+            color: var(--text);
+            white-space: nowrap;
+            transition: transform 0.15s, box-shadow 0.15s;
+        }
+        .arch-chip:hover {
+            transform: translateY(-1px);
+            box-shadow:
+                5px 5px 14px var(--shadow-dark),
+                -5px -5px 14px var(--shadow-light),
+                0 0 12px rgba(133, 78, 243, 0.18);
+        }
+        .arch-chip .dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        .arch-chip .dot.http { background: var(--primary); }
+        .arch-chip .dot.stream { background: #2ecc71; }
+        .arch-chip .dot.custom { background: #f39c12; }
+        .arch-col.right .arch-chip { flex-direction: row-reverse; }
+        .arch-svg {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+            pointer-events: none;
+        }
+        .arch-svg path {
+            fill: none;
+            stroke: var(--primary-light);
+            stroke-width: 1.5;
+            opacity: 0.35;
+        }
+        @media (max-width: 640px) {
+            .arch { flex-direction: column; gap: 12px; min-height: auto; }
+            .arch-col { flex-direction: row; flex-wrap: wrap; justify-content: center; }
+            .arch-col.right .arch-chip { flex-direction: row; }
+            .arch-hub { margin: 10px 0; }
+            .arch-svg { display: none; }
         }
 
         a.link {
@@ -447,7 +540,7 @@
             </p>
         </section>
 
-        <section class="card feature">
+        <section class="card feature" style="padding:18px 28px">
             <div class="stats">
                 <div>
                     <div class="stat-num" id="stat-http">11</div>
@@ -455,7 +548,7 @@
                 </div>
                 <div>
                     <div class="stat-num" id="stat-stream">2</div>
-                    <div class="stat-lbl">Streaming sources</div>
+                    <div class="stat-lbl">Streaming</div>
                 </div>
                 <div>
                     <div class="stat-num" id="stat-auth">5</div>
@@ -463,19 +556,43 @@
                 </div>
                 <div>
                     <div class="stat-num" id="stat-listeners">0</div>
-                    <div class="stat-lbl">Custom listeners</div>
+                    <div class="stat-lbl">Listeners</div>
                 </div>
             </div>
         </section>
 
-        <section class="card">
-            <h2>You landed here from outer space?</h2>
-            <p>
+        <!-- Architecture hub-and-spoke -->
+        <section class="arch" id="arch">
+            <svg class="arch-svg" id="arch-svg"></svg>
+            <div class="arch-col left" id="arch-left">
+                <div class="arch-chip" data-side="left"><span class="dot http"></span>Okta</div>
+                <div class="arch-chip" data-side="left"><span class="dot http"></span>Netskope</div>
+                <div class="arch-chip" data-side="left"><span class="dot http"></span>Entra ID</div>
+                <div class="arch-chip" data-side="left"><span class="dot http"></span>Defender</div>
+                <div class="arch-chip" data-side="left"><span class="dot http"></span>Cisco Duo</div>
+                <div class="arch-chip" data-side="left"><span class="dot http"></span>Tenable</div>
+                <div class="arch-chip" data-side="left"><span class="dot http"></span>Proofpoint</div>
+            </div>
+            <div class="arch-hub" id="arch-hub">
+                <img src="/logo.png" alt="API Genie" />
+            </div>
+            <div class="arch-col right" id="arch-right">
+                <div class="arch-chip" data-side="right"><span class="dot http"></span>Wiz</div>
+                <div class="arch-chip" data-side="right"><span class="dot http"></span>Snyk</div>
+                <div class="arch-chip" data-side="right"><span class="dot http"></span>Darktrace</div>
+                <div class="arch-chip" data-side="right"><span class="dot stream"></span>Azure Event Hubs</div>
+                <div class="arch-chip" data-side="right"><span class="dot stream"></span>GCP Pub/Sub</div>
+                <div class="arch-chip" data-side="right"><span class="dot http"></span>AWS Sources</div>
+                <div class="arch-chip" data-side="right"><span class="dot custom"></span>Custom Listener</div>
+            </div>
+        </section>
+
+        <section class="card" style="padding:20px 28px">
+            <h2 style="font-size:1rem;margin-bottom:8px">You landed here from outer space?</h2>
+            <p style="font-size:.88rem;margin:0">
                 Nothing on this host returns real data. Every endpoint is synthetic and every
                 credential is a placeholder. You're welcome to look around — but if you were
                 looking for something else, this is probably not it.
-            </p>
-            <p style="margin-top: 14px;">
                 Otherwise — welcome aboard. Live long and prosper
                 <span class="salute" role="img" aria-label="Vulcan salute">🖖</span>
             </p>
@@ -498,6 +615,39 @@
         var pill = document.getElementById('domain-pill');
         if (pill) pill.textContent = host;
         document.title = 'API Genie \u00b7 ' + host;
+    })();
+
+    // Draw architecture diagram curves
+    (function drawArch() {
+        var svg = document.getElementById('arch-svg');
+        var hub = document.getElementById('arch-hub');
+        var section = document.getElementById('arch');
+        if (!svg || !hub || !section) return;
+        function draw() {
+            var chips = section.querySelectorAll('.arch-chip');
+            var sRect = section.getBoundingClientRect();
+            var hRect = hub.getBoundingClientRect();
+            var hx = hRect.left + hRect.width / 2 - sRect.left;
+            var hy = hRect.top + hRect.height / 2 - sRect.top;
+            svg.setAttribute('viewBox', '0 0 ' + sRect.width + ' ' + sRect.height);
+            var paths = '';
+            for (var i = 0; i < chips.length; i++) {
+                var c = chips[i];
+                var r = c.getBoundingClientRect();
+                var side = c.getAttribute('data-side');
+                var cx = side === 'left'
+                    ? r.right - sRect.left
+                    : r.left - sRect.left;
+                var cy = r.top + r.height / 2 - sRect.top;
+                var cpOff = Math.abs(hx - cx) * 0.45;
+                var cp1x = side === 'left' ? cx + cpOff : cx - cpOff;
+                var cp2x = side === 'left' ? hx - cpOff : hx + cpOff;
+                paths += '<path d="M' + cx + ',' + cy + ' C' + cp1x + ',' + cy + ' ' + cp2x + ',' + hy + ' ' + hx + ',' + hy + '"/>';
+            }
+            svg.innerHTML = paths;
+        }
+        draw();
+        window.addEventListener('resize', draw);
     })();
 
     // Fetch live stats (includes custom listeners count).
