@@ -4,6 +4,7 @@ Routes mirror the real platform API paths so Observo Site telemetry collector
 can connect without any URL rewriting.
 """
 
+import json
 import logging
 import os
 import random
@@ -648,6 +649,37 @@ def _token_payload(scope: str = "read:logs read:events") -> dict[str, Any]:
     }
 
 
+def _make_unsecured_jwt(sub: str = "apigenie", scope: str = "kafka") -> str:
+    """Create an unsecured JWT (alg: none) for Kafka SASL/OAUTHBEARER.
+
+    Kafka's built-in OAuthBearerUnsecuredValidatorCallbackHandler accepts
+    tokens with {"alg":"none"} in the header and checks for a "sub" claim
+    plus non-expired "exp". No signature verification is performed.
+    """
+    import base64 as _b64
+    now = int(_time.time())
+    header = '{"alg":"none"}'
+    payload = json.dumps({
+        "sub": sub,
+        "iat": now,
+        "exp": now + 3600,
+        "scope": scope,
+    }, separators=(",", ":"))
+    h = _b64.urlsafe_b64encode(header.encode()).rstrip(b"=").decode()
+    p = _b64.urlsafe_b64encode(payload.encode()).rstrip(b"=").decode()
+    return f"{h}.{p}."
+
+
+def _oauthbearer_token_payload(scope: str = "kafka") -> dict[str, Any]:
+    """Token response suitable for librdkafka OIDC OAUTHBEARER flow."""
+    tok = _make_unsecured_jwt(sub="apigenie-kafka-client", scope=scope)
+    return {
+        "access_token": tok,
+        "token_type": "Bearer",
+        "expires_in": 3600,
+    }
+
+
 # Generic OAuth2 client-credentials  —  used by Wiz, Cato, CyberArk EPM and any
 # collector configured with a bare /token URL.
 @app.post("/token")
@@ -663,11 +695,24 @@ async def oauth_token(request: Request) -> dict[str, Any]:
 # Tenant-prefixed Microsoft token endpoints — Defender + Entra ID + O365 Mgmt.
 # POST is the spec; GET is what some Azure SDKs use when impersonating cached
 # refresh tokens (and what COLLECTOR_CONFIG.md §2.3 documents).
+#
+# When the scope contains ".servicebus.windows.net" or the grant is for Event
+# Hubs, this is a Kafka OAUTHBEARER token request from librdkafka — return an
+# unsecured JWT that Kafka's built-in validator will accept.
 @app.post("/{tenant_id}/oauth2/v2.0/token")
 @app.get("/{tenant_id}/oauth2/v2.0/token")
 @app.post("/{tenant_id}/oauth2/token")
 @app.get("/{tenant_id}/oauth2/token")
 async def oauth_token_tenant(tenant_id: str, request: Request) -> dict[str, Any]:
+    # Detect Event Hubs OAUTHBEARER request from librdkafka
+    try:
+        form = await request.form()
+        scope = str(form.get("scope", ""))
+    except Exception:
+        scope = ""
+    if "servicebus.windows.net" in scope or "eventhubs" in scope.lower() or scope.endswith("/.default"):
+        logger.info("OAUTHBEARER token request from tenant %s (scope: %s)", tenant_id, scope)
+        return _oauthbearer_token_payload(scope=scope or "kafka")
     return _token_payload(scope="https://graph.microsoft.com/.default")
 
 

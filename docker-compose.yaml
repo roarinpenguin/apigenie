@@ -149,9 +149,16 @@ services:
   #   9094 SASL_PLAINTEXT — Azure Event Hubs emulation, no TLS (lab override)
   #   29092 PLAINTEXT — in-Docker internal listener (apigenie publisher)
   #
-  # SASL/PLAIN credentials accepted on 9093 and 9094:
+  # SASL mechanisms on 9093 and 9094:
+  #   PLAIN         — SAS connection string auth (existing)
+  #   OAUTHBEARER   — Azure AD / Entra ID OAuth token auth (unsecured validator)
+  #
+  # SASL/PLAIN credentials:
   #   admin               / apigenie-eh-admin-2026     (broker admin)
   #   $$ConnectionString  / Endpoint=sb://${APIGENIE_DOMAIN}/;SharedAccessKeyName=mock;SharedAccessKey=apigenie-eh-mock-2026;EntityPath=azure-platform-logs
+  #
+  # SASL/OAUTHBEARER: any JWT with a "sub" claim is accepted (unsecured mode).
+  # Token endpoint: https://${APIGENIE_DOMAIN}/<tenant-id>/oauth2/v2.0/token
   kafka:
     image: confluentinc/cp-kafka:7.6.6
     container_name: apigenie-kafka
@@ -177,14 +184,20 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: >-
         EXTERNAL:PLAINTEXT,SASLSSL:SASL_SSL,SASLPLAIN:SASL_PLAINTEXT,DOCKER:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: DOCKER
-      # SASL/PLAIN on the two SASL listeners
-      KAFKA_SASL_ENABLED_MECHANISMS: PLAIN
-      KAFKA_LISTENER_NAME_SASLSSL_SASL_ENABLED_MECHANISMS: PLAIN
-      KAFKA_LISTENER_NAME_SASLPLAIN_SASL_ENABLED_MECHANISMS: PLAIN
+      # SASL mechanisms: PLAIN (SAS) + OAUTHBEARER (Entra ID OAuth)
+      KAFKA_SASL_ENABLED_MECHANISMS: PLAIN,OAUTHBEARER
+      KAFKA_LISTENER_NAME_SASLSSL_SASL_ENABLED_MECHANISMS: PLAIN,OAUTHBEARER
+      KAFKA_LISTENER_NAME_SASLPLAIN_SASL_ENABLED_MECHANISMS: PLAIN,OAUTHBEARER
+      # SASL/PLAIN JAAS config (SAS connection string auth)
       KAFKA_LISTENER_NAME_SASLSSL_PLAIN_SASL_JAAS_CONFIG: >-
         org.apache.kafka.common.security.plain.PlainLoginModule required username="admin" password="apigenie-eh-admin-2026" user_admin="apigenie-eh-admin-2026" user_$$ConnectionString="Endpoint=sb://${APIGENIE_KAFKA_ADVERTISED_HOST:-apigenie.example.com}/;SharedAccessKeyName=mock;SharedAccessKey=apigenie-eh-mock-2026;EntityPath=azure-platform-logs";
       KAFKA_LISTENER_NAME_SASLPLAIN_PLAIN_SASL_JAAS_CONFIG: >-
         org.apache.kafka.common.security.plain.PlainLoginModule required username="admin" password="apigenie-eh-admin-2026" user_admin="apigenie-eh-admin-2026" user_$$ConnectionString="Endpoint=sb://${APIGENIE_KAFKA_ADVERTISED_HOST:-apigenie.example.com}/;SharedAccessKeyName=mock;SharedAccessKey=apigenie-eh-mock-2026;EntityPath=azure-platform-logs";
+      # SASL/OAUTHBEARER JAAS config (unsecured validator — accepts any JWT with sub claim)
+      KAFKA_LISTENER_NAME_SASLSSL_OAUTHBEARER_SASL_JAAS_CONFIG: >-
+        org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required unsecuredLoginStringClaim_sub="admin";
+      KAFKA_LISTENER_NAME_SASLPLAIN_OAUTHBEARER_SASL_JAAS_CONFIG: >-
+        org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required unsecuredLoginStringClaim_sub="admin";
       # TLS — combined PEM produced by kafka-cert-init from Let's Encrypt.
       # cp-kafka image uses *_FILENAME (relative to /etc/kafka/secrets) and a
       # *_CREDENTIALS file (required by preflight even though Kafka ignores
