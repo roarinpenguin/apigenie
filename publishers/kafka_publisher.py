@@ -254,8 +254,13 @@ def _publisher_loop() -> None:
             t0 = time.monotonic()
             ok, err = 0, None
             try:
-                for _ in range(MESSAGES_PER_BATCH):
-                    event = _generate_azure_event()
+                events = [_generate_azure_event() for _ in range(MESSAGES_PER_BATCH)]
+                try:
+                    import detection_rules
+                    events = detection_rules.inject_detection_events("azure_platform", events)
+                except Exception:
+                    pass
+                for event in events:
                     producer.send(KAFKA_TOPIC, value=event)
                     ok += 1
                 producer.flush(timeout=10)

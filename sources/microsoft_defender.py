@@ -3,6 +3,7 @@
 import random
 from typing import Any
 
+import detection_rules
 import profiles
 from generators import (
     generate_hostname,
@@ -115,6 +116,7 @@ def get_alerts_response(limit: int = 50) -> dict[str, Any]:
                 },
             }
         )
+    alerts = detection_rules.inject_detection_events("microsoft_defender", alerts)
     return {"value": alerts, "nextLink": None}
 
 

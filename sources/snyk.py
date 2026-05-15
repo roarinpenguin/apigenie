@@ -3,6 +3,7 @@
 import random
 from typing import Any
 
+import detection_rules
 import profiles
 from generators import (
     generate_email,
@@ -148,6 +149,7 @@ def _generate_issue() -> dict[str, Any]:
 def get_issues_response(org: str | None = None, limit: int = 100, offset: int = 0) -> dict[str, Any]:
     count = profiles.scale_count("snyk", min(limit, 100))
     issues = [_generate_issue() for _ in range(count)]
+    issues = detection_rules.inject_detection_events("snyk", issues)
     # Real Snyk v1 /org/{id}/issues returns the array under 'issues'. Some
     # internal Snyk endpoints and older docs use 'results'. We expose both
     # keys to keep every parser happy.

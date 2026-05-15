@@ -636,8 +636,8 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
 <nav class="sidebar">
   <div class="brand">⚙ ApiGenie Admin</div>
   <span class="nav-section">Monitor</span>
-  <a class="nav-item active" onclick="showTab('observability', this); initObservability()"><span class="nav-icon">📊</span> Observability</a>
-  <a class="nav-item" onclick="showTab('requests', this)"><span class="nav-icon">📋</span> Requests</a>
+  <a class="nav-item" onclick="showTab('observability', this); initObservability()"><span class="nav-icon">📊</span> Observability</a>
+  <a class="nav-item active" onclick="showTab('requests', this)"><span class="nav-icon">📋</span> Requests</a>
   <span class="nav-section">Troubleshooting</span>
   <a class="nav-item" onclick="showTab('intrusions', this); loadIntrusions()"><span class="nav-icon">🛡</span> Intrusions</a>
   <a class="nav-item" onclick="showTab('investigate', this); gateInvestigate()"><span class="nav-icon">🔍</span> Investigations</a>
@@ -830,6 +830,52 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
           Assign profiles to sources, tune signal-to-noise ratio, and control <b>log volume</b> per source (1–100% of max output per API call).
         </p>
         <div id="bindings-list"><p class="empty">Loading…</p></div>
+      </div>
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span>Detection Rules</span>
+          <button class="btn-sm" onclick="openDetectionRuleEditor()">+ New Rule</button>
+        </div>
+        <p style="font-size:.78rem;color:rgba(224,170,255,.45);margin-bottom:14px">
+          Inject specific log patterns that trigger SIEM detection rules. Each rule overrides fields in normal logs
+          at a configurable periodicity (e.g. 1 in every 10 logs, or once every 5 minutes).
+        </p>
+        <div id="detection-rules-list"><p class="empty">Loading…</p></div>
+      </div>
+    </div>
+
+    <!-- Detection Rule Editor Modal -->
+    <div class="modal-overlay hidden" id="detection-rule-modal">
+      <div class="modal" style="width:min(580px,92%)">
+        <div class="modal-head"><h3 id="dr-modal-title">New Detection Rule</h3></div>
+        <div class="modal-body" style="display:flex;flex-direction:column;gap:10px">
+          <div style="display:flex;gap:10px">
+            <div style="flex:1"><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Name</label>
+              <input id="dr-name" type="text" placeholder="e.g. Brute force login" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/></div>
+            <div style="flex:1"><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Source</label>
+              <select id="dr-source" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"></select></div>
+          </div>
+          <div><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Description</label>
+            <input id="dr-desc" type="text" placeholder="What SIEM rule does this trigger?" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/></div>
+          <div style="display:flex;gap:10px;align-items:center">
+            <div style="flex:1"><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Periodicity</label>
+              <div style="display:flex;gap:6px;align-items:center">
+                <input id="dr-period" type="number" min="1" max="9999" value="10" style="width:70px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/>
+                <span style="font-size:.7rem;color:rgba(224,170,255,.4)">1-100 = every N-th log; &gt;100 = every N seconds</span>
+              </div></div>
+            <div><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Enabled</label>
+              <input id="dr-enabled" type="checkbox" checked style="accent-color:#c77dff;margin-top:8px"/></div>
+          </div>
+          <div><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Field Overrides <span style="color:rgba(224,170,255,.3)">(dot notation for nested fields, e.g. outcome.result)</span></label>
+            <div id="dr-overrides" style="display:flex;flex-direction:column;gap:4px"></div>
+            <button class="btn-sm" style="margin-top:6px;font-size:.68rem;padding:3px 10px" onclick="addOverrideRow()">+ Add field</button>
+          </div>
+        </div>
+        <div class="modal-foot"><div></div><div class="right">
+          <button class="btn-sm" style="background:rgba(90,24,154,.3)" onclick="closeDetectionRuleModal()">Cancel</button>
+          <button class="btn-sm" id="dr-delete-btn" style="background:rgba(120,30,40,.4);color:#ff8080;display:none" onclick="deleteDetectionRule()">Delete</button>
+          <button class="btn-sm" onclick="saveDetectionRule()">Save</button>
+        </div></div>
       </div>
     </div>
 
@@ -2804,8 +2850,9 @@ async function loadProfiles() {
       box.innerHTML = h;
     }
   } catch(e) { box.innerHTML = '<p class="empty">Failed: '+escHtml(String(e))+'</p>'; }
-  // Also load bindings
+  // Also load bindings and detection rules
   await loadBindings();
+  await loadDetectionRules();
 }
 
 async function loadBindings() {
@@ -2908,6 +2955,131 @@ function saveIntensity(src) {
   }).then(r=>{if(!r.ok)throw new Error(r.status);return r.json();})
     .then(()=>toast(src+' intensity set to '+val))
     .catch(e=>toast('Failed: '+e,true));
+}
+
+// ── Detection Rules ────────────────────────────────────────────────────────
+var _editingRuleId = null;
+
+async function loadDetectionRules() {
+  var box = document.getElementById('detection-rules-list');
+  if (!box) return;
+  try {
+    var r = await fetch('/admin/api/detection-rules', {credentials:'same-origin'});
+    var d = await r.json();
+    var rules = d.rules || [];
+    if (!rules.length) {
+      box.innerHTML = '<p class="empty">No detection rules configured yet. Click "+ New Rule" to create one.</p>';
+      return;
+    }
+    var h = '';
+    rules.forEach(function(rule) {
+      var overKeys = Object.keys(rule.field_overrides || {});
+      var pLabel = rule.periodicity > 100 ? 'every ' + rule.periodicity + 's' : '1 in ' + rule.periodicity + ' logs';
+      h += '<div style="display:flex;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid rgba(199,125,255,.08)">';
+      h += '<span style="font-size:.72rem;color:' + (rule.enabled ? '#2ecc71' : 'rgba(224,170,255,.3)') + '">' + (rule.enabled ? '●' : '○') + '</span>';
+      h += '<span style="font-weight:600;color:var(--mist);font-size:.82rem;min-width:140px">' + escHtml(rule.name) + '</span>';
+      h += '<span class="pill" style="color:#c77dff">' + escHtml(rule.source) + '</span>';
+      h += '<span style="font-size:.68rem;color:rgba(224,170,255,.4)">' + pLabel + '</span>';
+      h += '<span style="font-size:.65rem;color:rgba(224,170,255,.3)">' + overKeys.length + ' field override' + (overKeys.length !== 1 ? 's' : '') + '</span>';
+      if (rule.description) h += '<span style="font-size:.65rem;color:rgba(224,170,255,.3);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(rule.description) + '</span>';
+      h += '<button class="btn-sm" style="margin-left:auto;padding:2px 8px;font-size:.65rem" onclick="openDetectionRuleEditor(&apos;' + escHtml(rule.id) + '&apos;)">Edit</button>';
+      h += '</div>';
+    });
+    box.innerHTML = h;
+  } catch(e) { box.innerHTML = '<p class="empty">Failed: ' + escHtml(String(e)) + '</p>'; }
+}
+
+function addOverrideRow(key, val) {
+  var container = document.getElementById('dr-overrides');
+  var row = document.createElement('div');
+  row.style.cssText = 'display:flex;gap:6px;align-items:center';
+  row.innerHTML = '<input type="text" placeholder="field.path" value="' + escHtml(key || '') + '" style="flex:1;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:6px;padding:6px 8px;color:var(--mist);font-size:.78rem;font-family:monospace" class="dr-key"/>' +
+    '<input type="text" placeholder="value" value="' + escHtml(val || '') + '" style="flex:2;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:6px;padding:6px 8px;color:var(--mist);font-size:.78rem" class="dr-val"/>' +
+    '<button class="btn-sm" style="padding:2px 6px;font-size:.6rem;background:rgba(120,30,40,.3);color:#ff8080" onclick="this.parentElement.remove()">x</button>';
+  container.appendChild(row);
+}
+
+function openDetectionRuleEditor(ruleId) {
+  _editingRuleId = ruleId || null;
+  var modal = document.getElementById('detection-rule-modal');
+  modal.classList.remove('hidden');
+  document.getElementById('dr-overrides').innerHTML = '';
+  // Populate source dropdown
+  var sel = document.getElementById('dr-source');
+  sel.innerHTML = '';
+  Object.keys(SOURCES).forEach(function(s) {
+    sel.innerHTML += '<option value="' + escHtml(s) + '">' + escHtml((SOURCES[s] || {}).name || s) + '</option>';
+  });
+  if (_editingRuleId) {
+    document.getElementById('dr-modal-title').textContent = 'Edit Detection Rule';
+    document.getElementById('dr-delete-btn').style.display = '';
+    fetch('/admin/api/detection-rules/' + _editingRuleId, {credentials:'same-origin'})
+      .then(function(r) { return r.json(); })
+      .then(function(rule) {
+        document.getElementById('dr-name').value = rule.name || '';
+        document.getElementById('dr-source').value = rule.source || '';
+        document.getElementById('dr-desc').value = rule.description || '';
+        document.getElementById('dr-period').value = rule.periodicity || 10;
+        document.getElementById('dr-enabled').checked = rule.enabled !== false;
+        var ov = rule.field_overrides || {};
+        Object.keys(ov).forEach(function(k) { addOverrideRow(k, ov[k]); });
+      });
+  } else {
+    document.getElementById('dr-modal-title').textContent = 'New Detection Rule';
+    document.getElementById('dr-delete-btn').style.display = 'none';
+    document.getElementById('dr-name').value = '';
+    document.getElementById('dr-desc').value = '';
+    document.getElementById('dr-period').value = 10;
+    document.getElementById('dr-enabled').checked = true;
+    addOverrideRow('', '');
+  }
+}
+
+function closeDetectionRuleModal() {
+  document.getElementById('detection-rule-modal').classList.add('hidden');
+  _editingRuleId = null;
+}
+
+function _collectOverrides() {
+  var rows = document.getElementById('dr-overrides').querySelectorAll('div');
+  var ov = {};
+  rows.forEach(function(row) {
+    var k = row.querySelector('.dr-key');
+    var v = row.querySelector('.dr-val');
+    if (k && v && k.value.trim()) ov[k.value.trim()] = v.value;
+  });
+  return ov;
+}
+
+async function saveDetectionRule() {
+  var body = {
+    name: document.getElementById('dr-name').value,
+    source: document.getElementById('dr-source').value,
+    description: document.getElementById('dr-desc').value,
+    periodicity: parseInt(document.getElementById('dr-period').value) || 10,
+    enabled: document.getElementById('dr-enabled').checked,
+    field_overrides: _collectOverrides()
+  };
+  try {
+    var url = _editingRuleId ? '/admin/api/detection-rules/' + _editingRuleId : '/admin/api/detection-rules';
+    var method = _editingRuleId ? 'PUT' : 'POST';
+    var r = await fetch(url, {method:method, credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    if (!r.ok) { var d = await r.json(); alert('Error: ' + (d.error || r.status)); return; }
+    closeDetectionRuleModal();
+    toast((_editingRuleId ? 'Updated' : 'Created') + ': ' + body.name);
+    loadDetectionRules();
+  } catch(e) { alert('Failed: ' + e); }
+}
+
+async function deleteDetectionRule() {
+  if (!_editingRuleId) return;
+  if (!confirm('Delete this detection rule?')) return;
+  try {
+    await fetch('/admin/api/detection-rules/' + _editingRuleId, {method:'DELETE', credentials:'same-origin'});
+    closeDetectionRuleModal();
+    toast('Deleted');
+    loadDetectionRules();
+  } catch(e) { alert('Failed: ' + e); }
 }
 
 function openProfileEditor(profileId) {
@@ -4650,3 +4822,66 @@ async def api_source_intensity_set(source: str, request: Request, ag_session: st
     value = int(body.get("intensity", 50))
     result = profiles.set_intensity(source, value)
     return JSONResponse({"source": source, "intensity": result})
+
+
+# ── Detection rules API ──────────────────────────────────────────────────────
+
+@router.get("/api/detection-rules")
+async def api_detection_rules_list(source: str | None = None, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import detection_rules
+    return JSONResponse({"rules": detection_rules.list_rules(source)})
+
+
+@router.post("/api/detection-rules")
+async def api_detection_rules_create(request: Request, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import detection_rules
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    if not body.get("name", "").strip():
+        return JSONResponse({"error": "name is required"}, status_code=400)
+    if not body.get("source", "").strip():
+        return JSONResponse({"error": "source is required"}, status_code=400)
+    rule = detection_rules.create_rule(body)
+    return JSONResponse(rule, status_code=201)
+
+
+@router.get("/api/detection-rules/{rule_id}")
+async def api_detection_rules_get(rule_id: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import detection_rules
+    rule = detection_rules.get_rule(rule_id)
+    if not rule:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return JSONResponse(rule)
+
+
+@router.put("/api/detection-rules/{rule_id}")
+async def api_detection_rules_update(rule_id: str, request: Request, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import detection_rules
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    rule = detection_rules.update_rule(rule_id, body)
+    if not rule:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return JSONResponse(rule)
+
+
+@router.delete("/api/detection-rules/{rule_id}")
+async def api_detection_rules_delete(rule_id: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import detection_rules
+    if detection_rules.delete_rule(rule_id):
+        return JSONResponse({"ok": True})
+    return JSONResponse({"error": "not_found"}, status_code=404)

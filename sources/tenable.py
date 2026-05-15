@@ -3,6 +3,7 @@
 import random
 from typing import Any
 
+import detection_rules
 import profiles
 from generators import (
     epoch_to_iso,

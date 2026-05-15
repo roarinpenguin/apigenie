@@ -4,6 +4,7 @@ import json
 import random
 from typing import Any
 
+import detection_rules
 import profiles
 from generators import (
     generate_email,
@@ -91,6 +92,7 @@ def get_audit_logs_response(limit: int = 50, project: str | None = None) -> dict
     ctx = profiles.get_context("gcp_audit")
     count = profiles.scale_count("gcp_audit", min(limit, 50))
     entries = [generate_audit_log(project, ctx) for _ in range(count)]
+    entries = detection_rules.inject_detection_events("gcp_audit", entries)
     return {"entries": entries}
 
 

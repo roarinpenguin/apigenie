@@ -222,7 +222,7 @@ The admin sidebar is organized into three sections:
 | **Listeners** | Custom HTTP endpoints for SCol Lua source testing — synthetic data (endpoint / identity / cloud / network) or replay uploaded log files (json / jsonl / csv / syslog / cef). Design: [`docs/CUSTOM_LISTENERS.md`](docs/CUSTOM_LISTENERS.md) |
 | **Container Logs** | Tail logs of any container via `docker logs --follow` |
 | **Investigations** | IP lookup (WHOIS, rDNS, GeoIP), request history, anomaly detection, and IP banning. Protected by a **separate investigation password**. Request log files downloadable as JSONL |
-| **Log Profiles** | Entity pools (users, machines, C2 servers, malware, mail senders) bound to sources with signal-to-noise ratio. **Per-source log volume control** (1–100%) scales how many logs each API response contains. See [Log Profiles](#log-profiles) below |
+| **Log Profiles** | Entity pools (users, machines, C2 servers, malware, mail senders) bound to sources with signal-to-noise ratio. **Per-source log volume control** (1–100%) scales how many logs each API response contains. **Detection Rules** inject SIEM-triggering log patterns at configurable periodicity. See [Log Profiles](#log-profiles) and [Detection Rules](#detection-rules) below |
 | **Source Details** | Reference cards per platform with copy-pasteable endpoints, auth values, and `curl` / `kcat` examples |
 | **System Settings** | Domain, TLS info, password management, cert renewal |
 
@@ -274,6 +274,8 @@ MaxMind ships weekly updates; re-running the script (or scheduling it via cron) 
 | `/admin/api/sysmon` | System resource time-series samples |
 | `/admin/api/sysmon/latest` | Latest CPU, memory, disk, container stats |
 | `/admin/api/bus-status` | Kafka consumer groups + Pub/Sub subscription status |
+| `/admin/api/detection-rules` | List / create detection rules |
+| `/admin/api/detection-rules/{id}` | Read / update / delete a detection rule |
 
 ---
 
@@ -368,6 +370,7 @@ apigenie/
 ├── admin.py                  # Admin UI router (/admin/*) + source reference cards + SA JSON generator
 ├── auth.py                   # Bearer / Basic / X-ApiKeys / Duo HMAC dependency injectors
 ├── profiles.py               # Log Profiles: CRUD, Star Wars padding, ProfileContext, per-source intensity
+├── detection_rules.py        # Detection Rules: CRUD, field override injection, count/time-based periodicity
 ├── intrusions.py             # Intrusion tracking: path classification, per-IP aggregation, acknowledgement
 ├── sysmon.py                 # System resource monitor: CPU, memory, disk, Docker container stats
 ├── bus_monitor.py            # Kafka consumer-group + Pub/Sub subscription status poller
@@ -463,6 +466,55 @@ Log Profiles let you define **reusable entity pools** that are blended into gene
 4. **Log volume control** — set per-source **intensity** (1–100%) to scale how many log entries each API response contains. At 100% a source returns the full batch (e.g. 100 Okta logs); at 25%, ~25 logs per request. Useful for balancing ingestion load across many pipelines.
 5. **Deterministic seeding** — the same profile + source combination always produces the same entity sequence (useful for reproducible demos).
 
+---
+
+## Detection Rules
+
+Detection Rules let you inject specific log patterns into the normal event flow to **trigger SIEM detection rules** during demos and testing. Unlike profiles (which control *who* appears in logs), detection rules control *what happens* — overriding specific field values to match alert signatures.
+
+### Creating a rule
+
+Via the Admin UI *Log Profiles* tab → *Detection Rules* section, or `POST /admin/api/detection-rules`:
+
+| Field | Description |
+|-------|-------------|
+| **Name** | Human-readable label (e.g. "Brute force login") |
+| **Source** | Which source this rule applies to (e.g. `okta`, `azure_platform`, `gcp_audit`) |
+| **Field overrides** | Key-value pairs using dot notation for nested fields (e.g. `outcome.result` → `FAILURE`) |
+| **Periodicity** | How often to inject (see below) |
+| **Enabled** | Toggle on/off without deleting |
+
+### Periodicity modes
+
+| Value | Mode | Behaviour |
+|-------|------|-----------|
+| **1–100** | Count-based | Inject 1 detection event per N normal logs. E.g. `5` = 1 in every 5 logs |
+| **>100** | Time-based | Inject 1 detection event every N seconds. E.g. `300` = once every 5 minutes |
+
+### Coverage
+
+Detection rules apply to **all 14 HTTP sources** plus the **Kafka publisher** (source key `azure_platform`) and **Pub/Sub publisher** (source key `gcp_audit`). Injected events carry a `_detection_rule` field with the rule name for easy identification.
+
+### Example
+
+A rule for Okta brute-force detection:
+
+```json
+{
+  "name": "Brute force login",
+  "source": "okta",
+  "periodicity": 5,
+  "field_overrides": {
+    "eventType": "user.session.start",
+    "outcome.result": "FAILURE",
+    "severity": "WARN",
+    "displayMessage": "Authentication failed - invalid credentials"
+  }
+}
+```
+
+With periodicity 5 and a batch of 50 Okta logs, this injects ~10 failed-login events — enough to trigger a brute-force detection rule in your SIEM.
+
 ### Storage
 
 | Item | Path |
@@ -470,6 +522,7 @@ Log Profiles let you define **reusable entity pools** that are blended into gene
 | Profile JSON files | `./data/profiles/<uuid>.json` |
 | Source↔profile bindings | `./data/source_profiles.json` |
 | Per-source intensity | `./data/source_intensity.json` |
+| Detection rules | `./data/detection_rules.json` |
 | Acknowledged intrusion paths | `./data/acknowledged_paths.json` |
 | IP ban list | `./data/bans.json` |
 | Usage telemetry (SQLite) | `./data/telemetry.db` |

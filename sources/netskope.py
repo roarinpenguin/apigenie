@@ -3,6 +3,7 @@
 import random
 from typing import Any
 
+import detection_rules
 import profiles
 from generators import (
     generate_country_code,
@@ -168,6 +169,7 @@ def get_alerts_response(limit: int = 100, alert_type: str | None = None) -> dict
     ctx = profiles.get_context("netskope")
     count = profiles.scale_count("netskope", min(limit, 100))
     alerts = [_generate_alert(alert_type=alert_type, ctx=ctx) for _ in range(count)]
+    alerts = detection_rules.inject_detection_events("netskope", alerts)
     return {
         "result": alerts,
         "status": "success",

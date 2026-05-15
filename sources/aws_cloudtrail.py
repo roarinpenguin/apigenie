@@ -3,6 +3,7 @@
 import random
 from typing import Any
 
+import detection_rules
 import profiles
 from generators import (
     generate_email,
@@ -118,6 +119,7 @@ def get_events_response(limit: int = 50) -> dict[str, Any]:
     ctx = profiles.get_context("aws_cloudtrail")
     count = profiles.scale_count("aws_cloudtrail", min(limit, 50))
     events = [_generate_event(ctx) for _ in range(count)]
+    events = detection_rules.inject_detection_events("aws_cloudtrail", events)
     events.sort(key=lambda x: x["eventTime"], reverse=True)
     return {
         "Events": [

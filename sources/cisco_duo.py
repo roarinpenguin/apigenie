@@ -3,6 +3,7 @@
 import random
 from typing import Any
 
+import detection_rules
 import profiles
 from generators import (
     epoch_to_iso,
@@ -115,6 +116,7 @@ def get_auth_logs_response(limit: int = 100, mintime: int | None = None, maxtime
     ctx = profiles.get_context("cisco_duo")
     count = profiles.scale_count("cisco_duo", min(limit, 100))
     logs = [_make_auth_log(mintime, maxtime, ctx) for _ in range(count)]
+    logs = detection_rules.inject_detection_events("cisco_duo", logs)
     logs.sort(key=lambda x: x["timestamp"], reverse=True)
     next_offset = None
     if count == limit:

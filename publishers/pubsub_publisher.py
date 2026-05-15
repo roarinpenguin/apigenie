@@ -44,9 +44,17 @@ def _publisher_loop() -> None:
             t0 = time.monotonic()
             ok, err = 0, None
             try:
+                import json as _json
+                msgs = [generate_pubsub_message(PUBSUB_PROJECT_ID) for _ in range(MESSAGES_PER_BATCH)]
+                try:
+                    import detection_rules
+                    decoded = [_json.loads(m) for m in msgs]
+                    decoded = detection_rules.inject_detection_events("gcp_audit", decoded)
+                    msgs = [_json.dumps(d).encode("utf-8") for d in decoded]
+                except Exception:
+                    pass
                 futures = []
-                for _ in range(MESSAGES_PER_BATCH):
-                    data = generate_pubsub_message(PUBSUB_PROJECT_ID)
+                for data in msgs:
                     future = publisher.publish(topic_path, data)
                     futures.append(future)
                 for f in futures:

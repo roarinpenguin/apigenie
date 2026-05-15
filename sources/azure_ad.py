@@ -3,6 +3,7 @@
 import random
 from typing import Any
 
+import detection_rules
 import profiles
 from generators import (
     generate_country_code,
@@ -154,6 +155,7 @@ def get_audit_logs_response(limit: int = 50, skip: int = 0) -> dict[str, Any]:
                 "additionalDetails": [],
             }
         )
+    logs = detection_rules.inject_detection_events("azure_ad", logs)
     return {"@odata.context": "https://graph.microsoft.com/v1.0/$metadata#auditLogs/directoryAudits", "value": logs}
 
 
@@ -205,4 +207,5 @@ def get_signin_logs_response(limit: int = 50, skip: int = 0) -> dict[str, Any]:
             },
         }
         logs.append(log)
+    logs = detection_rules.inject_detection_events("azure_ad", logs)
     return {"@odata.context": "https://graph.microsoft.com/v1.0/$metadata#auditLogs/signIns", "value": logs}

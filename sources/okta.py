@@ -3,6 +3,7 @@
 import random
 from typing import Any
 
+import detection_rules
 import profiles
 from generators import (
     generate_country_code,
@@ -139,6 +140,7 @@ def get_logs_response(since: str | None = None, limit: int = 100) -> tuple[list[
     ctx = profiles.get_context("okta")
     count = profiles.scale_count("okta", min(limit, 100))
     logs = [_generate_log(ctx) for _ in range(count)]
+    logs = detection_rules.inject_detection_events("okta", logs)
     logs.sort(key=lambda x: x["published"], reverse=True)
     # Return a Link header next URL hint (caller decides full URL)
     next_url = f"?since={now_minus_minutes_iso(0)}&limit={limit}" if count == limit else None

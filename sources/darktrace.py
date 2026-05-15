@@ -3,6 +3,7 @@
 import random
 from typing import Any
 
+import detection_rules
 import profiles
 from generators import (
     generate_hostname,
@@ -150,6 +151,7 @@ def get_model_breaches(limit: int = 50, minscore: float = 0.0) -> list[dict[str,
     ctx = profiles.get_context("darktrace")
     count = profiles.scale_count("darktrace", min(limit, 50))
     breaches = [_generate_model_breach(ctx) for _ in range(count)]
+    breaches = detection_rules.inject_detection_events("darktrace", breaches)
     return [b for b in breaches if b["score"] >= minscore]
 
 

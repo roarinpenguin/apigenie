@@ -3,6 +3,7 @@
 import random
 from typing import Any
 
+import detection_rules
 import profiles
 from generators import (
     generate_ip,
@@ -152,6 +153,7 @@ def get_issues_response(first: int = 100, after: str | None = None) -> dict[str,
     ctx = profiles.get_context("wiz")
     count = profiles.scale_count("wiz", min(first, 100))
     nodes = [_generate_issue(ctx) for _ in range(count)]
+    nodes = detection_rules.inject_detection_events("wiz", nodes)
     end_cursor = generate_uuid() if count == first else None
     return {
         "data": {

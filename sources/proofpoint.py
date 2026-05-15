@@ -3,6 +3,7 @@
 import random
 from typing import Any
 
+import detection_rules
 import profiles
 from generators import (
     generate_email,
@@ -142,6 +143,7 @@ def get_logs_response(since_seconds: int = 3600) -> dict[str, Any]:
     now = now_iso()
 
     messages = [_generate_message(since_seconds, ctx) for _ in range(count)]
+    messages = detection_rules.inject_detection_events("proofpoint", messages)
     blocked = [m for m in messages if m["quarantineFolder"] or "blocked" in str(m.get("threats", ""))]
 
     return {

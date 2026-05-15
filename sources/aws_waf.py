@@ -3,6 +3,7 @@
 import random
 from typing import Any
 
+import detection_rules
 import profiles
 from generators import (
     generate_ip,
@@ -112,5 +113,6 @@ def get_logs_response(limit: int = 100) -> list[dict[str, Any]]:
     ctx = profiles.get_context("aws_waf")
     count = profiles.scale_count("aws_waf", min(limit, 100))
     logs = [_generate_log(ctx) for _ in range(count)]
+    logs = detection_rules.inject_detection_events("aws_waf", logs)
     logs.sort(key=lambda x: x["timestamp"], reverse=True)
     return logs
