@@ -43,9 +43,9 @@ _AGG_LOCK = threading.Lock()
 _SOURCE_PATTERNS: list[tuple[str, list[str]]] = [
     ("okta",       ["/api/v1/logs"]),
     ("netskope",   ["/api/v2/"]),
-    ("m365",       ["/activity/feed/"]),
-    ("entra_id",   ["/v1.0/auditLogs/", "/v1.0/identityProtection/", "/v2.0/token", "/oauth2/"]),
-    ("defender",   ["/v1.0/subscriptions/", "/subscriptions/", "/v1.0/security/", "/security/alerts", "/security/incidents", "/security/secureScores", "/security/assessments", "/auditLogs/directoryAudits", "/auditLogs/signIns"]),
+    ("m365",       ["/activity/feed/", "/v1.0/security/alerts_v2"]),
+    ("entra_id",   ["/v1.0/auditLogs/", "/v1.0/identityProtection/"]),
+    ("defender",   ["/v1.0/subscriptions/", "/subscriptions/", "/v1.0/security/", "/security/incidents", "/security/secureScores", "/security/assessments"]),
     ("cisco_duo",  ["/admin/v1/", "/admin/v2/"]),
     ("gcp_audit",  ["/v2/entries"]),
     ("tenable",    ["/vulns/", "/assets/", "/audit-log/", "/api/v1/refresh-access-token"]),
@@ -66,15 +66,16 @@ _SKIP_EXACT = {"/admin", "/admin/"}
 _SKIP_PREFIXES = ("/admin/login", "/admin/logout", "/admin/api/", "/health", "/stats", "/docs", "/openapi", "/listener/")
 
 
-def get_source(path: str) -> str | None:
+def get_source(path: str, body: str = "") -> str | None:
     for source, patterns in _SOURCE_PATTERNS:
         for p in patterns:
             if path == p or path.startswith(p):
                 return source
     # Tenant-prefixed Microsoft OAuth: /{tenant}/oauth2/v2.0/token
-    # The tenant id can be a UUID or a named tenant (e.g. "my-roarin-tenant-id"),
-    # so match on the suffix rather than the tenant format.
+    # Distinguish M365 vs Entra ID by checking the scope in the POST body.
     if path.endswith("/oauth2/v2.0/token") or path.endswith("/oauth2/token"):
+        if "manage.office.com" in body or "office365" in body:
+            return "m365"
         return "entra_id"
     return None
 
@@ -158,7 +159,11 @@ class TraceMiddleware(BaseHTTPMiddleware):
             from starlette.responses import JSONResponse
             return JSONResponse({"error": "forbidden", "reason": "IP banned"}, status_code=403)
 
-        source = get_source(path)
+        # Read body early so we can use it for source detection (M365 vs Entra ID token)
+        body_bytes = await request.body()
+        body_str = body_bytes.decode("utf-8", errors="replace")[:2000] if body_bytes else ""
+
+        source = get_source(path, body_str)
         if source is None:
             # Unrecognised path — capture as intrusion attempt
             try:
@@ -181,8 +186,6 @@ class TraceMiddleware(BaseHTTPMiddleware):
                 return await call_next(request)
 
         t0 = time.monotonic()
-        body_bytes = await request.body()
-        body_str = body_bytes.decode("utf-8", errors="replace")[:2000] if body_bytes else ""
 
         response = await call_next(request)
         duration_ms = int((time.monotonic() - t0) * 1000)
