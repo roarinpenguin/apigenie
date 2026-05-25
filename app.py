@@ -750,10 +750,14 @@ async def oauth_token_tenant(tenant_id: str, request: Request) -> dict[str, Any]
         scope = str(form.get("scope", ""))
     except Exception:
         scope = ""
-    if "servicebus.windows.net" in scope or "eventhubs" in scope.lower() or scope.endswith("/.default"):
+    # Kafka OAUTHBEARER: only for Event Hubs (servicebus.windows.net)
+    if "servicebus.windows.net" in scope or "eventhubs" in scope.lower():
         logger.info("OAUTHBEARER token request from tenant %s (scope: %s)", tenant_id, scope)
         return _oauthbearer_token_payload(scope=scope or "kafka")
-    return _token_payload(scope="https://graph.microsoft.com/.default")
+    # M365 / Graph / other Microsoft services: return standard Bearer token with requested scope
+    effective_scope = scope or "https://graph.microsoft.com/.default"
+    # Include common Microsoft permissions the collector may check for
+    return _token_payload(scope=f"{effective_scope} ActivityFeed.Read ActivityFeed.ReadDlp SecurityEvents.Read.All ServiceHealth.Read.All")
 
 
 # Tenable refresh-access-token (GET, no body) — collector calls this with its
