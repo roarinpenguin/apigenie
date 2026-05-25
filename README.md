@@ -223,6 +223,7 @@ The admin sidebar is organized into three sections:
 | **Container Logs** | Tail logs of any container via `docker logs --follow` |
 | **Investigations** | IP lookup (WHOIS, rDNS, GeoIP), request history, anomaly detection, and IP banning. Protected by a **separate investigation password**. Request log files downloadable as JSONL |
 | **Log Profiles** | Entity pools (users, machines, C2 servers, malware, mail senders) bound to sources with signal-to-noise ratio. **Per-source log volume control** (1–100%) scales how many logs each API response contains. **Detection Rules** inject SIEM-triggering log patterns at configurable periodicity. See [Log Profiles](#log-profiles) and [Detection Rules](#detection-rules) below |
+| **Log Push** | Actively send generated logs to external destinations. 10 source types (Palo Alto, FortiGate, Check Point, Cisco ASA, CrowdStrike, Carbon Black, Zscaler, Imperva, Barracuda, Infoblox), 3 formats (JSON/Syslog RFC5424/CEF), 3 transports (HTTP/HEC/Syslog). Start/stop control, event log with delivery confirmation, TLS cert management. See [Log Push](#log-push) below |
 | **Source Details** | Reference cards per platform with copy-pasteable endpoints, auth values, and `curl` / `kcat` examples |
 | **System Settings** | Domain, TLS info, password management, cert renewal |
 
@@ -276,6 +277,14 @@ MaxMind ships weekly updates; re-running the script (or scheduling it via cron) 
 | `/admin/api/bus-status` | Kafka consumer groups + Pub/Sub subscription status |
 | `/admin/api/detection-rules` | List / create detection rules |
 | `/admin/api/detection-rules/{id}` | Read / update / delete a detection rule |
+| `/admin/api/push/source-types` | List available push source types |
+| `/admin/api/push/profiles` | List / create push profiles |
+| `/admin/api/push/profiles/{id}` | Read / update / delete a push profile |
+| `/admin/api/push/profiles/{id}/start` | Start pushing logs |
+| `/admin/api/push/profiles/{id}/stop` | Stop pushing logs |
+| `/admin/api/push/profiles/{id}/status` | Runtime status + event count |
+| `/admin/api/push/profiles/{id}/events` | Last 100 sent events with delivery confirmation |
+| `/admin/api/push/profiles/{id}/tls` | TLS certificate details for a profile |
 
 ---
 
@@ -371,6 +380,7 @@ apigenie/
 ├── auth.py                   # Bearer / Basic / X-ApiKeys / Duo HMAC dependency injectors
 ├── profiles.py               # Log Profiles: CRUD, Star Wars padding, ProfileContext, per-source intensity
 ├── detection_rules.py        # Detection Rules: CRUD, field override injection, count/time-based periodicity
+├── log_pusher.py             # Log Push framework: transports, formatters, scheduling, CRUD, observability
 ├── intrusions.py             # Intrusion tracking: path classification, per-IP aggregation, acknowledgement
 ├── sysmon.py                 # System resource monitor: CPU, memory, disk, Docker container stats
 ├── bus_monitor.py            # Kafka consumer-group + Pub/Sub subscription status poller
@@ -390,6 +400,10 @@ apigenie/
 │   ├── wiz.py · snyk.py · darktrace.py
 │   ├── aws_cloudtrail.py · aws_waf.py · aws_guardduty.py    # generators only (no HTTP routes — see LocalStack plan)
 │   └── synthetic/            # Synthetic topics for custom listeners (also profile-aware)
+├── push_sources/             # Push log generators (one module per vendor)
+│   ├── paloalto.py · fortigate.py · checkpoint.py · cisco_asa.py
+│   ├── crowdstrike.py · carbonblack.py · zscaler.py
+│   └── imperva.py · barracuda.py · infoblox.py
 ├── publishers/
 │   ├── kafka_publisher.py    # Background thread → Kafka topic azure-platform-logs
 │   └── pubsub_publisher.py   # Background thread → Pub/Sub topic audit-logs
@@ -515,6 +529,56 @@ A rule for Okta brute-force detection:
 
 With periodicity 5 and a batch of 50 Okta logs, this injects ~10 failed-login events — enough to trigger a brute-force detection rule in your SIEM.
 
+---
+
+## Log Push
+
+Log Push actively **sends** generated logs from ApiGenie to external destinations — the reverse of the pull model used by the HTTP sources. This is how real firewalls, EDRs, and email gateways deliver telemetry.
+
+### Source types
+
+| # | Source | Event Types | Typical Transport |
+|---|--------|-------------|-------------------|
+| 1 | **Palo Alto (PAN-OS)** | Traffic, Threat, URL, WildFire, GlobalProtect, System, Config, Auth, HIP, Decryption, Tunnel, UserID | Syslog, HEC |
+| 2 | **Fortinet FortiGate** | Traffic, UTM (virus, IPS, webfilter, appctrl), Event (system, VPN), Anomaly | Syslog, HEC |
+| 3 | **Check Point NGFW** | Firewall, IPS, Anti-Bot, Anti-Virus, URL Filtering, Application Control | Syslog, CEF |
+| 4 | **Cisco ASA / FTD** | Connection built/teardown, denied, threat detection, VPN, AAA, system (ASA- msg IDs) | Syslog |
+| 5 | **CrowdStrike Falcon** | DetectionSummary, IncidentSummary, AuditEvent (MITRE ATT&CK mapped) | HTTP, HEC |
+| 6 | **Carbon Black Cloud** | CB_ANALYTICS alerts, WATCHLIST hits, process events, network connections | HTTP, HEC |
+| 7 | **Zscaler ZIA** | Web transactions, firewall, DNS, tunnel (NSS format) | HTTP, HEC |
+| 8 | **Imperva Cloud WAF** | WAF events, bot detection, ACL violations, DDoS | HTTP, HEC |
+| 9 | **Barracuda Email Gateway** | Email filtering (spam, virus, DLP), ATP sandbox, admin audit | Syslog, HEC |
+| 10 | **Infoblox DDI** | DNS queries, RPZ hits, DHCP, threat intelligence (C2, DGA, tunneling) | Syslog |
+
+### Formats
+
+| Format | Description |
+|--------|-------------|
+| **JSON** | Structured JSON, one event per line |
+| **Syslog** | RFC5424 compliant with structured data |
+| **CEF** | Common Event Format (ArcSight compatible) |
+
+### Transports
+
+| Transport | Protocol | Delivery confirmation |
+|-----------|----------|----------------------|
+| **HTTP POST** | HTTP/HTTPS with Bearer/Basic auth | Yes (HTTP status code) |
+| **Splunk HEC** | HTTP with `Splunk <token>` auth | Yes (HTTP status code) |
+| **Syslog TCP** | TCP with optional TLS | Yes (TCP ACK) |
+| **Syslog UDP** | UDP (fire-and-forget) | No |
+
+### Features
+
+- **Rate control**: 1–1000 events per second
+- **Duration**: seconds, minutes, hours, days, or weeks
+- **TLS**: per-profile certificate upload or system default
+- **Password protection**: optional per-profile
+- **Log Profile integration**: blends profile entities into generated events
+- **Detection Rules**: injects SIEM-triggering patterns at configured periodicity
+- **Observability**: push events appear in Request Inspector, Usage charts, and Flows/GeoMap
+- **Event log**: last 100 events per profile with delivery confirmation (protocol, bytes, status)
+- **Start/Stop**: runtime control via UI or API
+
 ### Storage
 
 | Item | Path |
@@ -523,6 +587,8 @@ With periodicity 5 and a batch of 50 Okta logs, this injects ~10 failed-login ev
 | Source↔profile bindings | `./data/source_profiles.json` |
 | Per-source intensity | `./data/source_intensity.json` |
 | Detection rules | `./data/detection_rules.json` |
+| Push profiles | `./data/push_profiles.json` |
+| Push TLS certificates | `./data/push_certs/*.pem` |
 | Acknowledged intrusion paths | `./data/acknowledged_paths.json` |
 | IP ban list | `./data/bans.json` |
 | Usage telemetry (SQLite) | `./data/telemetry.db` |

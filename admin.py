@@ -645,6 +645,7 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
   <span class="nav-section">Configuration &amp; Reference</span>
   <a class="nav-item" onclick="showTab('listeners', this); loadListeners()"><span class="nav-icon">🎯</span> Listeners</a>
   <a class="nav-item" onclick="showTab('profiles', this); loadProfiles()"><span class="nav-icon">🎭</span> Log Profiles</a>
+  <a class="nav-item" onclick="showTab('push', this); loadPushProfiles()"><span class="nav-icon">🚀</span> Log Push</a>
   <a class="nav-item" onclick="showTab('config', this)"><span class="nav-icon">🔧</span> Source Details</a>
   <a class="nav-item" onclick="showTab('settings', this); loadSettings()"><span class="nav-icon">⚙</span> System Settings</a>
   <div class="footer">
@@ -799,6 +800,82 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
         <div class="terminal" id="terminal">
           <span style="color:rgba(224,170,255,.3)">Select a container and click Start…</span>
         </div>
+      </div>
+    </div>
+
+    <!-- LOG PUSH TAB -->
+    <div class="pane" id="pane-push">
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span>Push Profiles</span>
+          <button class="btn-sm" onclick="openPushEditor()">+ New Push Profile</button>
+        </div>
+        <p style="font-size:.78rem;color:rgba(224,170,255,.45);margin-bottom:14px">
+          Actively send generated logs to external destinations. Configure the source type, log format (JSON/Syslog/CEF),
+          transport (HTTP/HEC/Syslog), destination, duration, and rate. Logs are blended with Log Profiles and Detection Rules.
+        </p>
+        <div id="push-profiles-list"><p class="empty">Loading…</p></div>
+      </div>
+    </div>
+
+    <!-- Push Profile Editor Modal -->
+    <div class="modal-overlay hidden" id="push-modal">
+      <div class="modal" style="width:min(640px,94%)">
+        <div class="modal-head"><h3 id="push-modal-title">New Push Profile</h3></div>
+        <div class="modal-body" style="display:flex;flex-direction:column;gap:10px;max-height:70vh;overflow-y:auto">
+          <div style="display:flex;gap:10px">
+            <div style="flex:1"><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Name</label>
+              <input id="push-name" type="text" placeholder="e.g. PAN to SDL" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/></div>
+            <div style="flex:1"><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Source Type</label>
+              <select id="push-source-type" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"></select></div>
+          </div>
+          <div style="display:flex;gap:10px">
+            <div style="flex:1"><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Format</label>
+              <select id="push-format" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
+                <option value="json">JSON</option><option value="syslog">Syslog (RFC5424)</option><option value="cef">CEF</option>
+              </select></div>
+            <div style="flex:1"><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Transport</label>
+              <select id="push-transport" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
+                <option value="http">HTTP POST</option><option value="hec">Splunk HEC</option><option value="syslog">Syslog TCP/UDP</option>
+              </select></div>
+          </div>
+          <div style="font-size:.72rem;color:rgba(224,170,255,.5);margin-top:4px">Destination</div>
+          <div style="display:flex;gap:10px">
+            <div style="flex:2"><input id="push-host" type="text" placeholder="Host / IP" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/></div>
+            <div style="flex:1"><input id="push-port" type="number" placeholder="Port" value="514" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/></div>
+            <div style="flex:1"><select id="push-protocol" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
+              <option value="tcp">TCP</option><option value="udp">UDP</option></select></div>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center">
+            <label style="font-size:.72rem;color:rgba(224,170,255,.5);display:flex;align-items:center;gap:4px"><input id="push-tls" type="checkbox" style="accent-color:#c77dff"/> TLS</label>
+            <div style="flex:1"><input id="push-path" type="text" placeholder="Path (HTTP/HEC)" value="/" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.78rem"/></div>
+          </div>
+          <div style="font-size:.72rem;color:rgba(224,170,255,.5);margin-top:4px">Authentication</div>
+          <div style="display:flex;gap:10px">
+            <div style="flex:1"><select id="push-auth-type" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
+              <option value="none">None</option><option value="bearer">Bearer Token</option><option value="basic">Basic Auth</option></select></div>
+            <div style="flex:2"><input id="push-auth-token" type="text" placeholder="Token / Username:Password / HEC Token" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.78rem"/></div>
+          </div>
+          <div style="font-size:.72rem;color:rgba(224,170,255,.5);margin-top:4px">Rate &amp; Duration</div>
+          <div style="display:flex;gap:10px;align-items:center">
+            <div><input id="push-rate" type="number" min="1" max="1000" value="10" style="width:70px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/><span style="font-size:.68rem;color:rgba(224,170,255,.4)"> eps</span></div>
+            <div><input id="push-duration-val" type="number" min="1" value="1" style="width:60px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/></div>
+            <div><select id="push-duration-unit" style="background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
+              <option value="seconds">seconds</option><option value="minutes">minutes</option><option value="hours" selected>hours</option><option value="days">days</option><option value="weeks">weeks</option></select></div>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center">
+            <div style="flex:1"><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Password (optional)</label>
+              <input id="push-password" type="password" placeholder="Protect this profile" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/></div>
+            <div style="flex:1"><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Log Profile</label>
+              <select id="push-profile-id" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
+                <option value="">— none —</option></select></div>
+          </div>
+        </div>
+        <div class="modal-foot"><div></div><div class="right">
+          <button class="btn-sm" style="background:rgba(90,24,154,.3)" onclick="closePushModal()">Cancel</button>
+          <button class="btn-sm" id="push-delete-btn" style="background:rgba(120,30,40,.4);color:#ff8080;display:none" onclick="deletePushProfile()">Delete</button>
+          <button class="btn-sm" onclick="savePushProfile()">Save</button>
+        </div></div>
       </div>
     </div>
 
@@ -1016,7 +1093,7 @@ function showTab(tab, el) {
   document.getElementById('pane-' + tab).classList.add('active');
   if (el) el.classList.add('active');
   activeTab = tab;
-  const titles = {requests:'Request Inspector', observability:'Observability', intrusions:'Intrusions', listeners:'Listeners', profiles:'Log Profiles', investigate:'Investigations', logs:'Container Logs', config:'Source Details', settings:'System Settings'};
+  const titles = {requests:'Request Inspector', observability:'Observability', intrusions:'Intrusions', listeners:'Listeners', profiles:'Log Profiles', push:'Log Push', investigate:'Investigations', logs:'Container Logs', config:'Source Details', settings:'System Settings'};
   // Resize viz canvases when the Observability tab becomes active.
   if (tab === 'observability') {
     if (window._sankey) window._sankey.resize();
@@ -3082,6 +3159,235 @@ async function deleteDetectionRule() {
   } catch(e) { alert('Failed: ' + e); }
 }
 
+// ── Log Push ──────────────────────────────────────────────────────────────
+var _editingPushId = null;
+var _pushSourceTypes = {};
+
+async function loadPushProfiles() {
+  var box = document.getElementById('push-profiles-list');
+  if (!box) return;
+  try {
+    var [pResp, tResp] = await Promise.all([
+      fetch('/admin/api/push/profiles', {credentials:'same-origin'}),
+      fetch('/admin/api/push/source-types', {credentials:'same-origin'})
+    ]);
+    var pd = await pResp.json();
+    var td = await tResp.json();
+    _pushSourceTypes = td.source_types || {};
+    var profiles = pd.profiles || [];
+    if (!profiles.length) {
+      box.innerHTML = '<p class="empty">No push profiles yet. Click "+ New Push Profile" to create one.</p>';
+      return;
+    }
+    var h = '';
+    profiles.forEach(function(p) {
+      var st = _pushSourceTypes[p.source_type] || {};
+      var statusColor = p.status === 'running' ? '#2ecc71' : p.status === 'error' ? '#ff5050' : p.status === 'completed' ? '#c77dff' : 'rgba(224,170,255,.3)';
+      var dest = p.destination || {};
+      h += '<div style="background:rgba(36,0,70,.4);border:1px solid rgba(199,125,255,' + (p.status === 'running' ? '.5' : '.15') + ');border-radius:10px;padding:12px;margin-bottom:10px">';
+      h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">';
+      h += '<div style="display:flex;align-items:center;gap:8px">';
+      h += '<span style="color:' + statusColor + ';font-size:.8rem">' + (p.status === 'running' ? '●' : '○') + '</span>';
+      h += '<span style="font-weight:600;color:var(--mist);font-size:.88rem">' + escHtml(p.name) + '</span>';
+      h += '<span class="pill" style="color:#c77dff">' + escHtml(st.name || p.source_type) + '</span>';
+      h += '<span class="pill">' + escHtml(p.format) + '</span>';
+      h += '<span class="pill">' + escHtml(p.transport) + '</span>';
+      h += '</div>';
+      h += '<div style="display:flex;gap:4px">';
+      if (p.status === 'running') {
+        h += '<button class="btn-sm" style="background:rgba(120,30,40,.4);color:#ff8080;padding:3px 10px;font-size:.68rem" onclick="stopPush(&apos;' + escHtml(p.id) + '&apos;)">Stop</button>';
+      } else {
+        h += '<button class="btn-sm" style="background:rgba(30,120,40,.4);color:#80ff80;padding:3px 10px;font-size:.68rem" onclick="startPush(&apos;' + escHtml(p.id) + '&apos;)">Start</button>';
+      }
+      h += '<button class="btn-sm" style="padding:3px 10px;font-size:.68rem" onclick="openPushEditor(&apos;' + escHtml(p.id) + '&apos;)">Edit</button>';
+      h += '<button class="btn-sm" style="padding:3px 10px;font-size:.68rem" onclick="viewPushEvents(&apos;' + escHtml(p.id) + '&apos;)">Events</button>';
+      h += '</div></div>';
+      h += '<div style="display:flex;gap:16px;font-size:.7rem;color:rgba(224,170,255,.4);flex-wrap:wrap">';
+      h += '<span>' + escHtml(dest.host || '?') + ':' + (dest.port || '?') + '</span>';
+      if (dest.tls) h += '<span style="color:#2ecc71">TLS</span>';
+      h += '<span>' + p.rate + ' eps</span>';
+      h += '<span>' + (p.duration || {}).value + ' ' + (p.duration || {}).unit + '</span>';
+      if (p.events_sent) h += '<span style="color:#c77dff">' + p.events_sent + ' sent</span>';
+      if (p.status === 'running' && p.started_at) h += '<span>since ' + escHtml(p.started_at).replace('T', ' ') + '</span>';
+      if (p.error) h += '<span style="color:#ff5050">' + escHtml(p.error) + '</span>';
+      h += '</div></div>';
+    });
+    box.innerHTML = h;
+  } catch(e) { box.innerHTML = '<p class="empty">Failed: ' + escHtml(String(e)) + '</p>'; }
+}
+
+function openPushEditor(profileId) {
+  _editingPushId = profileId || null;
+  var modal = document.getElementById('push-modal');
+  modal.classList.remove('hidden');
+  // Populate source type dropdown
+  var sel = document.getElementById('push-source-type');
+  sel.innerHTML = '';
+  Object.keys(_pushSourceTypes).forEach(function(k) {
+    sel.innerHTML += '<option value="' + escHtml(k) + '">' + escHtml(_pushSourceTypes[k].name || k) + '</option>';
+  });
+  // Populate log profile dropdown
+  var profSel = document.getElementById('push-profile-id');
+  profSel.innerHTML = '<option value="">-- none --</option>';
+  (_profilesCache || []).forEach(function(p) {
+    profSel.innerHTML += '<option value="' + escHtml(p.id) + '">' + escHtml(p.name) + '</option>';
+  });
+  if (_editingPushId) {
+    document.getElementById('push-modal-title').textContent = 'Edit Push Profile';
+    document.getElementById('push-delete-btn').style.display = '';
+    fetch('/admin/api/push/profiles/' + _editingPushId, {credentials:'same-origin'})
+      .then(function(r) { return r.json(); })
+      .then(function(p) {
+        document.getElementById('push-name').value = p.name || '';
+        document.getElementById('push-source-type').value = p.source_type || '';
+        document.getElementById('push-format').value = p.format || 'json';
+        document.getElementById('push-transport').value = p.transport || 'http';
+        var d = p.destination || {};
+        document.getElementById('push-host').value = d.host || '';
+        document.getElementById('push-port').value = d.port || 514;
+        document.getElementById('push-protocol').value = d.protocol || 'tcp';
+        document.getElementById('push-tls').checked = !!d.tls;
+        document.getElementById('push-path').value = d.path || '/';
+        document.getElementById('push-auth-type').value = d.auth_type || 'none';
+        document.getElementById('push-auth-token').value = d.auth_token || d.hec_token || '';
+        document.getElementById('push-rate').value = p.rate || 10;
+        var dur = p.duration || {};
+        document.getElementById('push-duration-val').value = dur.value || 1;
+        document.getElementById('push-duration-unit').value = dur.unit || 'hours';
+        document.getElementById('push-password').value = '';
+        document.getElementById('push-profile-id').value = p.profile_id || '';
+      });
+  } else {
+    document.getElementById('push-modal-title').textContent = 'New Push Profile';
+    document.getElementById('push-delete-btn').style.display = 'none';
+    document.getElementById('push-name').value = '';
+    document.getElementById('push-host').value = '';
+    document.getElementById('push-port').value = 514;
+    document.getElementById('push-path').value = '/';
+    document.getElementById('push-rate').value = 10;
+    document.getElementById('push-duration-val').value = 1;
+    document.getElementById('push-duration-unit').value = 'hours';
+    document.getElementById('push-password').value = '';
+    document.getElementById('push-profile-id').value = '';
+  }
+}
+
+function closePushModal() {
+  document.getElementById('push-modal').classList.add('hidden');
+  _editingPushId = null;
+}
+
+async function savePushProfile() {
+  var authType = document.getElementById('push-auth-type').value;
+  var authVal = document.getElementById('push-auth-token').value;
+  var body = {
+    name: document.getElementById('push-name').value,
+    source_type: document.getElementById('push-source-type').value,
+    format: document.getElementById('push-format').value,
+    transport: document.getElementById('push-transport').value,
+    destination: {
+      host: document.getElementById('push-host').value,
+      port: parseInt(document.getElementById('push-port').value) || 514,
+      protocol: document.getElementById('push-protocol').value,
+      tls: document.getElementById('push-tls').checked,
+      path: document.getElementById('push-path').value || '/',
+      auth_type: authType,
+      auth_token: authType === 'bearer' ? authVal : '',
+      auth_username: authType === 'basic' ? authVal.split(':')[0] || '' : '',
+      auth_password: authType === 'basic' ? authVal.split(':').slice(1).join(':') || '' : '',
+      hec_token: document.getElementById('push-transport').value === 'hec' ? authVal : ''
+    },
+    rate: parseInt(document.getElementById('push-rate').value) || 10,
+    duration: {
+      value: parseInt(document.getElementById('push-duration-val').value) || 1,
+      unit: document.getElementById('push-duration-unit').value
+    },
+    profile_id: document.getElementById('push-profile-id').value || null
+  };
+  var pw = document.getElementById('push-password').value;
+  if (pw) body.password = pw;
+  try {
+    var url = _editingPushId ? '/admin/api/push/profiles/' + _editingPushId : '/admin/api/push/profiles';
+    var method = _editingPushId ? 'PUT' : 'POST';
+    var r = await fetch(url, {method:method, credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    if (!r.ok) { var d = await r.json(); alert('Error: ' + (d.error || r.status)); return; }
+    closePushModal();
+    toast((_editingPushId ? 'Updated' : 'Created') + ': ' + body.name);
+    loadPushProfiles();
+  } catch(e) { alert('Failed: ' + e); }
+}
+
+async function deletePushProfile() {
+  if (!_editingPushId) return;
+  if (!confirm('Delete this push profile?')) return;
+  try {
+    await fetch('/admin/api/push/profiles/' + _editingPushId, {method:'DELETE', credentials:'same-origin'});
+    closePushModal();
+    toast('Deleted');
+    loadPushProfiles();
+  } catch(e) { alert('Failed: ' + e); }
+}
+
+async function viewPushEvents(profileId) {
+  try {
+    var r = await fetch('/admin/api/push/profiles/' + profileId + '/events', {credentials:'same-origin'});
+    var d = await r.json();
+    var events = d.events || [];
+    var h = '<div style="background:rgba(10,0,20,.5);border:1px solid rgba(199,125,255,.15);border-radius:8px;padding:10px;margin-top:8px;max-height:300px;overflow-y:auto">';
+    h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">';
+    h += '<span style="font-size:.72rem;font-weight:600;color:rgba(224,170,255,.6)">Last ' + events.length + ' events</span>';
+    h += '<button class="btn-sm" style="padding:2px 8px;font-size:.6rem" onclick="this.parentElement.parentElement.remove()">Close</button>';
+    h += '</div>';
+    if (!events.length) {
+      h += '<p class="empty">No events recorded yet.</p>';
+    } else {
+      events.forEach(function(ev) {
+        var color = ev.success ? 'rgba(224,170,255,.5)' : '#ff5050';
+        h += '<details style="margin-bottom:3px">';
+        h += '<summary style="cursor:pointer;font-size:.68rem;color:' + color + '">';
+        h += escHtml(ev.ts) + ' ' + escHtml(ev.type) + (ev.subtype ? '/' + escHtml(ev.subtype) : '');
+        var dl = ev.delivery || {};
+        if (dl.protocol) h += ' <span style="color:rgba(224,170,255,.3)">[' + escHtml(dl.protocol) + ' ' + (dl.bytes || 0) + 'B' + (dl.confirmed === false ? ' unconfirmed' : dl.status ? ' ' + dl.status : ' ok') + ']</span>';
+        if (ev.error) h += ' <span style="color:#ff5050">[' + escHtml(ev.error) + ']</span>';
+        h += '</summary>';
+        h += '<pre style="font-size:.6rem;color:rgba(224,170,255,.4);white-space:pre-wrap;word-break:break-all;margin:2px 0 6px 12px;max-height:120px;overflow-y:auto">' + escHtml(ev.formatted_preview || '') + '</pre>';
+        h += '</details>';
+      });
+    }
+    h += '</div>';
+    // Find the profile card and append
+    var cards = document.querySelectorAll('#push-profiles-list > div');
+    cards.forEach(function(card) {
+      if (card.innerHTML.indexOf(profileId) > -1) {
+        var existing = card.querySelector('[data-event-log]');
+        if (existing) existing.remove();
+        var el = document.createElement('div');
+        el.setAttribute('data-event-log', '1');
+        el.innerHTML = h;
+        card.appendChild(el);
+      }
+    });
+  } catch(e) { toast('Failed: ' + e, true); }
+}
+
+async function startPush(profileId) {
+  try {
+    var r = await fetch('/admin/api/push/profiles/' + profileId + '/start', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:'{}'});
+    var d = await r.json();
+    if (!r.ok) { alert('Error: ' + (d.error || r.status)); return; }
+    toast('Push started');
+    loadPushProfiles();
+  } catch(e) { alert('Failed: ' + e); }
+}
+
+async function stopPush(profileId) {
+  try {
+    await fetch('/admin/api/push/profiles/' + profileId + '/stop', {method:'POST', credentials:'same-origin'});
+    toast('Push stopped');
+    loadPushProfiles();
+  } catch(e) { alert('Failed: ' + e); }
+}
+
 function openProfileEditor(profileId) {
   _editingProfileId = profileId || null;
   const modal = document.getElementById('profile-modal');
@@ -4885,3 +5191,127 @@ async def api_detection_rules_delete(rule_id: str, ag_session: str | None = Cook
     if detection_rules.delete_rule(rule_id):
         return JSONResponse({"ok": True})
     return JSONResponse({"error": "not_found"}, status_code=404)
+
+
+# ── Log Push API ─────────────────────────────────────────────────────────────
+
+@router.get("/api/push/source-types")
+async def api_push_source_types(ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import log_pusher
+    import push_sources  # triggers registration
+    return JSONResponse({"source_types": log_pusher.PUSH_SOURCE_TYPES})
+
+
+@router.get("/api/push/profiles")
+async def api_push_profiles_list(ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import log_pusher
+    import push_sources
+    return JSONResponse({"profiles": log_pusher.list_profiles()})
+
+
+@router.post("/api/push/profiles")
+async def api_push_profiles_create(request: Request, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import log_pusher
+    import push_sources
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    if not body.get("name", "").strip():
+        return JSONResponse({"error": "name is required"}, status_code=400)
+    if not body.get("source_type", "").strip():
+        return JSONResponse({"error": "source_type is required"}, status_code=400)
+    profile = log_pusher.create_profile(body)
+    return JSONResponse(profile, status_code=201)
+
+
+@router.get("/api/push/profiles/{profile_id}")
+async def api_push_profiles_get(profile_id: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import log_pusher
+    p = log_pusher.get_profile(profile_id)
+    if not p:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return JSONResponse(p)
+
+
+@router.put("/api/push/profiles/{profile_id}")
+async def api_push_profiles_update(profile_id: str, request: Request, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import log_pusher
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    p = log_pusher.update_profile(profile_id, body)
+    if not p:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return JSONResponse(p)
+
+
+@router.delete("/api/push/profiles/{profile_id}")
+async def api_push_profiles_delete(profile_id: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import log_pusher
+    if log_pusher.delete_profile(profile_id):
+        return JSONResponse({"ok": True})
+    return JSONResponse({"error": "not_found"}, status_code=404)
+
+
+@router.post("/api/push/profiles/{profile_id}/start")
+async def api_push_start(profile_id: str, request: Request, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import log_pusher
+    import push_sources
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    password = body.get("password")
+    result = log_pusher.start_push(profile_id, password)
+    if isinstance(result, str):
+        return JSONResponse({"error": result}, status_code=400)
+    return JSONResponse({"ok": True, "status": "running"})
+
+
+@router.post("/api/push/profiles/{profile_id}/stop")
+async def api_push_stop(profile_id: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import log_pusher
+    stopped = log_pusher.stop_push(profile_id)
+    return JSONResponse({"ok": True, "was_running": stopped})
+
+
+@router.get("/api/push/profiles/{profile_id}/status")
+async def api_push_status(profile_id: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import log_pusher
+    return JSONResponse(log_pusher.get_status(profile_id))
+
+
+@router.get("/api/push/profiles/{profile_id}/events")
+async def api_push_events(profile_id: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import log_pusher
+    return JSONResponse({"events": log_pusher.get_event_log(profile_id)})
+
+
+@router.get("/api/push/profiles/{profile_id}/tls")
+async def api_push_tls(profile_id: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import log_pusher
+    return JSONResponse(log_pusher.get_tls_info(profile_id))
