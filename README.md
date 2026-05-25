@@ -24,7 +24,7 @@ The deployment hostname is fully parameterised: pick any domain, run `./scripts/
 | 8 | **Wiz** | OAuth2 + GraphQL | `POST /oauth2/token` → `POST /graphql` |
 | 9 | **Snyk** | Bearer | `GET /v1/org/{id}/issues`, `/rest/orgs/{id}/issues` (JSON:API), `/projects`, `/audit` |
 | 10 | **Darktrace** | HMAC-SHA1 | `GET /modelbreaches`, `/aianalyst/incident/log`, `/status`, `/groups` |
-| 11 | **Microsoft 365** | OAuth2 (tenant-aware) | `GET /api/v1.0/{tenant}/activity/feed/subscriptions/content` · `/audit/{id}` · 14 event categories (mailbox, email threats, DLP, eDiscovery, admin, SharePoint, Teams, OAuth consent, inbox rules, Power Platform, PIM, audit log, quarantine, login) |
+| 11 | **Microsoft 365** | OAuth2 (tenant → JWT) | Two modes: Graph API security alerts + Management Activity API. 14 event categories. See [Microsoft 365 Configuration](#microsoft-365-configuration) |
 
 > **AWS sources (CloudTrail, WAF, GuardDuty)** are intentionally not exposed via HTTP. Real Observo collectors fetch them via SQS-notified S3 polling using the AWS SDK with hostnames hardcoded to `*.amazonaws.com` and SigV4 host-binding, which apigenie cannot intercept. The data generators remain at `sources/aws_cloudtrail.py`, `sources/aws_waf.py`, and `sources/aws_guardduty.py` for a planned LocalStack-based extension — see [`docs/LOCALSTACK_PLAN.md`](docs/LOCALSTACK_PLAN.md).
 
@@ -595,6 +595,101 @@ Log Push actively **sends** generated logs from ApiGenie to external destination
 | Usage telemetry (SQLite) | `./data/telemetry.db` |
 | Investigation password hash | `./data/investigate_pass` |
 | Daily request logs | `./data/request-logs/YYYY-MM-DD.jsonl` |
+
+---
+
+## Microsoft 365 Configuration
+
+M365 uses the same OAuth2 tenant-aware token flow as Entra ID, but returns a **JWT with Microsoft role claims** (`SecurityEvents.Read.All`, `ActivityFeed.Read`, `AuditLog.Read.All`, etc.). The collector decodes the JWT and checks these roles before proceeding.
+
+### Authentication
+
+| Field | Value |
+|-------|-------|
+| **Client ID** | `apigenie-client` (any value accepted) |
+| **Client Secret** | `apigenie-secret` (any value accepted) |
+| **Token URL** | `https://{host}/{tenant-id}/oauth2/v2.0/token` |
+| **Scope** | `https://manage.office.com/.default` |
+| **Token type** | JWT with `roles` array (RS256 header, fake signature) |
+
+The token endpoint returns a JWT containing:
+```json
+{
+  "roles": ["ActivityFeed.Read", "ActivityFeed.ReadDlp", "SecurityEvents.Read.All",
+            "ServiceHealth.Read.All", "User.Read.All", "Directory.Read.All",
+            "Mail.Read", "AuditLog.Read.All"],
+  "scp": "ActivityFeed.Read ActivityFeed.ReadDlp SecurityEvents.Read.All ...",
+  "aud": "https://manage.office.com",
+  "iss": "https://sts.windows.net/{tenant-id}/"
+}
+```
+
+### Two collection modes
+
+**Mode 1 — Graph API Security Alerts** (`INGEST_SECURITY_ALERTS=true`):
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /v1.0/security/alerts_v2` | Security alerts (supports `$top`, `$filter`, `$orderby`, `$skiptoken`) |
+
+**Mode 2 — Management Activity API** (`INGEST_SECURITY_ALERTS=false`):
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/v1.0/{tenant}/activity/feed/subscriptions/list` | List active content type subscriptions |
+| `POST /api/v1.0/{tenant}/activity/feed/subscriptions/start?contentType=...` | Start a subscription |
+| `GET /api/v1.0/{tenant}/activity/feed/subscriptions/content?contentType=...` | Get content blob URIs |
+| `GET /api/v1.0/{tenant}/activity/feed/audit/{content_id}` | Fetch events from a content blob |
+
+Supported content types: `Audit.AzureActiveDirectory`, `Audit.Exchange`, `Audit.SharePoint`, `Audit.General`, `DLP.All`
+
+### 14 event categories
+
+| # | Category | Weight | Key operations |
+|---|----------|--------|----------------|
+| 1 | Mailbox audit | 16% | MailItemsAccessed, Send, HardDelete, SendAs |
+| 2 | Email threat protection | 10% | SafeLinks, ZAP, malware verdicts |
+| 3 | DLP violations | 5% | DlpRuleMatch, sensitive info detection |
+| 4 | eDiscovery / Compliance | 4% | SearchExported, HoldApplied, CaseCreated |
+| 5 | Admin operations | 7% | Set-Mailbox, TransportRule, RoleGroupMember |
+| 6 | SharePoint / OneDrive | 16% | FileDownloaded, FileShared, AnonymousLinkCreated |
+| 7 | Teams | 9% | MemberAdded, AppInstalled, GuestAccessEnabled |
+| 8 | OAuth consent grants | 5% | Consent to application, OAuth2PermissionGrant |
+| 9 | Inbox rules / forwarding | 5% | New-InboxRule, ForwardingSmtpAddress |
+| 10 | Power Platform | 3% | CreateFlow, CreateConnection, ShareApp |
+| 11 | PIM | 4% | Activate eligible role, Add member to role |
+| 12 | Audit log search | 3% | SearchExported, SearchPurged |
+| 13 | Quarantine actions | 3% | QuarantineRelease, QuarantineDelete |
+| 14 | User login / logout | 10% | UserLoggedIn, UserLoginFailed, MailboxLogin |
+
+### Collector configuration (Observo)
+
+For collectors using a **Lua script** (like the Observo M365 source), the data plane base URLs are hardcoded in the script. To point them to ApiGenie, change:
+
+```lua
+-- Graph API (security alerts mode)
+local base_url = "https://apigenie.roarinpenguin.com"
+
+-- Management API (audit logs mode)
+local mgmt_base_url = "https://apigenie.roarinpenguin.com"
+```
+
+### Quick test
+
+```bash
+# 1. Get JWT token
+TOKEN=$(curl -s -X POST "https://apigenie.roarinpenguin.com/my-tenant/oauth2/v2.0/token" \\
+  -d "grant_type=client_credentials&client_id=apigenie-client&client_secret=apigenie-secret&scope=https://manage.office.com/.default" \\
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+# 2a. Graph API security alerts
+curl -s -H "Authorization: Bearer $TOKEN" \\
+  "https://apigenie.roarinpenguin.com/v1.0/security/alerts_v2?\$top=5"
+
+# 2b. Management API audit content
+curl -s -H "Authorization: Bearer $TOKEN" \\
+  "https://apigenie.roarinpenguin.com/api/v1.0/my-tenant/activity/feed/subscriptions/content?contentType=Audit.General"
+```
 
 ---
 

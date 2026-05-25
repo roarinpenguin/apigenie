@@ -185,21 +185,34 @@ SOURCES: dict[str, dict[str, Any]] = {
     },
     "m365": {
         "name": "Microsoft 365",
-        "auth_type": "OAuth2 Bearer (tenant token endpoint)",
+        "auth_type": "OAuth2 Bearer (tenant token endpoint \u2192 JWT with roles)",
         "credentials": {
-            "token_url": f"{BASE}/oauth2/v2.0/token  (or /{'{tenant-id}'}/oauth2/v2.0/token)",
-            "token": "apigenie-valid-token-001",
+            "client_id": "apigenie-client  (any value accepted)",
+            "client_secret": "apigenie-secret  (any value accepted)",
+            "token_url": f"{BASE}/{{tenant-id}}/oauth2/v2.0/token",
+            "scope": "https://manage.office.com/.default",
+            "token_type": "JWT with roles: SecurityEvents.Read.All, ActivityFeed.Read, AuditLog.Read.All",
         },
         "endpoints": [
-            {"method": "POST", "path": "/oauth2/v2.0/token",                                              "desc": "Get access token"},
-            {"method": "GET",  "path": "/api/v1.0/{tenant}/activity/feed/subscriptions/list",              "desc": "List subscriptions"},
-            {"method": "POST", "path": "/api/v1.0/{tenant}/activity/feed/subscriptions/start",             "desc": "Start subscription"},
-            {"method": "GET",  "path": "/api/v1.0/{tenant}/activity/feed/subscriptions/content",           "desc": "Get content URIs"},
-            {"method": "GET",  "path": "/api/v1.0/{tenant}/activity/feed/audit/{content_id}",              "desc": "Fetch content blob"},
+            {"method": "POST", "path": "/{tenant}/oauth2/v2.0/token",                                     "desc": "Get JWT access token"},
+            {"method": "GET",  "path": "/v1.0/security/alerts_v2",                                        "desc": "Graph API security alerts (INGEST_SECURITY_ALERTS=true)"},
+            {"method": "GET",  "path": "/api/v1.0/{tenant}/activity/feed/subscriptions/list",              "desc": "List audit subscriptions"},
+            {"method": "POST", "path": "/api/v1.0/{tenant}/activity/feed/subscriptions/start",             "desc": "Start audit subscription"},
+            {"method": "GET",  "path": "/api/v1.0/{tenant}/activity/feed/subscriptions/content",           "desc": "Get content blob URIs"},
+            {"method": "GET",  "path": "/api/v1.0/{tenant}/activity/feed/audit/{content_id}",              "desc": "Fetch content blob events"},
         ],
         "curl": (
-            f'curl -s -H "Authorization: Bearer apigenie-valid-token-001" \\\n'
-            f'  "{BASE}/api/v1.0/contoso.onmicrosoft.com/activity/feed/subscriptions/content?contentType=Audit.General"'
+            f'# 1. Get JWT token\\n'
+            f'TOKEN=$(curl -s -X POST "{BASE}/my-tenant/oauth2/v2.0/token" \\\\'
+            f'\\n  -d "grant_type=client_credentials&client_id=apigenie-client'
+            f'&client_secret=apigenie-secret&scope=https://manage.office.com/.default" \\\\'
+            f'\\n  | python3 -c "import sys,json; print(json.load(sys.stdin)[\'access_token\'])")\\n\\n'
+            f'# 2a. Graph API security alerts\\n'
+            f'curl -s -H "Authorization: Bearer $TOKEN" \\\\'
+            f'\\n  "{BASE}/v1.0/security/alerts_v2?\\\\$top=5"\\n\\n'
+            f'# 2b. Management API audit content\\n'
+            f'curl -s -H "Authorization: Bearer $TOKEN" \\\\'
+            f'\\n  "{BASE}/api/v1.0/my-tenant/activity/feed/subscriptions/content?contentType=Audit.General"'
         ),
     },
     "defender": {
