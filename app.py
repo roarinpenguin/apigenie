@@ -35,6 +35,7 @@ from sources.azure_ad import get_audit_logs_response as entra_audit, get_signin_
 from sources.cisco_duo import get_admin_logs_response as duo_admin, get_auth_logs_response as duo_auth
 from sources.darktrace import get_analyst_incidents, get_model_breaches, get_status as darktrace_status
 from sources.gcp_audit import get_audit_logs_response as gcp_audit
+from sources.m365 import get_content_response as m365_content, get_subscriptions_response as m365_subscriptions
 from sources.microsoft_defender import get_alerts_response as defender_alerts, get_recommendations_response as defender_recs
 from sources.netskope import get_alerts_response as netskope_alerts, get_audit_events_response as netskope_audit
 from sources.okta import get_logs_response as okta_logs
@@ -227,6 +228,45 @@ async def entra_signin_logs(
     skip: int = Query(0, alias="$skip"),
 ) -> dict[str, Any]:
     return entra_signin(limit=top, skip=skip)
+
+
+# =============================================================================
+# Microsoft 365 Management Activity API  —  Bearer token auth
+# =============================================================================
+# Mimics the O365 Management Activity API used by collectors to pull audit logs.
+# Same OAuth2 tenant token flow as Entra ID.
+
+
+@app.get("/api/v1.0/{tenant_id}/activity/feed/subscriptions/list")
+async def m365_subscriptions_list(_auth: BearerAuth, tenant_id: str) -> list[dict[str, Any]]:
+    return m365_subscriptions()
+
+
+@app.post("/api/v1.0/{tenant_id}/activity/feed/subscriptions/start")
+async def m365_subscriptions_start(
+    _auth: BearerAuth, tenant_id: str,
+    contentType: str = Query("Audit.General"),
+) -> dict[str, Any]:
+    return {"contentType": contentType, "status": "enabled", "webhook": None}
+
+
+@app.get("/api/v1.0/{tenant_id}/activity/feed/subscriptions/content")
+async def m365_content_feed(
+    _auth: BearerAuth, tenant_id: str,
+    contentType: str = Query("Audit.General"),
+    PublisherIdentifier: str = Query(""),
+) -> list[dict[str, Any]]:
+    data = m365_content(content_type=contentType)
+    return data["blobs"]
+
+
+@app.get("/api/v1.0/{tenant_id}/activity/feed/audit/{content_id}")
+async def m365_content_blob(
+    _auth: BearerAuth, tenant_id: str, content_id: str,
+    contentType: str = Query("Audit.General"),
+) -> list[dict[str, Any]]:
+    data = m365_content(content_type=contentType, limit=10)
+    return data["events"]
 
 
 # =============================================================================

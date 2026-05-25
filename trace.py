@@ -43,6 +43,7 @@ _AGG_LOCK = threading.Lock()
 _SOURCE_PATTERNS: list[tuple[str, list[str]]] = [
     ("okta",       ["/api/v1/logs"]),
     ("netskope",   ["/api/v2/"]),
+    ("m365",       ["/activity/feed/"]),
     ("entra_id",   ["/v1.0/auditLogs/", "/v1.0/identityProtection/", "/v2.0/token", "/oauth2/"]),
     ("defender",   ["/v1.0/subscriptions/", "/subscriptions/", "/v1.0/security/", "/security/alerts", "/security/incidents", "/security/secureScores", "/security/assessments", "/auditLogs/directoryAudits", "/auditLogs/signIns"]),
     ("cisco_duo",  ["/admin/v1/", "/admin/v2/"]),

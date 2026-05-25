@@ -183,6 +183,25 @@ SOURCES: dict[str, dict[str, Any]] = {
         ],
         "curl": f'curl -s -H "Authorization: Bearer apigenie-valid-token-001" \\\n  "{BASE}/v1.0/auditLogs/directoryAudits?\\$top=5"',
     },
+    "m365": {
+        "name": "Microsoft 365",
+        "auth_type": "OAuth2 Bearer (tenant token endpoint)",
+        "credentials": {
+            "token_url": f"{BASE}/oauth2/v2.0/token  (or /{'{tenant-id}'}/oauth2/v2.0/token)",
+            "token": "apigenie-valid-token-001",
+        },
+        "endpoints": [
+            {"method": "POST", "path": "/oauth2/v2.0/token",                                              "desc": "Get access token"},
+            {"method": "GET",  "path": "/api/v1.0/{tenant}/activity/feed/subscriptions/list",              "desc": "List subscriptions"},
+            {"method": "POST", "path": "/api/v1.0/{tenant}/activity/feed/subscriptions/start",             "desc": "Start subscription"},
+            {"method": "GET",  "path": "/api/v1.0/{tenant}/activity/feed/subscriptions/content",           "desc": "Get content URIs"},
+            {"method": "GET",  "path": "/api/v1.0/{tenant}/activity/feed/audit/{content_id}",              "desc": "Fetch content blob"},
+        ],
+        "curl": (
+            f'curl -s -H "Authorization: Bearer apigenie-valid-token-001" \\\n'
+            f'  "{BASE}/api/v1.0/contoso.onmicrosoft.com/activity/feed/subscriptions/content?contentType=Audit.General"'
+        ),
+    },
     "defender": {
         "name": "Microsoft Defender",
         "auth_type": "Bearer token",
@@ -3372,8 +3391,15 @@ async function viewPushEvents(profileId) {
 
 async function startPush(profileId) {
   try {
+    // First try without password
     var r = await fetch('/admin/api/push/profiles/' + profileId + '/start', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:'{}'});
     var d = await r.json();
+    if (!r.ok && d.error === 'Invalid password') {
+      var pw = prompt('This push profile is password-protected. Enter password:');
+      if (!pw) return;
+      r = await fetch('/admin/api/push/profiles/' + profileId + '/start', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify({password: pw})});
+      d = await r.json();
+    }
     if (!r.ok) { alert('Error: ' + (d.error || r.status)); return; }
     toast('Push started');
     loadPushProfiles();

@@ -1,6 +1,6 @@
 # <img src="assets/logo.png" width="60" align="center" alt="ApiGenie logo"> ApiGenie
 
-> Self-contained mock server for **11 security platform APIs** plus **Azure Event Hubs (Kafka)** and **GCP Cloud Logging (Pub/Sub)** — built for [Observo](https://observo.ai) source-configuration testing.
+> Self-contained mock server for **12 security platform APIs** plus **Azure Event Hubs (Kafka)** and **GCP Cloud Logging (Pub/Sub)** — built for [Observo](https://observo.ai) source-configuration testing.
 
 ApiGenie exposes realistic, dynamically-varied data through the same authentication shapes the real platforms use (Bearer, Basic, X-ApiKeys, Duo HMAC, OAuth2 client-credentials, Microsoft tenant OAuth, GraphQL, Tenable async export, Kafka SASL/PLAIN, gRPC Pub/Sub). It runs as a single Docker Compose stack — nginx, FastAPI, Kafka + Zookeeper, Pub/Sub emulator — with TLS via Let's Encrypt, a self-signed cert, or your own files.
 
@@ -24,6 +24,7 @@ The deployment hostname is fully parameterised: pick any domain, run `./scripts/
 | 8 | **Wiz** | OAuth2 + GraphQL | `POST /oauth2/token` → `POST /graphql` |
 | 9 | **Snyk** | Bearer | `GET /v1/org/{id}/issues`, `/rest/orgs/{id}/issues` (JSON:API), `/projects`, `/audit` |
 | 10 | **Darktrace** | HMAC-SHA1 | `GET /modelbreaches`, `/aianalyst/incident/log`, `/status`, `/groups` |
+| 11 | **Microsoft 365** | OAuth2 (tenant-aware) | `GET /api/v1.0/{tenant}/activity/feed/subscriptions/content` · `/audit/{id}` · 14 event categories (mailbox, email threats, DLP, eDiscovery, admin, SharePoint, Teams, OAuth consent, inbox rules, Power Platform, PIM, audit log, quarantine, login) |
 
 > **AWS sources (CloudTrail, WAF, GuardDuty)** are intentionally not exposed via HTTP. Real Observo collectors fetch them via SQS-notified S3 polling using the AWS SDK with hostnames hardcoded to `*.amazonaws.com` and SigV4 host-binding, which apigenie cannot intercept. The data generators remain at `sources/aws_cloudtrail.py`, `sources/aws_waf.py`, and `sources/aws_guardduty.py` for a planned LocalStack-based extension — see [`docs/LOCALSTACK_PLAN.md`](docs/LOCALSTACK_PLAN.md).
 
@@ -395,7 +396,7 @@ apigenie/
 ├── html/
 │   └── index.html            # Public landing page
 ├── sources/                  # One module per platform (data generators, profile-aware)
-│   ├── okta.py · netskope.py · azure_ad.py · microsoft_defender.py · cisco_duo.py
+│   ├── okta.py · netskope.py · azure_ad.py · m365.py · microsoft_defender.py · cisco_duo.py
 │   ├── gcp_audit.py · tenable.py · proofpoint.py
 │   ├── wiz.py · snyk.py · darktrace.py
 │   ├── aws_cloudtrail.py · aws_waf.py · aws_guardduty.py    # generators only (no HTTP routes — see LocalStack plan)
