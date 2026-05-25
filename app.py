@@ -754,10 +754,40 @@ async def oauth_token_tenant(tenant_id: str, request: Request) -> dict[str, Any]
     if "servicebus.windows.net" in scope or "eventhubs" in scope.lower():
         logger.info("OAUTHBEARER token request from tenant %s (scope: %s)", tenant_id, scope)
         return _oauthbearer_token_payload(scope=scope or "kafka")
-    # M365 / Graph / other Microsoft services: return standard Bearer token with requested scope
+    # M365 / Graph / other Microsoft services: return a JWT with proper claims
     effective_scope = scope or "https://graph.microsoft.com/.default"
-    # Include common Microsoft permissions the collector may check for
-    return _token_payload(scope=f"{effective_scope} ActivityFeed.Read ActivityFeed.ReadDlp SecurityEvents.Read.All ServiceHealth.Read.All")
+    all_permissions = "ActivityFeed.Read ActivityFeed.ReadDlp SecurityEvents.Read.All ServiceHealth.Read.All"
+    import base64 as _b64
+    now = int(_time.time())
+    header = '{"alg":"RS256","typ":"JWT","kid":"apigenie-mock-key"}'
+    payload_obj = {
+        "aud": effective_scope.replace("/.default", ""),
+        "iss": f"https://sts.windows.net/{tenant_id}/",
+        "iat": now,
+        "nbf": now,
+        "exp": now + 3600,
+        "sub": "apigenie-client",
+        "appid": "apigenie-client",
+        "tid": tenant_id,
+        "roles": ["ActivityFeed.Read", "ActivityFeed.ReadDlp", "SecurityEvents.Read.All",
+                   "ServiceHealth.Read.All", "User.Read.All", "Directory.Read.All",
+                   "Mail.Read", "AuditLog.Read.All"],
+        "scp": all_permissions,
+    }
+    payload_str = json.dumps(payload_obj, separators=(",", ":"))
+    h = _b64.urlsafe_b64encode(header.encode()).rstrip(b"=").decode()
+    p = _b64.urlsafe_b64encode(payload_str.encode()).rstrip(b"=").decode()
+    # Fake signature (not validated by our endpoints)
+    fake_sig = _b64.urlsafe_b64encode(b"apigenie-mock-signature-not-validated").rstrip(b"=").decode()
+    jwt_token = f"{h}.{p}.{fake_sig}"
+    return {
+        "access_token": jwt_token,
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "scope": f"{effective_scope} {all_permissions}",
+        "ext_expires_in": 3600,
+        "resource": effective_scope.replace("/.default", ""),
+    }
 
 
 # Tenable refresh-access-token (GET, no body) — collector calls this with its

