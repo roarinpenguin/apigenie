@@ -9,6 +9,7 @@ import logging
 import os
 import random
 import time as _time
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime as _dt, timezone as _tz
 from typing import Any
@@ -235,6 +236,37 @@ async def entra_signin_logs(
 # =============================================================================
 # Mimics the O365 Management Activity API used by collectors to pull audit logs.
 # Same OAuth2 tenant token flow as Entra ID.
+
+
+@app.get("/v1.0/security/alerts_v2")
+async def graph_security_alerts_v2(
+    _auth: BearerAuth,
+    top: int = Query(50, alias="$top", le=1000),
+    skip: int = Query(0, alias="$skip"),
+    filter: str = Query("", alias="$filter"),
+    orderby: str = Query("", alias="$orderby"),
+    skiptoken: str = Query("", alias="$skiptoken"),
+) -> dict[str, Any]:
+    """Graph API security alerts (v2) — used by M365 collectors with INGEST_SECURITY_ALERTS=true."""
+    data = m365_content(content_type="Audit.General", limit=min(top, 50))
+    # Wrap events as Graph security alerts format
+    alerts = []
+    for ev in data["events"]:
+        alerts.append({
+            "id": ev.get("Id", str(uuid.uuid4())),
+            "title": ev.get("Operation", "Security Event"),
+            "description": f"{ev.get('Workload', 'M365')} - {ev.get('Operation', 'event')}",
+            "severity": ev.get("severity", "medium"),
+            "status": "new",
+            "createdDateTime": ev.get("CreationTime", _dt.now(_tz.utc).isoformat()),
+            "lastUpdateDateTime": ev.get("CreationTime", _dt.now(_tz.utc).isoformat()),
+            "category": ev.get("Workload", "General"),
+            "userStates": [{"userPrincipalName": ev.get("UserId", ""), "accountName": ev.get("UserId", "").split("@")[0] if "@" in ev.get("UserId", "") else ""}],
+            "hostStates": [{"netBiosName": "", "publicIpAddress": ev.get("ClientIP", "")}],
+            "vendorInformation": {"provider": "Microsoft", "vendor": "Microsoft", "subProvider": ev.get("Workload", "")},
+            "rawEvent": ev,
+        })
+    return {"@odata.context": "https://graph.microsoft.com/v1.0/$metadata#security/alerts_v2", "value": alerts}
 
 
 @app.get("/api/v1.0/{tenant_id}/activity/feed/subscriptions/list")
