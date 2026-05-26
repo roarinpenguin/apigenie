@@ -40,6 +40,12 @@ def _register_all() -> None:
     log_pusher.register_source(
         key="infoblox", name="Infoblox DDI (DNS/DHCP)", module="push_sources.infoblox",
         description="DNS queries, RPZ hits, DHCP events, threat intelligence (C2, DGA, tunneling)")
+    log_pusher.register_source(
+        key="cisco_switch", name="Cisco Switch (IOS/NX-OS)", module="push_sources.cisco_switch",
+        description="Port security, STP, ACL, AAA, SNMP, CDP, DHCP snooping, ARP inspection, MAC flap, PoE, environmental")
+    log_pusher.register_source(
+        key="hpe_switch", name="HPE Aruba Switch (AOS-CX)", module="push_sources.hpe_switch",
+        description="802.1X port-access, RADIUS, STP, LLDP, ACL, DHCP snooping, loop protection, PoE, VSF stacking, mgmt audit")
 
 
 _register_all()
