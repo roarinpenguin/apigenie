@@ -46,6 +46,9 @@ def _register_all() -> None:
     log_pusher.register_source(
         key="hpe_switch", name="HPE Aruba Switch (AOS-CX)", module="push_sources.hpe_switch",
         description="802.1X port-access, RADIUS, STP, LLDP, ACL, DHCP snooping, loop protection, PoE, VSF stacking, mgmt audit")
+    log_pusher.register_source(
+        key="sentinelone", name="SentinelOne Singularity (XDR)", module="push_sources.sentinelone",
+        description="Threats (malware, exploit, ransomware), Activities, Deep Visibility (process, network, file, registry), Audit, MITRE ATT&CK mapped")
 
 
 _register_all()

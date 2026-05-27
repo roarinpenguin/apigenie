@@ -678,6 +678,7 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
   <a class="nav-item" onclick="showTab('listeners', this); loadListeners()"><span class="nav-icon">🎯</span> Listeners</a>
   <a class="nav-item" onclick="showTab('profiles', this); loadProfiles()"><span class="nav-icon">🎭</span> Log Profiles</a>
   <a class="nav-item" onclick="showTab('push', this); loadPushProfiles()"><span class="nav-icon">🚀</span> Log Push</a>
+  <a class="nav-item" onclick="showTab('scenarios', this); loadScenarios()"><span class="nav-icon">⚔</span> Attack Scenarios</a>
   <a class="nav-item" onclick="showTab('config', this)"><span class="nav-icon">🔧</span> Source Details</a>
   <a class="nav-item" onclick="showTab('settings', this); loadSettings()"><span class="nav-icon">⚙</span> System Settings</a>
   <div class="footer">
@@ -867,7 +868,7 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
                 <option value="json">JSON</option><option value="syslog">Syslog (RFC5424)</option><option value="cef">CEF</option>
               </select></div>
             <div style="flex:1"><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Transport</label>
-              <select id="push-transport" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
+              <select id="push-transport" onchange="togglePushPath()" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
                 <option value="http">HTTP POST</option><option value="hec">Splunk HEC</option><option value="syslog">Syslog TCP/UDP</option>
               </select></div>
           </div>
@@ -880,7 +881,12 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
           </div>
           <div style="display:flex;gap:10px;align-items:center">
             <label style="font-size:.72rem;color:rgba(224,170,255,.5);display:flex;align-items:center;gap:4px"><input id="push-tls" type="checkbox" style="accent-color:#c77dff"/> TLS</label>
-            <div style="flex:1"><input id="push-path" type="text" placeholder="Path (HTTP/HEC)" value="/" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.78rem"/></div>
+            <div id="push-path-group" style="flex:1;display:none">
+              <label style="font-size:.72rem;color:rgba(224,170,255,.5);display:flex;align-items:center;gap:4px">Endpoint Path
+                <span title="Examples:&#10;&#10;HTTP POST: /api/v1/logs&#10;Splunk HEC: /services/collector/event&#10;Custom: /ingest/syslog" style="cursor:help;display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:rgba(199,125,255,.2);color:rgba(224,170,255,.6);font-size:.6rem;font-weight:700">i</span>
+              </label>
+              <input id="push-path" type="text" placeholder="/services/collector/event" value="/" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.78rem"/>
+            </div>
           </div>
           <div style="font-size:.72rem;color:rgba(224,170,255,.5);margin-top:4px">Authentication</div>
           <div style="display:flex;gap:10px">
@@ -907,6 +913,54 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
           <button class="btn-sm" style="background:rgba(90,24,154,.3)" onclick="closePushModal()">Cancel</button>
           <button class="btn-sm" id="push-delete-btn" style="background:rgba(120,30,40,.4);color:#ff8080;display:none" onclick="deletePushProfile()">Delete</button>
           <button class="btn-sm" onclick="savePushProfile()">Save</button>
+        </div></div>
+      </div>
+    </div>
+
+    <!-- ATTACK SCENARIOS TAB -->
+    <div class="pane" id="pane-scenarios">
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span>Attack Scenarios</span>
+          <button class="btn-sm" onclick="openScenarioCreator()">+ New Scenario</button>
+        </div>
+        <p style="font-size:.78rem;color:rgba(224,170,255,.45);margin-bottom:14px">
+          Simulate multi-source, multi-phase attack campaigns mapped to MITRE ATT&amp;CK. Each scenario injects
+          attack-specific events into normal log flows across multiple sources. Every event carries <code>attack.id</code>
+          and <code>phase.id</code> for cross-source correlation.
+        </p>
+        <div id="scenarios-list"><p class="empty">Loading&#8230;</p></div>
+      </div>
+    </div>
+
+    <!-- Scenario Creator Modal -->
+    <div class="modal-overlay hidden" id="scenario-modal">
+      <div class="modal" style="width:min(680px,94%)">
+        <div class="modal-head"><h3>Create Attack Scenario</h3></div>
+        <div class="modal-body" style="display:flex;flex-direction:column;gap:12px;max-height:70vh;overflow-y:auto">
+          <div><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Select Template</label>
+            <select id="scenario-template" onchange="onScenarioTemplateChange()" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
+              <option value="">Loading&#8230;</option>
+            </select>
+          </div>
+          <div id="scenario-template-desc" style="font-size:.72rem;color:rgba(224,170,255,.4);min-height:20px"></div>
+          <div style="display:flex;gap:10px">
+            <div style="flex:1"><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Name</label>
+              <input id="scenario-name" type="text" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/></div>
+            <div><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Duration</label>
+              <div style="display:flex;gap:4px">
+                <input id="scenario-dur-val" type="number" min="1" value="4" style="width:60px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/>
+                <select id="scenario-dur-unit" style="background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
+                  <option value="minutes">minutes</option><option value="hours" selected>hours</option><option value="days">days</option><option value="weeks">weeks</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div id="scenario-phases-preview" style="margin-top:4px"></div>
+        </div>
+        <div class="modal-foot"><div></div><div class="right">
+          <button class="btn-sm" style="background:rgba(90,24,154,.3)" onclick="closeScenarioModal()">Cancel</button>
+          <button class="btn-sm" onclick="createScenario()">Create &amp; Start</button>
         </div></div>
       </div>
     </div>
@@ -1125,7 +1179,7 @@ function showTab(tab, el) {
   document.getElementById('pane-' + tab).classList.add('active');
   if (el) el.classList.add('active');
   activeTab = tab;
-  const titles = {requests:'Request Inspector', observability:'Observability', intrusions:'Intrusions', listeners:'Listeners', profiles:'Log Profiles', push:'Log Push', investigate:'Investigations', logs:'Container Logs', config:'Source Details', settings:'System Settings'};
+  const titles = {requests:'Request Inspector', observability:'Observability', intrusions:'Intrusions', listeners:'Listeners', profiles:'Log Profiles', push:'Log Push', scenarios:'Attack Scenarios', investigate:'Investigations', logs:'Container Logs', config:'Source Details', settings:'System Settings'};
   // Resize viz canvases when the Observability tab becomes active.
   if (tab === 'observability') {
     if (window._sankey) window._sankey.resize();
@@ -3248,6 +3302,12 @@ async function loadPushProfiles() {
   } catch(e) { box.innerHTML = '<p class="empty">Failed: ' + escHtml(String(e)) + '</p>'; }
 }
 
+function togglePushPath() {
+  var t = document.getElementById('push-transport').value;
+  var g = document.getElementById('push-path-group');
+  if (g) g.style.display = (t === 'syslog') ? 'none' : 'flex';
+}
+
 function openPushEditor(profileId) {
   _editingPushId = profileId || null;
   var modal = document.getElementById('push-modal');
@@ -3288,6 +3348,7 @@ function openPushEditor(profileId) {
         document.getElementById('push-duration-unit').value = dur.unit || 'hours';
         document.getElementById('push-password').value = '';
         document.getElementById('push-profile-id').value = p.profile_id || '';
+        togglePushPath();
       });
   } else {
     document.getElementById('push-modal-title').textContent = 'New Push Profile';
@@ -3301,6 +3362,7 @@ function openPushEditor(profileId) {
     document.getElementById('push-duration-unit').value = 'hours';
     document.getElementById('push-password').value = '';
     document.getElementById('push-profile-id').value = '';
+    togglePushPath();
   }
 }
 
@@ -3424,6 +3486,196 @@ async function stopPush(profileId) {
     await fetch('/admin/api/push/profiles/' + profileId + '/stop', {method:'POST', credentials:'same-origin'});
     toast('Push stopped');
     loadPushProfiles();
+  } catch(e) { alert('Failed: ' + e); }
+}
+
+// ── Attack Scenarios ──────────────────────────────────────────────────────
+var _scenarioTemplates = [];
+var _scenarioRefreshTimer = null;
+
+var _MITRE_COLORS = {
+  'Reconnaissance':'#5c6bc0','Initial Access':'#e53935','Execution':'#d81b60',
+  'Persistence':'#8e24aa','Privilege Escalation':'#6a1b9a','Defense Evasion':'#4527a0',
+  'Credential Access':'#1565c0','Discovery':'#0277bd','Lateral Movement':'#00838f',
+  'Collection':'#00695c','Command and Control':'#2e7d32','Exfiltration':'#ef6c00',
+  'Impact':'#c62828'
+};
+
+async function loadScenarios() {
+  var box = document.getElementById('scenarios-list');
+  if (!box) return;
+  try {
+    var [sResp, tResp] = await Promise.all([
+      fetch('/admin/api/scenarios', {credentials:'same-origin'}),
+      fetch('/admin/api/scenarios/templates', {credentials:'same-origin'})
+    ]);
+    var sd = await sResp.json();
+    var td = await tResp.json();
+    _scenarioTemplates = td.templates || [];
+    var scenarios = sd.scenarios || [];
+    if (!scenarios.length) {
+      box.innerHTML = '<p class="empty">No attack scenarios. Click "+ New Scenario" to simulate an attack campaign.</p>';
+      return;
+    }
+    var h = '';
+    scenarios.forEach(function(s) {
+      var statusColor = s.status === 'running' ? '#2ecc71' : s.status === 'paused' ? '#f39c12' : s.status === 'completed' ? '#c77dff' : 'rgba(224,170,255,.3)';
+      var dur = s.duration || {};
+      h += '<div style="background:rgba(36,0,70,.4);border:1px solid rgba(199,125,255,' + (s.status === 'running' ? '.5' : '.15') + ');border-radius:10px;padding:14px;margin-bottom:12px">';
+      h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">';
+      h += '<div style="display:flex;align-items:center;gap:8px">';
+      h += '<span style="color:' + statusColor + ';font-size:.8rem">' + (s.status === 'running' ? '\\u25cf' : s.status === 'paused' ? '\\u25cf' : '\\u25cb') + '</span>';
+      h += '<span style="font-weight:600;color:var(--mist);font-size:.88rem">' + escHtml(s.name) + '</span>';
+      h += '<span class="pill" style="color:#c77dff;font-family:monospace">' + escHtml(s.attack_id || '') + '</span>';
+      h += '</div>';
+      h += '<div style="display:flex;gap:4px">';
+      if (s.status === 'running') {
+        h += '<button class="btn-sm" style="background:rgba(243,156,18,.3);color:#f39c12;padding:3px 10px;font-size:.68rem" onclick="pauseScenario(\\'' + escHtml(s.id) + '\\')">Pause</button>';
+        h += '<button class="btn-sm" style="background:rgba(120,30,40,.4);color:#ff8080;padding:3px 10px;font-size:.68rem" onclick="stopScenario(\\'' + escHtml(s.id) + '\\')">Stop</button>';
+      } else if (s.status === 'paused') {
+        h += '<button class="btn-sm" style="background:rgba(30,120,40,.4);color:#80ff80;padding:3px 10px;font-size:.68rem" onclick="resumeScenario(\\'' + escHtml(s.id) + '\\')">Resume</button>';
+        h += '<button class="btn-sm" style="background:rgba(120,30,40,.4);color:#ff8080;padding:3px 10px;font-size:.68rem" onclick="stopScenario(\\'' + escHtml(s.id) + '\\')">Stop</button>';
+      } else {
+        h += '<button class="btn-sm" style="background:rgba(30,120,40,.4);color:#80ff80;padding:3px 10px;font-size:.68rem" onclick="startScenario(\\'' + escHtml(s.id) + '\\')">Start</button>';
+        h += '<button class="btn-sm" style="background:rgba(120,30,40,.4);color:#ff5050;padding:3px 10px;font-size:.68rem" onclick="deleteScenario(\\'' + escHtml(s.id) + '\\')">Delete</button>';
+      }
+      h += '</div></div>';
+      // MITRE kill chain timeline
+      h += '<div style="display:flex;gap:4px;overflow-x:auto;padding:4px 0">';
+      var phases = s.phases || [];
+      phases.forEach(function(p) {
+        var bg = _MITRE_COLORS[p.mitre_tactic] || '#555';
+        var opacity = p.status === 'active' ? '1' : p.status === 'completed' ? '.6' : '.25';
+        var border = p.status === 'active' ? '2px solid #fff' : '1px solid rgba(255,255,255,.15)';
+        h += '<div style="flex:1;min-width:80px;background:' + bg + ';opacity:' + opacity + ';border:' + border + ';border-radius:6px;padding:6px 8px;text-align:center;position:relative">';
+        h += '<div style="font-size:.58rem;font-weight:700;color:#fff;text-transform:uppercase;letter-spacing:.5px">' + escHtml(p.mitre_technique || '') + '</div>';
+        h += '<div style="font-size:.65rem;color:rgba(255,255,255,.8);margin-top:2px">' + escHtml(p.mitre_tactic || '') + '</div>';
+        h += '<div style="font-size:.55rem;color:rgba(255,255,255,.5);margin-top:2px">' + escHtml(p.source || '') + '</div>';
+        if (p.status === 'active') h += '<div style="position:absolute;top:-2px;right:4px;font-size:.5rem;color:#2ecc71">\\u25cf LIVE</div>';
+        h += '</div>';
+      });
+      h += '</div>';
+      // Status line
+      h += '<div style="display:flex;gap:16px;font-size:.68rem;color:rgba(224,170,255,.4);margin-top:6px">';
+      h += '<span>' + (dur.value || '?') + ' ' + (dur.unit || '') + '</span>';
+      h += '<span>' + (phases.length) + ' phases</span>';
+      if (s.elapsed_seconds > 0) h += '<span>elapsed: ' + Math.floor(s.elapsed_seconds/60) + 'm</span>';
+      if (s.started_at) h += '<span>started: ' + escHtml(s.started_at).replace('T',' ') + '</span>';
+      h += '</div></div>';
+    });
+    box.innerHTML = h;
+    // Auto-refresh if any running
+    if (scenarios.some(function(s) { return s.status === 'running' || s.status === 'paused'; })) {
+      if (!_scenarioRefreshTimer) _scenarioRefreshTimer = setInterval(loadScenarios, 8000);
+    } else {
+      if (_scenarioRefreshTimer) { clearInterval(_scenarioRefreshTimer); _scenarioRefreshTimer = null; }
+    }
+  } catch(e) { box.innerHTML = '<p class="empty">Failed: ' + escHtml(String(e)) + '</p>'; }
+}
+
+function openScenarioCreator() {
+  var modal = document.getElementById('scenario-modal');
+  modal.classList.remove('hidden');
+  var sel = document.getElementById('scenario-template');
+  sel.innerHTML = '';
+  _scenarioTemplates.forEach(function(t) {
+    sel.innerHTML += '<option value="' + escHtml(t.key) + '">' + escHtml(t.name) + ' (' + t.phase_count + ' phases, ' + t.sources.join(', ') + ')</option>';
+  });
+  onScenarioTemplateChange();
+}
+
+function onScenarioTemplateChange() {
+  var key = document.getElementById('scenario-template').value;
+  var t = _scenarioTemplates.find(function(x) { return x.key === key; });
+  document.getElementById('scenario-template-desc').textContent = t ? t.description : '';
+  document.getElementById('scenario-name').value = t ? t.name : '';
+  // Preview phases
+  if (t) {
+    fetch('/admin/api/scenarios/templates/' + key, {credentials:'same-origin'})
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        var phases = d.phases || [];
+        var ph = '<div style="font-size:.72rem;color:rgba(224,170,255,.5);margin-bottom:6px">Phases (' + phases.length + '):</div>';
+        ph += '<div style="display:flex;gap:4px;flex-wrap:wrap">';
+        phases.forEach(function(p) {
+          var bg = _MITRE_COLORS[p.mitre_tactic] || '#555';
+          ph += '<div style="background:' + bg + ';border-radius:6px;padding:5px 8px;text-align:center;min-width:90px">';
+          ph += '<div style="font-size:.55rem;font-weight:700;color:#fff">' + escHtml(p.mitre_technique) + '</div>';
+          ph += '<div style="font-size:.6rem;color:rgba(255,255,255,.8)">' + escHtml(p.name) + '</div>';
+          ph += '<div style="font-size:.5rem;color:rgba(255,255,255,.5)">' + escHtml(p.source) + ' | ' + p.time_offset_pct + '-' + (p.time_offset_pct + p.duration_pct) + '%</div>';
+          ph += '</div>';
+        });
+        ph += '</div>';
+        document.getElementById('scenario-phases-preview').innerHTML = ph;
+      });
+  }
+}
+
+function closeScenarioModal() {
+  document.getElementById('scenario-modal').classList.add('hidden');
+}
+
+async function createScenario() {
+  var body = {
+    template: document.getElementById('scenario-template').value,
+    name: document.getElementById('scenario-name').value,
+    duration: {
+      value: parseInt(document.getElementById('scenario-dur-val').value) || 4,
+      unit: document.getElementById('scenario-dur-unit').value
+    }
+  };
+  try {
+    var r = await fetch('/admin/api/scenarios', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    var d = await r.json();
+    if (!r.ok) { alert('Error: ' + (d.error || r.status)); return; }
+    // Auto-start
+    await fetch('/admin/api/scenarios/' + d.id + '/start', {method:'POST', credentials:'same-origin'});
+    closeScenarioModal();
+    toast('Scenario started: ' + body.name);
+    loadScenarios();
+  } catch(e) { alert('Failed: ' + e); }
+}
+
+async function startScenario(id) {
+  try {
+    var r = await fetch('/admin/api/scenarios/' + id + '/start', {method:'POST', credentials:'same-origin'});
+    var d = await r.json();
+    if (!r.ok) { alert('Error: ' + (d.error || r.status)); return; }
+    toast('Scenario started');
+    loadScenarios();
+  } catch(e) { alert('Failed: ' + e); }
+}
+
+async function stopScenario(id) {
+  try {
+    await fetch('/admin/api/scenarios/' + id + '/stop', {method:'POST', credentials:'same-origin'});
+    toast('Scenario stopped');
+    loadScenarios();
+  } catch(e) { alert('Failed: ' + e); }
+}
+
+async function pauseScenario(id) {
+  try {
+    await fetch('/admin/api/scenarios/' + id + '/pause', {method:'POST', credentials:'same-origin'});
+    toast('Scenario paused');
+    loadScenarios();
+  } catch(e) { alert('Failed: ' + e); }
+}
+
+async function resumeScenario(id) {
+  try {
+    await fetch('/admin/api/scenarios/' + id + '/resume', {method:'POST', credentials:'same-origin'});
+    toast('Scenario resumed');
+    loadScenarios();
+  } catch(e) { alert('Failed: ' + e); }
+}
+
+async function deleteScenario(id) {
+  if (!confirm('Delete this scenario?')) return;
+  try {
+    await fetch('/admin/api/scenarios/' + id, {method:'DELETE', credentials:'same-origin'});
+    toast('Deleted');
+    loadScenarios();
   } catch(e) { alert('Failed: ' + e); }
 }
 
@@ -5354,3 +5606,123 @@ async def api_push_tls(profile_id: str, ag_session: str | None = Cookie(None)):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     import log_pusher
     return JSONResponse(log_pusher.get_tls_info(profile_id))
+
+
+# ── Attack Scenarios API ─────────────────────────────────────────────────────
+
+@router.get("/api/scenarios/templates")
+async def api_scenario_templates(ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import attack_scenarios_library
+    return JSONResponse({"templates": attack_scenarios_library.get_templates()})
+
+
+@router.get("/api/scenarios/templates/{key}")
+async def api_scenario_template_detail(key: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import attack_scenarios_library
+    t = attack_scenarios_library.get_template(key)
+    if not t:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return JSONResponse(t)
+
+
+@router.get("/api/scenarios")
+async def api_scenarios_list(ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import attack_scenarios
+    return JSONResponse({"scenarios": attack_scenarios.list_scenarios()})
+
+
+@router.post("/api/scenarios")
+async def api_scenarios_create(request: Request, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import attack_scenarios
+    import attack_scenarios_library
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    # If template specified, merge template phases into the scenario
+    template_key = body.get("template")
+    if template_key:
+        t = attack_scenarios_library.get_template(template_key)
+        if not t:
+            return JSONResponse({"error": f"unknown template: {template_key}"}, status_code=400)
+        body.setdefault("name", t["name"])
+        body.setdefault("phases", t["phases"])
+    if not body.get("phases"):
+        return JSONResponse({"error": "phases required"}, status_code=400)
+    scenario = attack_scenarios.create_scenario(body)
+    return JSONResponse(scenario, status_code=201)
+
+
+@router.get("/api/scenarios/{scenario_id}")
+async def api_scenario_get(scenario_id: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import attack_scenarios
+    s = attack_scenarios.get_scenario(scenario_id)
+    if not s:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return JSONResponse(s)
+
+
+@router.delete("/api/scenarios/{scenario_id}")
+async def api_scenario_delete(scenario_id: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import attack_scenarios
+    if attack_scenarios.delete_scenario(scenario_id):
+        return JSONResponse({"ok": True})
+    return JSONResponse({"error": "not_found"}, status_code=404)
+
+
+@router.post("/api/scenarios/{scenario_id}/start")
+async def api_scenario_start(scenario_id: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import attack_scenarios
+    result = attack_scenarios.start_scenario(scenario_id)
+    if isinstance(result, str):
+        return JSONResponse({"error": result}, status_code=400)
+    return JSONResponse({"ok": True, "attack_id": result.get("attack_id", "")})
+
+
+@router.post("/api/scenarios/{scenario_id}/stop")
+async def api_scenario_stop(scenario_id: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import attack_scenarios
+    stopped = attack_scenarios.stop_scenario(scenario_id)
+    return JSONResponse({"ok": True, "was_running": stopped})
+
+
+@router.post("/api/scenarios/{scenario_id}/pause")
+async def api_scenario_pause(scenario_id: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import attack_scenarios
+    paused = attack_scenarios.pause_scenario(scenario_id)
+    return JSONResponse({"ok": True, "paused": paused})
+
+
+@router.post("/api/scenarios/{scenario_id}/resume")
+async def api_scenario_resume(scenario_id: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import attack_scenarios
+    resumed = attack_scenarios.resume_scenario(scenario_id)
+    return JSONResponse({"ok": True, "resumed": resumed})
+
+
+@router.get("/api/scenarios/{scenario_id}/status")
+async def api_scenario_status(scenario_id: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import attack_scenarios
+    return JSONResponse(attack_scenarios.get_scenario_status(scenario_id))
