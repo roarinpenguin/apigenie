@@ -62,6 +62,11 @@ def create_rule(data: dict[str, Any]) -> dict[str, Any]:
         "periodicity": max(1, int(data.get("periodicity", 10))),
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
+    # Preserve scenario metadata if present (attack scenario temporary rules)
+    if "_scenario_id" in data:
+        rule["_scenario_id"] = data["_scenario_id"]
+    if "_attack_id" in data:
+        rule["_attack_id"] = data["_attack_id"]
     with _lock:
         rules = _load_rules()
         rules.append(rule)

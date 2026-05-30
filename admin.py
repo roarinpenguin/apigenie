@@ -678,7 +678,7 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
   <a class="nav-item" onclick="showTab('listeners', this); loadListeners()"><span class="nav-icon">🎯</span> Listeners</a>
   <a class="nav-item" onclick="showTab('profiles', this); loadProfiles()"><span class="nav-icon">🎭</span> Log Profiles</a>
   <a class="nav-item" onclick="showTab('push', this); loadPushProfiles()"><span class="nav-icon">🚀</span> Log Push</a>
-  <a class="nav-item" onclick="showTab('scenarios', this); loadScenarios()"><span class="nav-icon">⚔</span> Attack Scenarios</a>
+  <a class="nav-item" style="display:none" onclick="showTab('scenarios', this); loadScenarios()"><span class="nav-icon">⚔</span> Attack Scenarios</a>
   <a class="nav-item" onclick="showTab('config', this)"><span class="nav-icon">🔧</span> Source Details</a>
   <a class="nav-item" onclick="showTab('settings', this); loadSettings()"><span class="nav-icon">⚙</span> System Settings</a>
   <div class="footer">
@@ -869,30 +869,45 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
               </select></div>
             <div style="flex:1"><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Transport</label>
               <select id="push-transport" onchange="togglePushPath()" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
-                <option value="http">HTTP POST</option><option value="hec">Splunk HEC</option><option value="syslog">Syslog TCP/UDP</option>
+                <option value="http">HTTP POST</option><option value="hec">HEC</option><option value="syslog">Syslog TCP/UDP</option>
               </select></div>
           </div>
           <div style="font-size:.72rem;color:rgba(224,170,255,.5);margin-top:4px">Destination</div>
           <div style="display:flex;gap:10px">
             <div style="flex:2"><input id="push-host" type="text" placeholder="Host / IP" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/></div>
             <div style="flex:1"><input id="push-port" type="number" placeholder="Port" value="514" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/></div>
-            <div style="flex:1"><select id="push-protocol" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
+            <div id="push-protocol-group" style="flex:1"><select id="push-protocol" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
               <option value="tcp">TCP</option><option value="udp">UDP</option></select></div>
           </div>
           <div style="display:flex;gap:10px;align-items:center">
             <label style="font-size:.72rem;color:rgba(224,170,255,.5);display:flex;align-items:center;gap:4px"><input id="push-tls" type="checkbox" style="accent-color:#c77dff"/> TLS</label>
             <div id="push-path-group" style="flex:1;display:none">
               <label style="font-size:.72rem;color:rgba(224,170,255,.5);display:flex;align-items:center;gap:4px">Endpoint Path
-                <span title="Examples:&#10;&#10;HTTP POST: /api/v1/logs&#10;Splunk HEC: /services/collector/event&#10;Custom: /ingest/syslog" style="cursor:help;display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:rgba(199,125,255,.2);color:rgba(224,170,255,.6);font-size:.6rem;font-weight:700">i</span>
+                <span title="Examples:&#10;&#10;HTTP POST: /api/v1/logs&#10;Splunk HEC: /services/collector/event&#10;S1 HEC: /services/collector/event&#10;Custom: /ingest/syslog" style="cursor:help;display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:rgba(199,125,255,.2);color:rgba(224,170,255,.6);font-size:.6rem;font-weight:700">i</span>
               </label>
               <input id="push-path" type="text" placeholder="/services/collector/event" value="/" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.78rem"/>
             </div>
           </div>
-          <div style="font-size:.72rem;color:rgba(224,170,255,.5);margin-top:4px">Authentication</div>
-          <div style="display:flex;gap:10px">
-            <div style="flex:1"><select id="push-auth-type" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
-              <option value="none">None</option><option value="bearer">Bearer Token</option><option value="basic">Basic Auth</option></select></div>
-            <div style="flex:2"><input id="push-auth-token" type="text" placeholder="Token / Username:Password / HEC Token" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.78rem"/></div>
+          <div id="push-auth-group">
+            <div style="font-size:.72rem;color:rgba(224,170,255,.5);margin-top:4px">Authentication</div>
+            <div style="display:flex;gap:10px">
+              <div id="push-auth-type-group" style="flex:1"><select id="push-auth-type" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
+                <option value="none">None</option><option value="bearer">Bearer Token</option><option value="basic">Basic Auth</option></select></div>
+              <div style="flex:2"><input id="push-auth-token" type="text" placeholder="Token / Username:Password" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.78rem"/></div>
+            </div>
+          </div>
+          <div id="push-hec-group" style="display:none">
+            <div style="display:flex;gap:10px;margin-top:4px">
+              <div style="flex:1"><label style="font-size:.72rem;color:rgba(224,170,255,.5)">HEC Destination</label>
+                <select id="push-hec-flavour" onchange="onHecFlavourChange()" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
+                  <option value="s1_dpm">S1 DPM (Observo)</option>
+                  <option value="s1_siem">S1 AI SIEM</option>
+                  <option value="splunk">Splunk HEC Compatible</option>
+                </select></div>
+              <div style="flex:2"><label style="font-size:.72rem;color:rgba(224,170,255,.5)">HEC Token</label>
+                <input id="push-hec-token" type="text" placeholder="HEC / Ingest API Token" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/></div>
+            </div>
+            <div id="push-hec-hint" style="font-size:.62rem;color:rgba(224,170,255,.3);margin-top:3px"></div>
           </div>
           <div style="font-size:.72rem;color:rgba(224,170,255,.5);margin-top:4px">Rate &amp; Duration</div>
           <div style="display:flex;gap:10px;align-items:center">
@@ -1124,6 +1139,24 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
           <button class="btn-sm" onclick="loadSettings()" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2)">↺ Refresh</button>
         </div>
         <pre id="renew-cmd" style="display:none;background:rgba(0,0,0,.4);border:1px solid rgba(199,125,255,.2);border-radius:8px;padding:12px;margin-top:12px;font-size:.78rem;color:#a8c0b0;white-space:pre-wrap"></pre>
+      </div>
+
+      <div class="card">
+        <div class="card-title">SentinelOne AI SIEM</div>
+        <p style="font-size:.78rem;color:rgba(224,170,255,.45);margin-bottom:10px">
+          Connect to your SentinelOne console to browse and enable detection rules from the 2000+ rule library during attack scenario simulations.
+        </p>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <div><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Console URL</label>
+            <input id="s1-console-url" type="text" placeholder="https://usea1-purple.sentinelone.net" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/></div>
+          <div><label style="font-size:.72rem;color:rgba(224,170,255,.5)">API Token</label>
+            <input id="s1-api-token" type="password" placeholder="Service User API Token" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/></div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn-sm" onclick="saveS1Settings()">Save</button>
+            <button class="btn-sm" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2)" onclick="testS1Connection()">Test Connection</button>
+            <span id="s1-status" style="font-size:.72rem"></span>
+          </div>
+        </div>
       </div>
 
       <div class="card">
@@ -1641,6 +1674,87 @@ async function loadSettings() {
   } catch(e) {
     document.getElementById('settings-cert').innerHTML = '<p class="empty">Error loading cert: ' + e + '</p>';
   }
+  // S1 Console settings
+  try {
+    var sr = await fetch('/admin/api/s1/settings', {credentials:'same-origin'});
+    var sd = await sr.json();
+    if (sd.console_url) document.getElementById('s1-console-url').value = sd.console_url;
+    if (sd.has_token) document.getElementById('s1-api-token').placeholder = '********** (saved)';
+    document.getElementById('s1-status').innerHTML = sd.configured
+      ? '<span style="color:#2ecc71">Configured</span>'
+      : '<span style="color:rgba(224,170,255,.3)">Not configured</span>';
+  } catch(e) {}
+}
+
+async function saveS1Settings() {
+  var url = document.getElementById('s1-console-url').value.trim();
+  var token = document.getElementById('s1-api-token').value.trim();
+  if (!url) { alert('Console URL required'); return; }
+  var body = {console_url: url};
+  if (token) body.api_token = token;
+  try {
+    var r = await fetch('/admin/api/s1/settings', {method:'POST', credentials:'same-origin',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    if (r.ok) { toast('S1 settings saved'); loadSettings(); }
+    else { alert('Failed'); }
+  } catch(e) { alert('Error: ' + e); }
+}
+
+async function testS1Connection() {
+  var el = document.getElementById('s1-status');
+  el.innerHTML = '<span style="color:rgba(224,170,255,.4)">Testing...</span>';
+  try {
+    var r = await fetch('/admin/api/s1/test', {credentials:'same-origin'});
+    var d = await r.json();
+    if (d.connected) {
+      el.innerHTML = '<span style="color:#2ecc71">Connected (' + d.detection_rules_count + ' rules in library)</span>';
+    } else {
+      el.innerHTML = '<span style="color:#ff5050">Failed: ' + escHtml(d.error || 'unknown') + '</span>';
+    }
+  } catch(e) { el.innerHTML = '<span style="color:#ff5050">Error: ' + escHtml(String(e)) + '</span>'; }
+}
+
+async function loadPhaseRules(scenarioId, phaseId, source, mitreTactic, container) {
+  container.innerHTML = '<span style="font-size:.6rem;color:rgba(224,170,255,.3)">Loading S1 rules...</span>';
+  try {
+    var r = await fetch('/admin/api/s1/rules/for-phase?source=' + encodeURIComponent(source) + '&mitre_tactic=' + encodeURIComponent(mitreTactic) + '&limit=5', {credentials:'same-origin'});
+    var d = await r.json();
+    if (d.error) { container.innerHTML = '<span style="font-size:.6rem;color:#ff5050">' + escHtml(d.error) + '</span>'; return; }
+    var rules = d.rules || [];
+    if (!rules.length) { container.innerHTML = '<span style="font-size:.6rem;color:rgba(224,170,255,.3)">No matching S1 rules for ' + escHtml(source) + ' / ' + escHtml(mitreTactic) + '</span>'; return; }
+    var h = '<div style="font-size:.6rem;color:rgba(224,170,255,.4);margin-bottom:3px">' + d.total + ' S1 detection rules for ' + escHtml(mitreTactic) + ':</div>';
+    rules.forEach(function(rule) {
+      var statusIcon = rule.status === 'Enabled' ? '<span style="color:#2ecc71" title="Enabled">\\u25cf</span>' : '<span style="color:rgba(224,170,255,.2)" title="Disabled">\\u25cb</span>';
+      var sevColor = rule.severity === 'Critical' ? '#ff5050' : rule.severity === 'High' ? '#ff8c00' : rule.severity === 'Medium' ? '#f0c040' : 'rgba(224,170,255,.4)';
+      h += '<div style="display:flex;align-items:center;gap:6px;padding:2px 0;border-bottom:1px solid rgba(199,125,255,.06)">';
+      h += statusIcon;
+      h += '<span style="flex:1;font-size:.6rem;color:rgba(224,170,255,.7)">' + escHtml(rule.name) + '</span>';
+      h += '<span style="font-size:.55rem;color:' + sevColor + '">' + escHtml(rule.severity || '') + '</span>';
+      if (rule.status === 'Enabled') {
+        h += '<button class="btn-sm" style="padding:1px 6px;font-size:.5rem;background:rgba(120,30,40,.3);color:#ff8080" onclick="toggleS1Rule(this,\\'' + escHtml(rule.id) + '\\',\\'disable\\')">Disable</button>';
+      } else {
+        h += '<button class="btn-sm" style="padding:1px 6px;font-size:.5rem;background:rgba(30,120,40,.3);color:#80ff80" onclick="toggleS1Rule(this,\\'' + escHtml(rule.id) + '\\',\\'enable\\')">Enable</button>';
+      }
+      h += '</div>';
+    });
+    if (d.total > 5) h += '<div style="font-size:.55rem;color:rgba(224,170,255,.3);margin-top:2px">... and ' + (d.total - 5) + ' more</div>';
+    container.innerHTML = h;
+  } catch(e) { container.innerHTML = '<span style="font-size:.6rem;color:#ff5050">' + escHtml(String(e)) + '</span>'; }
+}
+
+async function toggleS1Rule(btn, ruleId, action) {
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {
+    await fetch('/admin/api/s1/rules/' + ruleId + '/' + action, {method:'POST', credentials:'same-origin'});
+    toast('Rule ' + action + 'd');
+    btn.parentElement.parentElement.querySelector('[style*="color"]').textContent = action === 'enable' ? '\\u25cf' : '\\u25cb';
+    btn.textContent = action === 'enable' ? 'Disable' : 'Enable';
+    btn.onclick = function() { toggleS1Rule(btn, ruleId, action === 'enable' ? 'disable' : 'enable'); };
+    btn.style.background = action === 'enable' ? 'rgba(120,30,40,.3)' : 'rgba(30,120,40,.3)';
+    btn.style.color = action === 'enable' ? '#ff8080' : '#80ff80';
+  } catch(e) { btn.textContent = 'Error'; }
+  btn.disabled = false;
 }
 
 async function showRenewCmd() {
@@ -3304,8 +3418,64 @@ async function loadPushProfiles() {
 
 function togglePushPath() {
   var t = document.getElementById('push-transport').value;
-  var g = document.getElementById('push-path-group');
-  if (g) g.style.display = (t === 'syslog') ? 'none' : 'flex';
+  var isSyslog = t === 'syslog';
+  var isHec = t === 'hec';
+  var isHttp = t === 'http';
+  // Path: show for HTTP and HEC, hide for Syslog
+  var pg = document.getElementById('push-path-group');
+  if (pg) pg.style.display = isSyslog ? 'none' : 'flex';
+  // Protocol (TCP/UDP): show for Syslog only
+  var proto = document.getElementById('push-protocol-group');
+  if (proto) proto.style.display = isSyslog ? '' : 'none';
+  // Auth type + token: show for HTTP only
+  var ag = document.getElementById('push-auth-group');
+  if (ag) ag.style.display = isHttp ? '' : 'none';
+  // HEC token: show for HEC only
+  var hg = document.getElementById('push-hec-group');
+  if (hg) hg.style.display = isHec ? '' : 'none';
+  // Smart port defaults (only if currently a common default)
+  var portEl = document.getElementById('push-port');
+  var curPort = parseInt(portEl.value);
+  if (isSyslog && (curPort === 443 || curPort === 8088 || !curPort)) portEl.value = 514;
+  if (isHec && (curPort === 514 || !curPort)) portEl.value = 443;
+  if (isHttp && (curPort === 514 || !curPort)) portEl.value = 443;
+  // Smart TLS default
+  var tlsEl = document.getElementById('push-tls');
+  if (isHec) tlsEl.checked = true;
+  // Smart path default for HEC
+  var pathEl = document.getElementById('push-path');
+  if (isHec && (pathEl.value === '/' || !pathEl.value)) pathEl.value = '/services/collector/event';
+  if (isHttp && pathEl.value === '/services/collector/event') pathEl.value = '/';
+  // Trigger HEC flavour hints
+  if (isHec) onHecFlavourChange();
+}
+
+function onHecFlavourChange() {
+  var f = document.getElementById('push-hec-flavour').value;
+  var hint = document.getElementById('push-hec-hint');
+  var hostEl = document.getElementById('push-host');
+  var portEl = document.getElementById('push-port');
+  var pathEl = document.getElementById('push-path');
+  var tokenEl = document.getElementById('push-hec-token');
+  if (f === 's1_dpm') {
+    hint.textContent = 'Observo Data Pipeline Manager \u2014 uses Splunk auth scheme. Host: ingest.<region>.sentinelone.net, Path: /services/collector/event';
+    hostEl.placeholder = 'ingest.na1.sentinelone.net';
+    tokenEl.placeholder = 'Observo HEC Token (from Source config)';
+    if (!portEl.value || portEl.value === '514') portEl.value = 443;
+    if (!pathEl.value || pathEl.value === '/') pathEl.value = '/services/collector/event';
+  } else if (f === 's1_siem') {
+    hint.textContent = 'SentinelOne AI SIEM direct ingest \u2014 uses Bearer auth + S1-Scope header (auto-populated from Settings).';
+    hostEl.placeholder = 'ingest.us1.sentinelone.net';
+    tokenEl.placeholder = 'S1 Mgmt API Token';
+    if (!portEl.value || portEl.value === '514') portEl.value = 443;
+    if (!pathEl.value || pathEl.value === '/') pathEl.value = '/services/collector/event';
+  } else {
+    hint.textContent = 'Standard Splunk HTTP Event Collector \u2014 uses Splunk auth scheme.';
+    hostEl.placeholder = 'splunk-hec.example.com';
+    tokenEl.placeholder = 'Splunk HEC Token';
+    if (!portEl.value || portEl.value === '514') portEl.value = 8088;
+    if (!pathEl.value || pathEl.value === '/') pathEl.value = '/services/collector/event';
+  }
 }
 
 function openPushEditor(profileId) {
@@ -3341,7 +3511,9 @@ function openPushEditor(profileId) {
         document.getElementById('push-tls').checked = !!d.tls;
         document.getElementById('push-path').value = d.path || '/';
         document.getElementById('push-auth-type').value = d.auth_type || 'none';
-        document.getElementById('push-auth-token').value = d.auth_token || d.hec_token || '';
+        document.getElementById('push-auth-token').value = d.auth_token || '';
+        document.getElementById('push-hec-token').value = d.hec_token || '';
+        document.getElementById('push-hec-flavour').value = d.hec_flavour || 's1_dpm';
         document.getElementById('push-rate').value = p.rate || 10;
         var dur = p.duration || {};
         document.getElementById('push-duration-val').value = dur.value || 1;
@@ -3389,7 +3561,8 @@ async function savePushProfile() {
       auth_token: authType === 'bearer' ? authVal : '',
       auth_username: authType === 'basic' ? authVal.split(':')[0] || '' : '',
       auth_password: authType === 'basic' ? authVal.split(':').slice(1).join(':') || '' : '',
-      hec_token: document.getElementById('push-transport').value === 'hec' ? authVal : ''
+      hec_token: document.getElementById('push-transport').value === 'hec' ? (document.getElementById('push-hec-token').value || '') : '',
+      hec_flavour: document.getElementById('push-transport').value === 'hec' ? (document.getElementById('push-hec-flavour').value || 's1_dpm') : ''
     },
     rate: parseInt(document.getElementById('push-rate').value) || 10,
     duration: {
@@ -3543,7 +3716,7 @@ async function loadScenarios() {
       // MITRE kill chain timeline
       h += '<div style="display:flex;gap:4px;overflow-x:auto;padding:4px 0">';
       var phases = s.phases || [];
-      phases.forEach(function(p) {
+      phases.forEach(function(p, i) {
         var bg = _MITRE_COLORS[p.mitre_tactic] || '#555';
         var opacity = p.status === 'active' ? '1' : p.status === 'completed' ? '.6' : '.25';
         var border = p.status === 'active' ? '2px solid #fff' : '1px solid rgba(255,255,255,.15)';
@@ -3552,6 +3725,9 @@ async function loadScenarios() {
         h += '<div style="font-size:.65rem;color:rgba(255,255,255,.8);margin-top:2px">' + escHtml(p.mitre_tactic || '') + '</div>';
         h += '<div style="font-size:.55rem;color:rgba(255,255,255,.5);margin-top:2px">' + escHtml(p.source || '') + '</div>';
         if (p.status === 'active') h += '<div style="position:absolute;top:-2px;right:4px;font-size:.5rem;color:#2ecc71">\\u25cf LIVE</div>';
+        var phRuleId = 'phase-rules-' + escHtml(s.id).substring(0,8) + '-' + i;
+        h += '<div style="font-size:.5rem;color:rgba(255,255,255,.3);margin-top:3px;cursor:pointer;text-decoration:underline" onclick="event.stopPropagation();var c=document.getElementById(\\'' + phRuleId + '\\');if(c.children.length===0)loadPhaseRules(\\'' + escHtml(s.id) + '\\',\\'' + escHtml(p.phase_id||'') + '\\',\\'' + escHtml(p.source||'') + '\\',\\'' + escHtml(p.mitre_tactic||'') + '\\',c);c.style.display=c.style.display===\\'none\\'?\\'block\\':\\'none\\'">S1 Rules</div>';
+        h += '<div id="' + phRuleId + '" style="display:none;margin-top:3px"></div>';
         h += '</div>';
       });
       h += '</div>';
@@ -5726,3 +5902,90 @@ async def api_scenario_status(scenario_id: str, ag_session: str | None = Cookie(
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     import attack_scenarios
     return JSONResponse(attack_scenarios.get_scenario_status(scenario_id))
+
+
+# ── S1 Detection Library API ─────────────────────────────────────────────────
+
+@router.get("/api/s1/settings")
+async def api_s1_settings_get(ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import s1_detection_library as s1
+    settings = s1.get_settings()
+    return JSONResponse({"configured": s1.is_configured(),
+                         "console_url": settings.get("console_url", ""),
+                         "has_token": bool(settings.get("api_token"))})
+
+
+@router.post("/api/s1/settings")
+async def api_s1_settings_save(request: Request, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import s1_detection_library as s1
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    s1.save_settings({
+        "console_url": body.get("console_url", "").rstrip("/"),
+        "api_token": body.get("api_token", ""),
+    })
+    return JSONResponse({"ok": True})
+
+
+@router.get("/api/s1/test")
+async def api_s1_test(ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import s1_detection_library as s1
+    return JSONResponse(s1.test_connection())
+
+
+@router.get("/api/s1/data-sources")
+async def api_s1_data_sources(ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import s1_detection_library as s1
+    return JSONResponse({"data_sources": s1.get_data_sources()})
+
+
+@router.get("/api/s1/rules")
+async def api_s1_rules(request: Request, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import s1_detection_library as s1
+    params = dict(request.query_params)
+    result = s1.query_rules(
+        source=params.get("source"),
+        mitre_tactic=params.get("mitre_tactic"),
+        severity=params.get("severity"),
+        status=params.get("status"),
+        query=params.get("query"),
+        limit=int(params.get("limit", "10")),
+    )
+    return JSONResponse(result)
+
+
+@router.get("/api/s1/rules/for-phase")
+async def api_s1_rules_for_phase(source: str, mitre_tactic: str, limit: int = 10,
+                                   ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import s1_detection_library as s1
+    return JSONResponse(s1.query_rules_for_phase(source, mitre_tactic, limit))
+
+
+@router.post("/api/s1/rules/{rule_id}/enable")
+async def api_s1_rule_enable(rule_id: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import s1_detection_library as s1
+    return JSONResponse(s1.enable_rule(rule_id))
+
+
+@router.post("/api/s1/rules/{rule_id}/disable")
+async def api_s1_rule_disable(rule_id: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import s1_detection_library as s1
+    return JSONResponse(s1.disable_rule(rule_id))

@@ -357,11 +357,29 @@ def format_event(event: dict[str, Any], fmt: str, source_type: str = "") -> str:
 
 # ── Transports ───────────────────────────────────────────────────────────────
 
+def _clean_host(raw: str) -> str:
+    """Strip scheme and trailing slash from a host that may contain https://."""
+    h = raw.strip()
+    for prefix in ("https://", "http://"):
+        if h.lower().startswith(prefix):
+            h = h[len(prefix):]
+    return h.rstrip("/")
+
+
 def _send_http(payload: str, dest: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
-    """Send payload via HTTP POST. Returns delivery confirmation."""
-    import urllib.request
-    url_scheme = "https" if dest.get("tls") else "http"
-    url = f"{url_scheme}://{dest['host']}:{dest['port']}{dest.get('path', '/')}"
+    """Send payload via HTTP POST. Returns delivery confirmation.
+
+    Uses http.client for reliable TLS handling (urllib.request has issues
+    with some envoy-fronted endpoints like Observo HEC).
+    """
+    import http.client
+
+    host = _clean_host(dest["host"])
+    port = int(dest.get("port", 443))
+    path = dest.get("path", "/")
+    use_tls = dest.get("tls", False)
+    url = f"{'https' if use_tls else 'http'}://{host}:{port}{path}"
+
     hdrs = {"Content-Type": "application/json", "User-Agent": "ApiGenie-LogPusher/1.0"}
     if headers:
         hdrs.update(headers)
@@ -374,8 +392,9 @@ def _send_http(payload: str, dest: dict[str, Any], headers: dict[str, str] | Non
         cred = base64.b64encode(f"{dest['auth_username']}:{dest['auth_password']}".encode()).decode()
         hdrs["Authorization"] = f"Basic {cred}"
 
-    ctx = None
-    if dest.get("tls"):
+    data = payload.encode("utf-8")
+
+    if use_tls:
         ctx = ssl.create_default_context()
         cert_path = get_cert_path(dest.get("tls_cert_id"))
         if cert_path:
@@ -383,27 +402,71 @@ def _send_http(payload: str, dest: dict[str, Any], headers: dict[str, str] | Non
         if not dest.get("tls_verify", False):
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
+        conn = http.client.HTTPSConnection(host, port, context=ctx, timeout=10)
+    else:
+        conn = http.client.HTTPConnection(host, port, timeout=10)
 
-    data = payload.encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
-    resp = urllib.request.urlopen(req, context=ctx, timeout=10)
-    return {"protocol": "http", "status": resp.status, "bytes": len(data), "url": url}
+    try:
+        conn.request("POST", path, body=data, headers=hdrs)
+        resp = conn.getresponse()
+        resp.read()  # drain response body
+        return {"protocol": "http", "status": resp.status, "bytes": len(data), "url": url}
+    finally:
+        conn.close()
 
 
 def _send_hec(payload: str, dest: dict[str, Any]) -> dict[str, Any]:
-    """Send payload via Splunk HTTP Event Collector."""
-    # Extract HEC token from whichever field the user put it in
+    """Send payload via HTTP Event Collector (Splunk, S1, Observo, generic).
+
+    Auto-detects the HEC flavour from the host or path and adjusts
+    auth scheme and payload wrapping accordingly:
+      - sentinelone.net  → Bearer auth, raw JSON body (newline-delimited)
+      - observo.ai       → Bearer auth, raw JSON body
+      - everything else  → Splunk auth, {"event": ..., "sourcetype": ...}
+    """
     token = dest.get("hec_token") or dest.get("auth_token") or ""
-    hec_headers = {"Authorization": f"Splunk {token}"}
-    # Default to the standard HEC path if user left it as /
-    path = dest.get("path", "/services/collector/event")
-    if path == "/":
+    host = dest.get("host", "").lower().strip()
+    for _p in ("https://", "http://"):
+        if host.startswith(_p):
+            host = host[len(_p):]
+    host = host.rstrip("/")
+    path = dest.get("path", "/")
+
+    # Determine HEC flavour from stored preference, fallback to host detection
+    flavour = dest.get("hec_flavour", "")
+    if not flavour:
+        if "sentinelone" in host and "ingest." not in host:
+            flavour = "s1_siem"
+        elif "sentinelone" in host and "ingest." in host:
+            flavour = "s1_dpm"
+        else:
+            flavour = "splunk"
+
+    # Auth header — S1 AI SIEM uses Bearer + S1-Scope; everything else uses Splunk
+    if flavour == "s1_siem":
+        hec_headers = {"Authorization": f"Bearer {token}"}
+        try:
+            import s1_detection_library
+            acct = s1_detection_library.get_account_id()
+            if acct:
+                hec_headers["S1-Scope"] = acct
+        except Exception:
+            pass
+    else:
+        # Splunk auth for S1 DPM (Observo), Splunk, and generic HEC
+        hec_headers = {"Authorization": f"Splunk {token}"}
+
+    # Path defaults — S1 HEC is Splunk-compatible (accepts /services/collector/event and /raw)
+    if path == "/" or not path:
         path = "/services/collector/event"
-    # Override auth_type so _send_http doesn't add a conflicting Authorization header
-    hec_dest = dict(dest, path=path, auth_type="none")
+
+    # Payload wrapping — Splunk envelope for all HEC targets
     hec_body = json.dumps({"event": payload, "sourcetype": "_json", "time": time.time()})
+
+    hec_dest = dict(dest, path=path, auth_type="none")
     result = _send_http(hec_body, hec_dest, headers=hec_headers)
     result["protocol"] = "hec"
+    result["hec_flavour"] = flavour
     return result
 
 
