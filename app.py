@@ -1,4 +1,4 @@
-"""ApiGenie — standalone HTTP mock server for 14 security platform APIs.
+"""ApiGenie — standalone HTTP mock server for 17 security platform APIs + 16 push sources.
 
 Routes mirror the real platform API paths so Observo Site telemetry collector
 can connect without any URL rewriting.
@@ -49,6 +49,9 @@ from sources.snyk import (
 )
 from sources.tenable import generate_asset_chunks, generate_vuln_chunks, get_audit_logs_response as tenable_audit
 from sources.wiz import get_issues_response as wiz_issues
+from sources.cato import generate_events as cato_events
+from sources.cloudflare import generate_events as cloudflare_events
+from sources.zscaler_zpa import generate_events as zpa_events
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
@@ -891,6 +894,134 @@ async def darktrace_devices(
          "score": round(random.uniform(0.0, 1.0), 3)}
         for i in range(1, min(count, 50) + 1)
     ]
+
+
+# =============================================================================
+# Cato Networks  —  GraphQL API, x-api-key header auth
+# =============================================================================
+
+
+@app.post("/api/v1/graphql2")
+async def cato_graphql(request: Request) -> dict[str, Any]:
+    api_key = request.headers.get("x-api-key", "")
+    if not api_key:
+        raise HTTPException(401, "Missing x-api-key header")
+    body = await request.json()
+    query_str = body.get("query", "")
+    variables = body.get("variables", {})
+    count = variables.get("first", variables.get("last", 20))
+    if "eventsFeed" in query_str:
+        events = cato_events(count=min(count, 100))
+        marker = events[-1].get("time", "") if events else ""
+        return {"data": {"eventsFeed": {"marker": marker, "fetchedCount": len(events), "accounts": [
+            {"id": "12345", "records": events}
+        ]}}}
+    elif "auditFeed" in query_str:
+        events = [e for e in cato_events(count=min(count, 50)) if e.get("event_type") == "Audit"]
+        if not events:
+            events = cato_events(count=5)
+        marker = events[-1].get("time", "") if events else ""
+        return {"data": {"auditFeed": {"marker": marker, "fetchedCount": len(events), "accounts": [
+            {"id": "12345", "records": events}
+        ]}}}
+    elif "accountMetrics" in query_str or "accountSnapshot" in query_str:
+        return {"data": {"accountSnapshot": {"sites": [
+            {"id": "100", "name": "HQ-NewYork", "connState": "connected"},
+            {"id": "101", "name": "Branch-London", "connState": "connected"},
+        ]}}}
+    else:
+        return {"data": {}, "errors": [{"message": "Unknown query"}]}
+
+
+# =============================================================================
+# Cloudflare  —  Logpull REST API + GraphQL Analytics
+# =============================================================================
+
+
+@app.get("/client/v4/zones/{zone_id}/logs/received")
+async def cloudflare_logpull(_auth: BearerAuth, zone_id: str,
+                              count: int = Query(20, le=1000)) -> JSONResponse:
+    events = cloudflare_events(count=min(count, 200))
+    # Cloudflare Logpull returns newline-delimited JSON
+    import json as _json
+    ndjson = "\n".join(_json.dumps(e) for e in events) + "\n"
+    return JSONResponse(content=events)
+
+
+@app.get("/client/v4/zones/{zone_id}/dns_analytics/report")
+async def cloudflare_dns_analytics(_auth: BearerAuth, zone_id: str) -> dict[str, Any]:
+    events = [e for e in cloudflare_events(count=30) if e.get("event_type") == "dns_event"]
+    if not events:
+        events = cloudflare_events(count=5)
+    return {"result": {"rows": events, "totals": {"queryCount": len(events)}},
+            "success": True, "errors": [], "messages": []}
+
+
+@app.get("/client/v4/zones/{zone_id}/firewall/events")
+async def cloudflare_firewall_events(_auth: BearerAuth, zone_id: str,
+                                       per_page: int = Query(20, le=200)) -> dict[str, Any]:
+    events = [e for e in cloudflare_events(count=per_page)
+              if e.get("event_type") in ("firewall_event", "waf_event")]
+    if not events:
+        events = cloudflare_events(count=5)
+    return {"result": events, "success": True, "result_info": {
+        "page": 1, "per_page": per_page, "total_count": len(events), "count": len(events)
+    }}
+
+
+@app.get("/client/v4/accounts/{account_id}/access/logs/access_requests")
+async def cloudflare_access_logs(_auth: BearerAuth, account_id: str,
+                                   limit: int = Query(20)) -> dict[str, Any]:
+    events = [e for e in cloudflare_events(count=limit) if e.get("event_type") == "access_event"]
+    if not events:
+        events = cloudflare_events(count=5)
+    return {"result": events, "success": True, "result_info": {"count": len(events)}}
+
+
+@app.get("/client/v4/accounts/{account_id}/gateway/audit_logs")
+async def cloudflare_gateway_logs(_auth: BearerAuth, account_id: str,
+                                    limit: int = Query(20)) -> dict[str, Any]:
+    events = [e for e in cloudflare_events(count=limit) if e.get("event_type") == "gateway_event"]
+    if not events:
+        events = cloudflare_events(count=5)
+    return {"result": events, "success": True}
+
+
+# =============================================================================
+# Zscaler ZPA  —  REST API, Bearer token auth
+# =============================================================================
+
+
+@app.get("/mgmtconfig/v1/admin/customers/{customer_id}/auditLogEntryReport")
+async def zpa_audit_logs(_auth: BearerAuth, customer_id: str,
+                          page: int = Query(1), pagesize: int = Query(20)) -> dict[str, Any]:
+    events = zpa_events(count=min(pagesize, 100))
+    return {"list": events, "totalPages": 1, "totalCount": len(events)}
+
+
+@app.get("/mgmtconfig/v2/admin/customers/{customer_id}/userActivity")
+async def zpa_user_activity(_auth: BearerAuth, customer_id: str,
+                             page: int = Query(1), pagesize: int = Query(20)) -> dict[str, Any]:
+    events = [e for e in zpa_events(count=min(pagesize, 100)) if e.get("event_type") == "user_activity"]
+    if not events:
+        events = zpa_events(count=10)
+    return {"list": events, "totalPages": 1, "totalCount": len(events)}
+
+
+@app.get("/mgmtconfig/v1/admin/customers/{customer_id}/connectorStatus")
+async def zpa_connector_status(_auth: BearerAuth, customer_id: str) -> dict[str, Any]:
+    events = [e for e in zpa_events(count=10) if e.get("event_type") == "connector_status"]
+    if not events:
+        events = zpa_events(count=5)
+    return {"list": events, "totalCount": len(events)}
+
+
+@app.get("/mgmtconfig/v1/admin/customers/{customer_id}/healthStatus")
+async def zpa_health_status(_auth: BearerAuth, customer_id: str) -> dict[str, Any]:
+    events = [e for e in zpa_events(count=10) if e.get("event_type") == "health"]
+    if not events:
+        events = zpa_events(count=5)
+    return {"list": events, "totalCount": len(events)}
 
 
 # =============================================================================

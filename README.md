@@ -25,8 +25,34 @@ The deployment hostname is fully parameterised: pick any domain, run `./scripts/
 | 9 | **Snyk** | Bearer | `GET /v1/org/{id}/issues`, `/rest/orgs/{id}/issues` (JSON:API), `/projects`, `/audit` |
 | 10 | **Darktrace** | HMAC-SHA1 | `GET /modelbreaches`, `/aianalyst/incident/log`, `/status`, `/groups` |
 | 11 | **Microsoft 365** | OAuth2 (tenant → JWT) | Two modes: Graph API security alerts + Management Activity API. 14 event categories. See [Microsoft 365 Configuration](#microsoft-365-configuration) |
+| 12 | **Cato Networks SASE** | x-api-key header | `POST /api/v1/graphql2` — eventsFeed (Security/IPS/AV/FW, Internet Access, WAN, Audit) + auditFeed. Marker-based pagination |
+| 13 | **Cloudflare** | Bearer token | `GET /client/v4/zones/{id}/logs/received` (Logpull), `/firewall/events` (WAF), `/dns_analytics/report`, `/accounts/{id}/access/logs` (Zero Trust), `/gateway/audit_logs` |
+| 14 | **Zscaler ZPA** | Bearer (OAuth2) | `GET /mgmtconfig/v2/admin/customers/{id}/userActivity`, `/auditLogEntryReport`, `/connectorStatus`, `/healthStatus` |
 
 > **AWS sources (CloudTrail, WAF, GuardDuty)** are intentionally not exposed via HTTP. Real Observo collectors fetch them via SQS-notified S3 polling using the AWS SDK with hostnames hardcoded to `*.amazonaws.com` and SigV4 host-binding, which apigenie cannot intercept. The data generators remain at `sources/aws_cloudtrail.py`, `sources/aws_waf.py`, and `sources/aws_guardduty.py` for a planned LocalStack-based extension — see [`docs/LOCALSTACK_PLAN.md`](docs/LOCALSTACK_PLAN.md).
+
+### Log Push sources
+
+Actively send generated logs to external destinations (S1 DPM/Observo, S1 AI SIEM, Splunk HEC, Syslog, HTTP POST). Configure via the Admin UI **Log Push** tab.
+
+| # | Source | Event types |
+|---|--------|-------------|
+| 1 | **Palo Alto Firewall (PAN-OS)** | TRAFFIC, THREAT, URL, AUTH, USERID, SYSTEM, CONFIG, HIP-MATCH, GlobalProtect, WildFire, Decryption, Correlation |
+| 2 | **Fortinet FortiGate** | Traffic, UTM (AV, IPS, Web Filter, App Control), Event, Anomaly |
+| 3 | **Check Point NGFW** | Accept/Drop/Reject, Blade logs (IPS, AV, App Control, URL Filtering, Anti-Bot) |
+| 4 | **Cisco ASA/FTD** | Connection build/teardown, denied, threat, VPN, AAA, system (syslog format) |
+| 5 | **CrowdStrike Falcon** | DetectionSummaryEvent, IncidentSummaryEvent, AuthActivityAudit, UserActivityAudit |
+| 6 | **VMware Carbon Black Cloud** | Alerts, watchlist hits, process events, audit |
+| 7 | **Zscaler Internet Access (ZIA)** | Web transactions, firewall, DNS, tunnel (NSS format) |
+| 8 | **Imperva Cloud WAF** | Security events, bot detection, ACL violations, DDoS mitigation |
+| 9 | **Barracuda Email Security** | Spam, virus, DLP, ATP sandbox, admin audit |
+| 10 | **Infoblox DDI** | DNS queries, RPZ hits, DHCP events, threat intelligence |
+| 11 | **Cisco Switch (IOS/NX-OS)** | Port security, STP, ACL, AAA, CDP, DHCP snooping, ARP inspection |
+| 12 | **HPE Aruba Switch (AOS-CX)** | 802.1X, RADIUS, STP, LLDP, ACL, DHCP snooping, PoE, VSF |
+| 13 | **SentinelOne Singularity (XDR)** | Threats, Activities, Deep Visibility (process/network/file/registry), Audit, MITRE ATT&CK mapped |
+| 14 | **Corelight / Zeek NDR** | conn.log, dns.log, http.log, ssl.log, files.log, notice.log, weird.log, x509.log, smtp.log, dpd.log |
+| 15 | **CyberArk EPM / PAM** | Credential checkout/checkin, privileged sessions, policy violations, password changes, safe operations, admin audit |
+| 16 | **Stamus Networks SSP (Suricata)** | IDS/IPS alerts, flow, DNS, HTTP, TLS, fileinfo, anomaly, stats (Suricata EVE JSON) |
 
 ### Streaming sources
 

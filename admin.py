@@ -405,6 +405,44 @@ SOURCES: dict[str, dict[str, Any]] = {
         ],
         "curl": f'curl -s "{BASE}/modelbreaches?limit=5"',
     },
+    "cato": {
+        "name": "Cato Networks SASE",
+        "auth_type": "x-api-key header",
+        "credentials": {"x-api-key": "any-value-accepted"},
+        "endpoints": [
+            {"method": "POST", "path": "/api/v1/graphql2", "desc": "GraphQL eventsFeed / auditFeed"},
+        ],
+        "curl": (
+            f'curl -s -X POST "{BASE}/api/v1/graphql2" \\\\\n'
+            f'  -H "x-api-key: any-key" -H "Content-Type: application/json" \\\\\n'
+            f'  -d \'{{"query":"{{ eventsFeed(accountIDs:[12345]) {{ marker fetchedCount accounts {{ records {{ event_type time }} }} }} }}"}}\''
+        ),
+    },
+    "cloudflare": {
+        "name": "Cloudflare",
+        "auth_type": "Bearer token",
+        "credentials": {"token": "apigenie-valid-token-001"},
+        "endpoints": [
+            {"method": "GET", "path": "/client/v4/zones/{zone_id}/logs/received",              "desc": "Logpull — HTTP request logs"},
+            {"method": "GET", "path": "/client/v4/zones/{zone_id}/firewall/events",             "desc": "Firewall / WAF events"},
+            {"method": "GET", "path": "/client/v4/zones/{zone_id}/dns_analytics/report",        "desc": "DNS analytics"},
+            {"method": "GET", "path": "/client/v4/accounts/{acct}/access/logs/access_requests", "desc": "Zero Trust Access logs"},
+            {"method": "GET", "path": "/client/v4/accounts/{acct}/gateway/audit_logs",          "desc": "Gateway audit logs"},
+        ],
+        "curl": f'curl -s -H "Authorization: Bearer apigenie-valid-token-001" "{BASE}/client/v4/zones/zone_abc123/logs/received?count=5"',
+    },
+    "zscaler_zpa": {
+        "name": "Zscaler Private Access (ZPA)",
+        "auth_type": "Bearer token (OAuth2 client credentials)",
+        "credentials": {"token": "apigenie-valid-token-001"},
+        "endpoints": [
+            {"method": "GET", "path": "/mgmtconfig/v2/admin/customers/{id}/userActivity",          "desc": "User activity logs"},
+            {"method": "GET", "path": "/mgmtconfig/v1/admin/customers/{id}/auditLogEntryReport",   "desc": "Audit log entries"},
+            {"method": "GET", "path": "/mgmtconfig/v1/admin/customers/{id}/connectorStatus",       "desc": "Connector status"},
+            {"method": "GET", "path": "/mgmtconfig/v1/admin/customers/{id}/healthStatus",          "desc": "Health status"},
+        ],
+        "curl": f'curl -s -H "Authorization: Bearer apigenie-valid-token-001" "{BASE}/mgmtconfig/v2/admin/customers/12345/userActivity?pagesize=5"',
+    },
 }
 
 CONTAINERS = ["apigenie", "apigenie-nginx", "apigenie-kafka", "apigenie-zookeeper", "apigenie-pubsub"]

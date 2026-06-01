@@ -42,6 +42,10 @@ SOURCE_KEY_TO_S1 = {
     "sentinelone": "SentinelOne",
     "gcp_audit": "GCP Audit",
     "azure_platform": "Azure Platform",
+    "cato": "Cato Networks",
+    "corelight": "Corelight",
+    "cyberark": "CyberArk EPM",
+    "stamus": "Stamus Networks",
 }
 
 

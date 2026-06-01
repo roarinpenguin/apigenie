@@ -49,6 +49,15 @@ def _register_all() -> None:
     log_pusher.register_source(
         key="sentinelone", name="SentinelOne Singularity (XDR)", module="push_sources.sentinelone",
         description="Threats (malware, exploit, ransomware), Activities, Deep Visibility (process, network, file, registry), Audit, MITRE ATT&CK mapped")
+    log_pusher.register_source(
+        key="corelight", name="Corelight / Zeek NDR", module="push_sources.corelight",
+        description="conn.log, dns.log, http.log, ssl.log, files.log, notice.log, weird.log, x509.log, smtp.log, dpd.log — Zeek JSON format")
+    log_pusher.register_source(
+        key="cyberark", name="CyberArk EPM / PAM", module="push_sources.cyberark",
+        description="Credential checkout/checkin, privileged sessions, policy violations, password changes, safe operations, admin audit")
+    log_pusher.register_source(
+        key="stamus", name="Stamus Networks SSP (Suricata)", module="push_sources.stamus",
+        description="IDS/IPS alerts, flow records, DNS, HTTP, TLS, fileinfo, anomaly, stats — Suricata EVE JSON format")
 
 
 _register_all()

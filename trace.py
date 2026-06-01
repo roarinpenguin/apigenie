@@ -58,6 +58,9 @@ _SOURCE_PATTERNS: list[tuple[str, list[str]]] = [
     ("snyk",       ["/v1/org/", "/rest/orgs/"]),
     ("darktrace",         ["/modelbreaches", "/aianalyst/", "/status", "/groups", "/devices"]),
     ("azure_platform",    ["/api/bus/azure"]),
+    ("cato",              ["/api/v1/graphql2"]),
+    ("cloudflare",        ["/client/v4/"]),
+    ("zscaler_zpa",       ["/mgmtconfig/"]),
 ]
 
 # Skip the admin UI itself (login/logout/dashboard/admin API) but NOT Cisco Duo,
