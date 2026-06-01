@@ -443,6 +443,17 @@ SOURCES: dict[str, dict[str, Any]] = {
         ],
         "curl": f'curl -s -H "Authorization: Bearer apigenie-valid-token-001" "{BASE}/mgmtconfig/v2/admin/customers/12345/userActivity?pagesize=5"',
     },
+    "sentinelone": {
+        "name": "SentinelOne",
+        "auth_type": "ApiToken header",
+        "credentials": {"token": "apigenie-valid-token-001"},
+        "endpoints": [
+            {"method": "GET", "path": "/web/api/v2.1/threats",    "desc": "Threats — malware, exploits, PUA, ransomware with full MITRE ATT&CK mapping"},
+            {"method": "GET", "path": "/web/api/v2.1/activities", "desc": "Activities — agent lifecycle, scans, quarantine, remote shell, STAR rules"},
+            {"method": "GET", "path": "/web/api/v2.1/agents",     "desc": "Agents — endpoint inventory with OS, network, policy, scan status"},
+        ],
+        "curl": f'curl -s -H "Authorization: ApiToken apigenie-valid-token-001" "{BASE}/web/api/v2.1/threats?limit=3"',
+    },
 }
 
 CONTAINERS = ["apigenie", "apigenie-nginx", "apigenie-kafka", "apigenie-zookeeper", "apigenie-pubsub"]
@@ -714,7 +725,7 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
   <a class="nav-item" onclick="showTab('logs', this)"><span class="nav-icon">📜</span> Container Logs</a>
   <span class="nav-section">Configuration &amp; Reference</span>
   <a class="nav-item" onclick="showTab('listeners', this); loadListeners()"><span class="nav-icon">🎯</span> Listeners</a>
-  <a class="nav-item" onclick="showTab('profiles', this); loadProfiles()"><span class="nav-icon">🎭</span> Log Profiles</a>
+  <a class="nav-item" onclick="showTab('profiles', this); loadProfiles()"><span class="nav-icon">🎭</span> Log Profiles &amp;<br/><span style="padding-left:1.65rem">Detection Rules</span></a>
   <a class="nav-item" onclick="showTab('push', this); loadPushProfiles()"><span class="nav-icon">🚀</span> Log Push</a>
   <a class="nav-item" style="display:none" onclick="showTab('scenarios', this); loadScenarios()"><span class="nav-icon">⚔</span> Attack Scenarios</a>
   <a class="nav-item" onclick="showTab('config', this)"><span class="nav-icon">🔧</span> Source Details</a>
@@ -1030,33 +1041,81 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
     <!-- LOG PROFILES TAB -->
     <div class="pane" id="pane-profiles">
       <div class="card">
-        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
-          <span>Log Profiles</span>
-          <button onclick="openProfileEditor()">+ New profile</button>
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleSection('sec-profiles')">
+          <span>▸ Log Profiles</span>
+          <button onclick="event.stopPropagation();openProfileEditor()">+ New profile</button>
         </div>
+        <div id="sec-profiles" style="display:none">
         <p style="font-size:.78rem;color:rgba(224,170,255,.45);margin-bottom:14px">
           Profiles define users, machines, C2 servers, malware, and mail senders used to generate correlatable telemetry.
           Assign a profile to one or more sources to blend profile entities into generated logs at a configurable ratio.
         </p>
         <div id="profiles-list"><p class="empty">Loading…</p></div>
+        </div>
       </div>
       <div class="card">
-        <div class="card-title">Source ↔ Profile bindings</div>
+        <div class="card-title" style="cursor:pointer" onclick="toggleSection('sec-bindings')">
+          ▸ Source ↔ Profile bindings
+        </div>
+        <div id="sec-bindings" style="display:none">
         <p style="font-size:.78rem;color:rgba(224,170,255,.45);margin-bottom:14px">
           Assign profiles to sources, tune signal-to-noise ratio, and control <b>log volume</b> per source (1–100% of max output per API call).
         </p>
         <div id="bindings-list"><p class="empty">Loading…</p></div>
+        </div>
       </div>
       <div class="card">
-        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
-          <span>Detection Rules</span>
-          <button class="btn-sm" onclick="openDetectionRuleEditor()">+ New Rule</button>
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleSection('sec-detrules')">
+          <span>▸ Detection Rules</span>
+          <div style="display:flex;gap:6px" onclick="event.stopPropagation()">
+            <button class="btn-sm" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2)" onclick="openS1Drawer()">Browse S1 Library</button>
+            <button class="btn-sm" onclick="openDetectionRuleEditor()">+ New Rule</button>
+          </div>
         </div>
+        <div id="sec-detrules" style="display:none">
         <p style="font-size:.78rem;color:rgba(224,170,255,.45);margin-bottom:14px">
           Inject specific log patterns that trigger SIEM detection rules. Each rule overrides fields in normal logs
           at a configurable periodicity (e.g. 1 in every 10 logs, or once every 5 minutes).
         </p>
         <div id="detection-rules-list"><p class="empty">Loading…</p></div>
+        </div>
+
+      <!-- S1 Rule Library Drawer -->
+      <div id="s1-drawer" style="display:none;position:fixed;top:0;right:0;width:480px;height:100vh;background:linear-gradient(135deg,#1a0a2e 0%,#16082b 100%);border-left:1px solid rgba(199,125,255,.2);z-index:1000;box-shadow:-4px 0 20px rgba(0,0,0,.5);display:none;flex-direction:column">
+        <div style="padding:16px;border-bottom:1px solid rgba(199,125,255,.15)">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:1rem;font-weight:600;color:#e8d5ff">S1 Detection Rule Library</span>
+            <button class="btn-sm" style="background:transparent;color:rgba(224,170,255,.5);font-size:1.1rem;padding:2px 8px" onclick="closeS1Drawer()">&times;</button>
+          </div>
+          <div style="display:flex;gap:6px;margin-top:10px">
+            <select id="s1d-source" onchange="loadS1DrawerRules()" style="flex:1;background:rgba(90,24,154,.25);border:1px solid rgba(199,125,255,.35);border-radius:6px;padding:7px 8px;color:#e0d0f8;font-size:.82rem">
+              <option value="">All sources</option>
+            </select>
+            <select id="s1d-type" onchange="loadS1DrawerRules()" style="background:rgba(90,24,154,.25);border:1px solid rgba(199,125,255,.35);border-radius:6px;padding:7px 8px;color:#e0d0f8;font-size:.82rem">
+              <option value="library">Catalog (2000+)</option>
+              <option value="custom">Custom rules</option>
+            </select>
+          </div>
+          <div style="display:flex;gap:6px;margin-top:6px">
+            <select id="s1d-tactic" onchange="loadS1DrawerRules()" style="flex:1;background:rgba(90,24,154,.25);border:1px solid rgba(199,125,255,.35);border-radius:6px;padding:7px 8px;color:#e0d0f8;font-size:.82rem">
+              <option value="">All tactics</option>
+              <option>Initial Access</option><option>Execution</option><option>Persistence</option>
+              <option>Privilege Escalation</option><option>Defense Evasion</option><option>Credential Access</option>
+              <option>Discovery</option><option>Lateral Movement</option><option>Collection</option>
+              <option>Command and Control</option><option>Exfiltration</option><option>Impact</option>
+            </select>
+            <select id="s1d-logic" onchange="loadS1DrawerRules()" style="background:rgba(90,24,154,.25);border:1px solid rgba(199,125,255,.35);border-radius:6px;padding:7px 8px;color:#e0d0f8;font-size:.82rem">
+              <option value="">All logic</option>
+              <option value="visible">Visible (importable)</option>
+              <option value="hidden">Hidden (browse only)</option>
+            </select>
+          </div>
+          <div style="margin-top:6px">
+            <input id="s1d-search" type="text" placeholder="Search rules..." onkeyup="if(event.key==='Enter')loadS1DrawerRules()" style="width:100%;background:rgba(90,24,154,.25);border:1px solid rgba(199,125,255,.35);border-radius:6px;padding:7px 8px;color:#e0d0f8;font-size:.82rem"/>
+          </div>
+        </div>
+        <div id="s1d-results" style="padding:12px;flex:1;overflow-y:auto"><p class="empty" style="font-size:.82rem">Select filters and search to browse rules</p></div>
+      </div>
       </div>
     </div>
 
@@ -1250,7 +1309,7 @@ function showTab(tab, el) {
   document.getElementById('pane-' + tab).classList.add('active');
   if (el) el.classList.add('active');
   activeTab = tab;
-  const titles = {requests:'Request Inspector', observability:'Observability', intrusions:'Intrusions', listeners:'Listeners', profiles:'Log Profiles', push:'Log Push', scenarios:'Attack Scenarios', investigate:'Investigations', logs:'Container Logs', config:'Source Details', settings:'System Settings'};
+  const titles = {requests:'Request Inspector', observability:'Observability', intrusions:'Intrusions', listeners:'Listeners', profiles:'Log Profiles & Detection Rules', push:'Log Push', scenarios:'Attack Scenarios', investigate:'Investigations', logs:'Container Logs', config:'Source Details', settings:'System Settings'};
   // Resize viz canvases when the Observability tab becomes active.
   if (tab === 'observability') {
     if (window._sankey) window._sankey.resize();
@@ -3272,6 +3331,182 @@ function saveIntensity(src) {
     .catch(e=>toast('Failed: '+e,true));
 }
 
+// ── Collapsible sections ──────────────────────────────────────────────────
+function toggleSection(id) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  var title = el.parentElement.querySelector('.card-title span') || el.parentElement.querySelector('.card-title');
+  if (el.style.display === 'none') {
+    el.style.display = '';
+    if (title) title.textContent = title.textContent.replace(/^\\u25b8/, '\\u25be');
+  } else {
+    el.style.display = 'none';
+    if (title) title.textContent = title.textContent.replace(/^\\u25be/, '\\u25b8');
+  }
+}
+
+// ── S1 Rule Library Drawer ─────────────────────────────────────────────────
+var _s1DrawerOpen = false;
+
+function openS1Drawer() {
+  var drawer = document.getElementById('s1-drawer');
+  drawer.style.display = 'flex';
+  _s1DrawerOpen = true;
+  // Populate source dropdown from SOURCES
+  var sel = document.getElementById('s1d-source');
+  if (sel.options.length <= 1) {
+    Object.keys(SOURCES).forEach(function(k) {
+      var opt = document.createElement('option');
+      opt.value = k;
+      opt.textContent = SOURCES[k].name;
+      sel.appendChild(opt);
+    });
+  }
+  loadS1DrawerRules();
+}
+
+function closeS1Drawer() {
+  document.getElementById('s1-drawer').style.display = 'none';
+  _s1DrawerOpen = false;
+}
+
+async function loadS1DrawerRules() {
+  var box = document.getElementById('s1d-results');
+  box.innerHTML = '<p class="empty" style="font-size:.82rem">Loading...</p>';
+  var logicSel = document.getElementById('s1d-logic');
+  var typeSel = document.getElementById('s1d-type');
+  // No auto-switch needed — catalog rules can have visible logic too
+  var source = document.getElementById('s1d-source').value;
+  var tactic = document.getElementById('s1d-tactic').value;
+  var query = document.getElementById('s1d-search').value;
+  var ruleType = typeSel.value;
+
+  try {
+    var url, data;
+    if (ruleType === 'custom') {
+      url = '/admin/api/s1/custom-rules?limit=50';
+      if (query) url += '&query=' + encodeURIComponent(query);
+      var r = await fetch(url, {credentials:'same-origin'});
+      data = await r.json();
+    } else {
+      url = '/admin/api/s1/rules?limit=30';
+      if (source) url += '&source=' + encodeURIComponent(source);
+      if (tactic) url += '&mitre_tactic=' + encodeURIComponent(tactic);
+      if (query) url += '&query=' + encodeURIComponent(query);
+      var r = await fetch(url, {credentials:'same-origin'});
+      data = await r.json();
+    }
+    if (data.error) { box.innerHTML = '<p class="empty" style="font-size:.82rem;color:#ff5050">' + escHtml(data.error) + '</p>'; return; }
+    var rules = data.rules || [];
+    var logicFilter = document.getElementById('s1d-logic').value;
+    if (logicFilter === 'visible') rules = rules.filter(function(r) { return r.s1ql || (r.correlationParams && r.correlationParams.subQueries && r.correlationParams.subQueries.length) || (r.scheduledParams && r.scheduledParams.query) || r.hideLogic === false; });
+    if (logicFilter === 'hidden') rules = rules.filter(function(r) { return !r.s1ql && !(r.correlationParams && r.correlationParams.subQueries && r.correlationParams.subQueries.length) && !(r.scheduledParams && r.scheduledParams.query) && r.hideLogic !== false; });
+    if (!rules.length) {
+      var hint = (logicSel.value === 'visible' && ruleType === 'custom') ? ' All catalog rules have hidden logic \u2014 only custom rules with visible logic are shown.' : '';
+      box.innerHTML = '<p class="empty" style="font-size:.82rem">No rules found for the selected filters.' + hint + '</p>'; return;
+    }
+
+    var h = '<div style="font-size:.78rem;color:rgba(224,170,255,.7);margin-bottom:8px">' + (data.total || rules.length) + ' rules found</div>';
+    rules.forEach(function(rule) {
+      var hidden = !rule.s1ql && !(rule.correlationParams && rule.correlationParams.subQueries && rule.correlationParams.subQueries.length) && !(rule.scheduledParams && rule.scheduledParams.query) && rule.hideLogic !== false;
+      var sevColor = rule.severity === 'Critical' ? '#ff5050' : rule.severity === 'High' ? '#ff8c00' : rule.severity === 'Medium' ? '#f0c040' : 'rgba(224,170,255,.7)';
+      var statusIcon = rule.status === 'Enabled' ? '<span style="color:#2ecc71">\\u25cf</span>' : '<span style="color:rgba(224,170,255,.2)">\\u25cb</span>';
+      // MITRE info
+      var mitre = rule.mitre || rule.mitreTechniqueIds || [];
+      var mitreStr = '';
+      if (Array.isArray(mitre) && mitre.length) {
+        if (typeof mitre[0] === 'object') {
+          mitre.forEach(function(m) {
+            var techs = m.techniques || [];
+            techs.forEach(function(t) { mitreStr += (mitreStr ? ', ' : '') + (t.id || t.name || ''); });
+          });
+        } else {
+          mitreStr = mitre.join(', ');
+        }
+      }
+
+      h += '<div style="background:rgba(90,24,154,.15);border:1px solid rgba(199,125,255,.12);border-radius:8px;padding:10px;margin-bottom:6px">';
+      h += '<div style="display:flex;align-items:center;gap:6px">';
+      h += statusIcon;
+      h += '<span style="flex:1;font-size:.85rem;font-weight:600;color:#e8d5ff">' + escHtml(rule.name || '') + '</span>';
+      h += '<span style="font-size:.72rem;color:' + sevColor + ';font-weight:600">' + escHtml(rule.severity || '') + '</span>';
+      h += '</div>';
+      // Description
+      if (rule.description) {
+        h += '<div style="font-size:.75rem;color:rgba(224,170,255,.65);margin-top:4px;line-height:1.5">' + escHtml(rule.description).substring(0, 200) + '</div>';
+      }
+      // MITRE
+      if (mitreStr) {
+        h += '<div style="font-size:.7rem;color:rgba(199,125,255,.7);margin-top:3px">MITRE: ' + escHtml(mitreStr) + '</div>';
+      }
+      // Query snippet (only for visible logic)
+      if (!hidden) {
+        var snippets = [];
+        if (rule.correlationParams && rule.correlationParams.subQueries) {
+          rule.correlationParams.subQueries.forEach(function(sq) { if (sq.subQuery) snippets.push(sq.subQuery); });
+        }
+        if (rule.s1ql) snippets.push(rule.s1ql);
+        if (snippets.length) {
+          h += '<div style="font-size:.7rem;color:rgba(180,220,190,.8);margin-top:4px;font-family:monospace;background:rgba(0,0,0,.35);padding:6px 8px;border-radius:4px;max-height:120px;overflow-y:auto;word-break:break-word;white-space:pre-wrap">';
+          snippets.forEach(function(s) { h += escHtml(s) + '<br/>'; });
+          h += '</div>';
+        }
+      } else {
+        h += '<div style="font-size:.7rem;color:rgba(224,170,255,.4);margin-top:3px;font-style:italic">Logic hidden \\u2014 browse only</div>';
+      }
+      // Action buttons
+      h += '<div style="display:flex;gap:6px;margin-top:6px">';
+      if (!hidden) {
+        h += '<button class="btn-sm" style="padding:4px 10px;font-size:.7rem;background:rgba(30,120,40,.3);color:#80ff80" onclick="importS1Rule(\\'' + escHtml(String(rule.id)) + '\\')">Import to ApiGenie</button>';
+      } else {
+        h += '<span style="font-size:.7rem;color:rgba(224,170,255,.35);padding:2px 0">Not importable (hidden logic)</span>';
+      }
+      if (rule.status === 'Enabled') {
+        h += '<button class="btn-sm" style="padding:4px 10px;font-size:.7rem;background:rgba(120,30,40,.3);color:#ff8080" onclick="toggleS1Rule(this,\\'' + escHtml(String(rule.id)) + '\\',\\'disable\\')">Disable on S1</button>';
+      } else {
+        h += '<button class="btn-sm" style="padding:4px 10px;font-size:.7rem;background:rgba(30,120,40,.2);color:#80ff80" onclick="toggleS1Rule(this,\\'' + escHtml(String(rule.id)) + '\\',\\'enable\\')">Enable on S1</button>';
+      }
+      h += '</div></div>';
+    });
+    box.innerHTML = h;
+  } catch(e) { box.innerHTML = '<p class="empty" style="font-size:.82rem;color:#ff5050">' + escHtml(String(e)) + '</p>'; }
+}
+
+async function importS1Rule(ruleId) {
+  try {
+    var r = await fetch('/admin/api/s1/rules/' + ruleId + '/import-preview', {credentials:'same-origin'});
+    var preview = await r.json();
+    if (preview.error) { alert('Error: ' + preview.error); return; }
+    if (!preview.importable) { alert('This rule cannot be imported (no parseable field conditions).'); return; }
+    // Show confirmation with mapped fields
+    var msg = 'Import "' + preview.name + '" as a local detection rule?\\n\\nSource: ' + preview.source + '\\n\\nField overrides:\\n';
+    var mappings = preview.field_mappings || [];
+    mappings.forEach(function(m) {
+      msg += '  ' + m.vendor_field + ' = ' + m.value + ' (' + m.mapping_type + ')\\n';
+    });
+    if (preview.correlation) {
+      msg += '\\nCorrelation: ' + (preview.correlation.matchesRequired || '?') + ' matches in ' + (preview.correlation.windowMinutes || '?') + ' min window';
+    }
+    if (!confirm(msg)) return;
+    // Import
+    var ir = await fetch('/admin/api/s1/rules/import', {
+      method: 'POST', credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        name: preview.name,
+        source: preview.source,
+        description: preview.description || '',
+        field_overrides: preview.field_overrides,
+        periodicity: 10,
+      })
+    });
+    var imported = await ir.json();
+    if (imported.error) { alert('Import failed: ' + imported.error); return; }
+    toast('Imported: ' + preview.name);
+    loadDetectionRules();
+  } catch(e) { alert('Error: ' + e); }
+}
+
 // ── Detection Rules ────────────────────────────────────────────────────────
 var _editingRuleId = null;
 
@@ -3290,14 +3525,16 @@ async function loadDetectionRules() {
     rules.forEach(function(rule) {
       var overKeys = Object.keys(rule.field_overrides || {});
       var pLabel = rule.periodicity > 100 ? 'every ' + rule.periodicity + 's' : '1 in ' + rule.periodicity + ' logs';
-      h += '<div style="display:flex;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid rgba(199,125,255,.08)">';
+      h += '<div style="padding:8px 0;border-bottom:1px solid rgba(199,125,255,.08)">';
+      h += '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">';
       h += '<span style="font-size:.72rem;color:' + (rule.enabled ? '#2ecc71' : 'rgba(224,170,255,.3)') + '">' + (rule.enabled ? '●' : '○') + '</span>';
-      h += '<span style="font-weight:600;color:var(--mist);font-size:.82rem;min-width:140px">' + escHtml(rule.name) + '</span>';
+      h += '<span style="font-weight:600;color:var(--mist);font-size:.82rem">' + escHtml(rule.name) + '</span>';
       h += '<span class="pill" style="color:#c77dff">' + escHtml(rule.source) + '</span>';
       h += '<span style="font-size:.68rem;color:rgba(224,170,255,.4)">' + pLabel + '</span>';
       h += '<span style="font-size:.65rem;color:rgba(224,170,255,.3)">' + overKeys.length + ' field override' + (overKeys.length !== 1 ? 's' : '') + '</span>';
-      if (rule.description) h += '<span style="font-size:.65rem;color:rgba(224,170,255,.3);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(rule.description) + '</span>';
       h += '<button class="btn-sm" style="margin-left:auto;padding:2px 8px;font-size:.65rem" onclick="openDetectionRuleEditor(&apos;' + escHtml(rule.id) + '&apos;)">Edit</button>';
+      h += '</div>';
+      if (rule.description) h += '<div style="font-size:.7rem;color:rgba(224,170,255,.35);margin-top:4px;padding-left:22px;line-height:1.4;word-break:break-word">' + escHtml(rule.description) + '</div>';
       h += '</div>';
     });
     box.innerHTML = h;
@@ -3516,7 +3753,7 @@ function onHecFlavourChange() {
   }
 }
 
-function openPushEditor(profileId) {
+async function openPushEditor(profileId) {
   _editingPushId = profileId || null;
   var modal = document.getElementById('push-modal');
   modal.classList.remove('hidden');
@@ -3526,9 +3763,14 @@ function openPushEditor(profileId) {
   Object.keys(_pushSourceTypes).forEach(function(k) {
     sel.innerHTML += '<option value="' + escHtml(k) + '">' + escHtml(_pushSourceTypes[k].name || k) + '</option>';
   });
-  // Populate log profile dropdown
+  // Populate log profile dropdown (fetch fresh to avoid stale cache)
   var profSel = document.getElementById('push-profile-id');
   profSel.innerHTML = '<option value="">-- none --</option>';
+  try {
+    var _pr = await fetch('/admin/api/profiles', {credentials:'same-origin'});
+    var _pd = await _pr.json();
+    _profilesCache = _pd.profiles || [];
+  } catch(e) { /* keep existing cache */ }
   (_profilesCache || []).forEach(function(p) {
     profSel.innerHTML += '<option value="' + escHtml(p.id) + '">' + escHtml(p.name) + '</option>';
   });
@@ -6027,3 +6269,108 @@ async def api_s1_rule_disable(rule_id: str, ag_session: str | None = Cookie(None
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     import s1_detection_library as s1
     return JSONResponse(s1.disable_rule(rule_id))
+
+
+@router.get("/api/s1/custom-rules")
+async def api_s1_custom_rules(request: Request, ag_session: str | None = Cookie(None)):
+    """Query custom detection rules (cloud-detection/rules) which have visible logic."""
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import s1_detection_library as s1
+    params = dict(request.query_params)
+    resp = s1._api_get("/web/api/v2.1/cloud-detection/rules", {
+        k: v for k, v in {
+            "limit": params.get("limit", "50"),
+            "queryType": params.get("queryType"),
+            "nameSubstring": params.get("query"),
+        }.items() if v
+    })
+    if "error" in resp:
+        return JSONResponse({"error": resp["error"], "rules": [], "total": 0})
+    rules = resp.get("data", [])
+    total = resp.get("pagination", {}).get("totalItems", len(rules))
+    return JSONResponse({"rules": rules, "total": total})
+
+
+@router.get("/api/s1/rules/{rule_id}/import-preview")
+async def api_s1_import_preview(rule_id: str, source: str = "", ag_session: str | None = Cookie(None)):
+    """Parse an S1 rule and return mapped vendor fields for local import."""
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import s1_detection_library as s1
+    import s1_field_mapper
+    rule = None
+    # Try catalog rules (detection-library) — paginate if needed
+    acct = s1.get_account_id()
+    if acct:
+        cursor = None
+        for _ in range(10):  # max 10 pages
+            params = {"accountIds": acct, "limit": "200"}
+            if cursor:
+                params["cursor"] = cursor
+            resp = s1._api_get("/web/api/v2.1/detection-library/rules", params)
+            for r in resp.get("data", []):
+                if str(r.get("id")) == str(rule_id):
+                    rule = r
+                    break
+            if rule:
+                break
+            cursor = resp.get("pagination", {}).get("nextCursor")
+            if not cursor:
+                break
+    # Fallback to custom rules (cloud-detection)
+    if not rule:
+        resp = s1._api_get("/web/api/v2.1/cloud-detection/rules", {"limit": "100"})
+        for r in resp.get("data", []):
+            if str(r.get("id")) == str(rule_id):
+                rule = r
+                break
+    if not rule:
+        return JSONResponse({"error": "Rule not found"}, status_code=404)
+    # Detect source from rule metadata
+    if not source:
+        from s1_detection_library import SOURCE_KEY_TO_S1
+        # Try sources array (catalog rules)
+        for ds_name in rule.get("sources", []):
+            for k, v in SOURCE_KEY_TO_S1.items():
+                if v == ds_name:
+                    source = k
+                    break
+            if source:
+                break
+        # Try subQueries (custom rules)
+        if not source:
+            for sq in rule.get("correlationParams", {}).get("subQueries", []):
+                q = sq.get("subQuery", "")
+                import re as _re
+                m = _re.search(r'dataSource\.name\s*==?\s*["\']([^"\']+)["\']', q)
+                if m:
+                    ds_name = m.group(1)
+                    for k, v in SOURCE_KEY_TO_S1.items():
+                        if v == ds_name:
+                            source = k
+                            break
+                    break
+    preview = s1_field_mapper.parse_rule_for_import(rule, source or "unknown")
+    return JSONResponse(preview)
+
+
+@router.post("/api/s1/rules/import")
+async def api_s1_import_rule(request: Request, ag_session: str | None = Cookie(None)):
+    """Import an S1 rule as a local ApiGenie detection rule."""
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import detection_rules
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    rule = detection_rules.create_rule({
+        "name": body.get("name", "Imported S1 Rule"),
+        "source": body.get("source", ""),
+        "description": body.get("description", ""),
+        "field_overrides": body.get("field_overrides", {}),
+        "periodicity": body.get("periodicity", 10),
+        "enabled": True,
+    })
+    return JSONResponse(rule)

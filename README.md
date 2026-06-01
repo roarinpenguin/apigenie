@@ -1,6 +1,6 @@
 # <img src="assets/logo.png" width="60" align="center" alt="ApiGenie logo"> ApiGenie
 
-> Self-contained mock server for **12 security platform APIs** plus **Azure Event Hubs (Kafka)** and **GCP Cloud Logging (Pub/Sub)** — built for [Observo](https://observo.ai) source-configuration testing.
+> Self-contained mock server for **18 security platform APIs** plus **Azure Event Hubs (Kafka)** and **GCP Cloud Logging (Pub/Sub)** — built for [Observo](https://observo.ai) source-configuration testing.
 
 ApiGenie exposes realistic, dynamically-varied data through the same authentication shapes the real platforms use (Bearer, Basic, X-ApiKeys, Duo HMAC, OAuth2 client-credentials, Microsoft tenant OAuth, GraphQL, Tenable async export, Kafka SASL/PLAIN, gRPC Pub/Sub). It runs as a single Docker Compose stack — nginx, FastAPI, Kafka + Zookeeper, Pub/Sub emulator — with TLS via Let's Encrypt, a self-signed cert, or your own files.
 
@@ -28,6 +28,7 @@ The deployment hostname is fully parameterised: pick any domain, run `./scripts/
 | 12 | **Cato Networks SASE** | x-api-key header | `POST /api/v1/graphql2` — eventsFeed (Security/IPS/AV/FW, Internet Access, WAN, Audit) + auditFeed. Marker-based pagination |
 | 13 | **Cloudflare** | Bearer token | `GET /client/v4/zones/{id}/logs/received` (Logpull), `/firewall/events` (WAF), `/dns_analytics/report`, `/accounts/{id}/access/logs` (Zero Trust), `/gateway/audit_logs` |
 | 14 | **Zscaler ZPA** | Bearer (OAuth2) | `GET /mgmtconfig/v2/admin/customers/{id}/userActivity`, `/auditLogEntryReport`, `/connectorStatus`, `/healthStatus` |
+| 15 | **SentinelOne** | ApiToken header | `GET /web/api/v2.1/threats`, `/activities`, `/agents` — full MITRE ATT&CK mapping, cursor pagination, real console response shape |
 
 > **AWS sources (CloudTrail, WAF, GuardDuty)** are intentionally not exposed via HTTP. Real Observo collectors fetch them via SQS-notified S3 polling using the AWS SDK with hostnames hardcoded to `*.amazonaws.com` and SigV4 host-binding, which apigenie cannot intercept. The data generators remain at `sources/aws_cloudtrail.py`, `sources/aws_waf.py`, and `sources/aws_guardduty.py` for a planned LocalStack-based extension — see [`docs/LOCALSTACK_PLAN.md`](docs/LOCALSTACK_PLAN.md).
 

@@ -61,6 +61,7 @@ _SOURCE_PATTERNS: list[tuple[str, list[str]]] = [
     ("cato",              ["/api/v1/graphql2"]),
     ("cloudflare",        ["/client/v4/"]),
     ("zscaler_zpa",       ["/mgmtconfig/"]),
+    ("sentinelone",       ["/web/api/v2.1/"]),
 ]
 
 # Skip the admin UI itself (login/logout/dashboard/admin API) but NOT Cisco Duo,

@@ -52,6 +52,7 @@ from sources.wiz import get_issues_response as wiz_issues
 from sources.cato import generate_events as cato_events
 from sources.cloudflare import generate_events as cloudflare_events
 from sources.zscaler_zpa import generate_events as zpa_events
+from sources.sentinelone import generate_threats as s1_threats, generate_activities as s1_activities, generate_agents as s1_agents
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
@@ -1025,7 +1026,37 @@ async def zpa_health_status(_auth: BearerAuth, customer_id: str) -> dict[str, An
 
 
 # =============================================================================
-# Custom Listeners — Phase 1 dispatcher
+# SentinelOne Singularity  —  Management Console API v2.1, ApiToken auth
+# =============================================================================
+
+
+@app.get("/web/api/v2.1/threats")
+async def s1_threats_list(request: Request,
+                          limit: int = Query(10, le=1000)) -> dict[str, Any]:
+    token = request.headers.get("authorization", "")
+    if not token:
+        return JSONResponse({"errors": [{"code": 4010011, "detail": "Unauthorized", "title": "Unauthorized"}]}, 401)
+    return s1_threats(count=min(limit, 200))
+
+
+@app.get("/web/api/v2.1/activities")
+async def s1_activities_list(request: Request,
+                              limit: int = Query(10, le=1000)) -> dict[str, Any]:
+    token = request.headers.get("authorization", "")
+    if not token:
+        return JSONResponse({"errors": [{"code": 4010011, "detail": "Unauthorized", "title": "Unauthorized"}]}, 401)
+    return s1_activities(count=min(limit, 200))
+
+
+@app.get("/web/api/v2.1/agents")
+async def s1_agents_list(request: Request,
+                          limit: int = Query(10, le=200)) -> dict[str, Any]:
+    token = request.headers.get("authorization", "")
+    if not token:
+        return JSONResponse({"errors": [{"code": 4010011, "detail": "Unauthorized", "title": "Unauthorized"}]}, 401)
+    return s1_agents(count=min(limit, 50))
+
+
 # See docs/CUSTOM_LISTENERS.md
 #
 # A single catch-all route handles ALL configured listeners. We resolve the
