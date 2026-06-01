@@ -53,6 +53,7 @@ from sources.cato import generate_events as cato_events
 from sources.cloudflare import generate_events as cloudflare_events
 from sources.zscaler_zpa import generate_events as zpa_events
 from sources.sentinelone import generate_threats as s1_threats, generate_activities as s1_activities, generate_agents as s1_agents
+from sources.mimecast import generate_siem_response as mimecast_siem
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
@@ -1023,6 +1024,73 @@ async def zpa_health_status(_auth: BearerAuth, customer_id: str) -> dict[str, An
     if not events:
         events = zpa_events(count=5)
     return {"list": events, "totalCount": len(events)}
+
+
+# =============================================================================
+# Mimecast  —  API 2.0, OAuth2 client credentials + SIEM events
+# =============================================================================
+
+
+@app.post("/oauth/token")
+async def mimecast_oauth_token(request: Request) -> dict[str, Any]:
+    """Mimecast OAuth2 client_credentials token endpoint."""
+    form = await request.form()
+    grant_type = form.get("grant_type", "")
+    client_id = form.get("client_id", "")
+    client_secret = form.get("client_secret", "")
+    if grant_type != "client_credentials" or not client_id or not client_secret:
+        return JSONResponse({"error": "invalid_request",
+                             "error_description": "grant_type must be client_credentials with client_id and client_secret"},
+                            status_code=400)
+    # Generate a mock Bearer token
+    import base64 as _b64, json as _json, time as _time
+    payload = {"client_id": client_id, "exp": int(_time.time()) + 1800, "scope": "siem.events.read"}
+    token = _b64.b64encode(_json.dumps(payload).encode()).decode()
+    return {
+        "access_token": token,
+        "token_type": "Bearer",
+        "expires_in": 1800,
+        "scope": "siem.events.read",
+    }
+
+
+@app.get("/siem/v1/events/cg")
+async def mimecast_siem_events(request: Request,
+                                type: str = Query("", description="Event type filter"),
+                                limit: int = Query(100, le=500),
+                                token: str = Query("", description="Pagination token")) -> JSONResponse:
+    """Mimecast SIEM API 2.0 — Cloud Gateway events stream."""
+    auth = request.headers.get("authorization", "")
+    if not auth.lower().startswith("bearer "):
+        return JSONResponse({"fail": [{"errors": [{"code": "err_xdk_client_unauthorized",
+                             "message": "Authorization header missing or invalid"}]}]},
+                            status_code=401)
+    resp = mimecast_siem(count=min(limit, 200), event_type=type, token=token)
+    # Set mc-siem-token in response header (real Mimecast does this)
+    next_token = resp.get("meta", {}).get("pagination", {}).get("next", "")
+    headers = {}
+    if next_token:
+        headers["mc-siem-token"] = next_token
+    return JSONResponse(content=resp, headers=headers)
+
+
+@app.get("/siem/v1/batch/events/cg")
+async def mimecast_siem_batch(request: Request,
+                               type: str = Query("", description="Event type filter"),
+                               limit: int = Query(500, le=5000),
+                               token: str = Query("", description="Pagination token")) -> JSONResponse:
+    """Mimecast SIEM API 2.0 — Cloud Gateway batch events (larger page size)."""
+    auth = request.headers.get("authorization", "")
+    if not auth.lower().startswith("bearer "):
+        return JSONResponse({"fail": [{"errors": [{"code": "err_xdk_client_unauthorized",
+                             "message": "Authorization header missing or invalid"}]}]},
+                            status_code=401)
+    resp = mimecast_siem(count=min(limit, 500), event_type=type, token=token)
+    next_token = resp.get("meta", {}).get("pagination", {}).get("next", "")
+    headers = {}
+    if next_token:
+        headers["mc-siem-token"] = next_token
+    return JSONResponse(content=resp, headers=headers)
 
 
 # =============================================================================

@@ -443,6 +443,23 @@ SOURCES: dict[str, dict[str, Any]] = {
         ],
         "curl": f'curl -s -H "Authorization: Bearer apigenie-valid-token-001" "{BASE}/mgmtconfig/v2/admin/customers/12345/userActivity?pagesize=5"',
     },
+    "mimecast": {
+        "name": "Mimecast Email Security",
+        "auth_type": "OAuth2 client credentials → Bearer token",
+        "credentials": {"client_id": "any-value", "client_secret": "any-value"},
+        "endpoints": [
+            {"method": "POST", "path": "/oauth/token",            "desc": "OAuth2 token (client_credentials grant, 30-min expiry)"},
+            {"method": "GET",  "path": "/siem/v1/events/cg",      "desc": "SIEM event stream — receipt, process, delivery, AV, spam, TTP URL/Attach/Impersonation"},
+            {"method": "GET",  "path": "/siem/v1/batch/events/cg", "desc": "SIEM batch events (larger page size, up to 5000)"},
+        ],
+        "curl": (
+            f'# Step 1: Get OAuth token\n'
+            f'TOKEN=$(curl -s -X POST "{BASE}/oauth/token" \\\n'
+            f'  -d "grant_type=client_credentials&client_id=my-app&client_secret=my-secret" | jq -r .access_token)\n\n'
+            f'# Step 2: Fetch SIEM events\n'
+            f'curl -s -H "Authorization: Bearer $TOKEN" "{BASE}/siem/v1/events/cg?limit=10"'
+        ),
+    },
     "sentinelone": {
         "name": "SentinelOne",
         "auth_type": "ApiToken header",

@@ -56,6 +56,23 @@ curl -sk -H "Authorization: ApiToken apigenie-valid-token-001" \
   "https://localhost/web/api/v2.1/agents?limit=5"
 ```
 
+### Mimecast (OAuth2 → SIEM events)
+
+```bash
+# Step 1: Get OAuth token
+TOKEN=$(curl -sk -X POST "https://localhost/oauth/token" \
+  -d "grant_type=client_credentials&client_id=my-app&client_secret=my-secret" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+# Step 2: Fetch SIEM events (8 log types: receipt, process, delivery, AV, spam, TTP URL/Attach/Impersonation)
+curl -sk -H "Authorization: Bearer $TOKEN" \
+  "https://localhost/siem/v1/events/cg?limit=20"
+
+# Batch endpoint (larger page size)
+curl -sk -H "Authorization: Bearer $TOKEN" \
+  "https://localhost/siem/v1/batch/events/cg?limit=100"
+```
+
 ### Okta
 
 ```bash
@@ -158,6 +175,7 @@ curl -sk -H "X-ApiKeys: accessKey=apigenie-access-001;secretKey=apigenie-secret-
 | Cloudflare          | `Authorization: Bearer <token>`          | `apigenie-valid-token-001`                       |
 | Zscaler ZPA         | `Authorization: Bearer <token>`          | `apigenie-valid-token-001`                       |
 | SentinelOne         | `Authorization: ApiToken <token>`        | `apigenie-valid-token-001`                       |
+| Mimecast            | OAuth2 → `Authorization: Bearer <token>` | any client_id/secret → `POST /oauth/token`       |
 
 ---
 
