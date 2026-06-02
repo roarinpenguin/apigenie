@@ -565,3 +565,177 @@ def generate_ttp_impersonation_response(count: int = 25,
             }
         ],
     }
+
+
+# ── API 1.0 dedicated endpoints ─────────────────────────────────────────────
+# Each matches the exact response format expected by Mimecast collectors.
+
+def generate_siem_logs_response(count: int = 25, log_type: str = "") -> dict[str, Any]:
+    """POST /api/audit/get-siem-logs — MTA receipt/process/delivery logs.
+
+    Returns events as application/json with mc-siem-token pagination.
+    The SIEM log types (receipt, process, delivery) are the MTA pipeline events.
+    """
+    ctx = profiles.get_context("mimecast")
+    count = profiles.scale_count("mimecast", count)
+    mta_generators = [_receipt_event, _process_event, _delivery_event]
+    mta_weights = [35, 25, 40]
+    events = []
+    for _ in range(count):
+        if log_type:
+            gen = next((g for g in mta_generators if g.__name__ == f"_{log_type}_event"), None)
+            if gen:
+                events.append(gen(ctx=ctx))
+                continue
+        gen = random.choices(mta_generators, weights=mta_weights, k=1)[0]
+        events.append(gen(ctx=ctx))
+    events = inject_detection_events("mimecast", events)
+    return events, _make_token(count)
+
+
+def _ttp_url_log(ctx=None) -> dict[str, Any]:
+    """Generate a single TTP URL Protect log in the exact format
+    returned by POST /api/ttp/url/get-logs."""
+    pc2 = ctx.pick_c2() if ctx else None
+    pms = ctx.pick_mail_sender() if ctx else None
+    url = pc2.get("fqdn", random.choice(_MALICIOUS_URLS)) if pc2 else random.choice(_MALICIOUS_URLS)
+    if not url.startswith("http"):
+        url = f"https://{url}/login"
+    sender = pms.get("mail_address", _external_email()) if pms else _external_email()
+    sender_domain = sender.split("@", 1)[1] if "@" in sender else random.choice(_EXTERNAL_DOMAINS)
+    return {
+        "id": generate_uuid(),
+        "senderAddress": sender,
+        "recipientAddress": _internal_email(),
+        "url": url,
+        "ttpDefinition": "Default URL Protect Definition",
+        "subject": pms.get("subject", random.choice(_SUBJECTS_MALICIOUS)) if pms else random.choice(_SUBJECTS_MALICIOUS),
+        "action": random.choice(["block", "warn", "allow"]),
+        "adminOverride": random.choice(["N/A", "N/A", "N/A", "Allow"]),
+        "userOverride": random.choice(["None", "None", "None", "Allow"]),
+        "scanResult": random.choice(["malicious", "suspicious", "phishing", "clean"]),
+        "category": random.choice(_URL_CATEGORIES),
+        "route": random.choice(["inbound", "internal"]),
+        "sendingIp": generate_ip(),
+        "userAwarenessAction": random.choice(["N/A", "Continue", "Block"]),
+        "date": _past(),
+        "messageId": _msg_id(),
+    }
+
+
+def generate_ttp_url_response(count: int = 25, page_token: str = "") -> dict[str, Any]:
+    """POST /api/ttp/url/get-logs — TTP URL Protect click logs."""
+    ctx = profiles.get_context("mimecast")
+    count = profiles.scale_count("mimecast", count)
+    logs = [_ttp_url_log(ctx=ctx) for _ in range(count)]
+    logs = inject_detection_events("mimecast", logs)
+    total = max(count, random.randint(count, count * 5))
+    next_token = _make_token(count) if count >= 10 else None
+    return {
+        "fail": [],
+        "meta": {
+            "status": 200,
+            "pagination": {"pageSize": count, "next": next_token, "totalCount": total},
+        },
+        "data": [{"clickLogs": logs}],
+    }
+
+
+def _ttp_attachment_log(ctx=None) -> dict[str, Any]:
+    """Generate a single TTP Attachment Protect log in the exact format
+    returned by POST /api/ttp/attachment/get-logs."""
+    pms = ctx.pick_mail_sender() if ctx else None
+    fname = random.choice(_FILE_NAMES)
+    ext = fname.rsplit(".", 1)[-1] if "." in fname else "bin"
+    sender = pms.get("mail_address", _external_email()) if pms else _external_email()
+    return {
+        "id": generate_uuid(),
+        "senderAddress": sender,
+        "recipientAddress": _internal_email(),
+        "fileName": fname,
+        "fileType": ext,
+        "result": random.choice(["safe", "malicious", "timeout", "error"]),
+        "actionTriggered": random.choice(["none", "hold", "bounced", "smart_folder"]),
+        "date": _past(),
+        "subject": pms.get("subject", random.choice(_SUBJECTS_MALICIOUS)) if pms else random.choice(_SUBJECTS_MALICIOUS),
+        "fileHash": _sha256(),
+        "definition": "Default Attachment Protect Definition",
+        "route": "inbound",
+        "messageId": _msg_id(),
+        "senderIpAddress": generate_ip(),
+    }
+
+
+def generate_ttp_attachment_response(count: int = 25, page_token: str = "") -> dict[str, Any]:
+    """POST /api/ttp/attachment/get-logs — TTP Attachment Protect sandbox logs."""
+    ctx = profiles.get_context("mimecast")
+    count = profiles.scale_count("mimecast", count)
+    logs = [_ttp_attachment_log(ctx=ctx) for _ in range(count)]
+    logs = inject_detection_events("mimecast", logs)
+    total = max(count, random.randint(count, count * 5))
+    next_token = _make_token(count) if count >= 10 else None
+    return {
+        "fail": [],
+        "meta": {
+            "status": 200,
+            "pagination": {"pageSize": count, "next": next_token, "totalCount": total},
+        },
+        "data": [{"attachmentLogs": logs}],
+    }
+
+
+def _audit_event_log(ctx=None) -> dict[str, Any]:
+    """Generate a single Mimecast admin audit event log in the exact format
+    returned by POST /api/audit/get-audit-events."""
+    pu = ctx.pick_user() if ctx else None
+    user = pu.get("email", _internal_email()) if pu else _internal_email()
+    audit_types = [
+        ("Logon Authentication Passed", "Logon", 20),
+        ("Logon Authentication Failed", "Logon", 5),
+        ("User Logged Off", "Logon", 10),
+        ("Policy Change", "Policy", 8),
+        ("Search Message Tracking", "Search", 12),
+        ("Impersonation Protection Policy Created", "Policy", 3),
+        ("Blocked Sender Policy Updated", "Policy", 4),
+        ("Content Examination Policy Updated", "Policy", 3),
+        ("User Created", "User Management", 3),
+        ("User Deleted", "User Management", 2),
+        ("Group Member Added", "User Management", 5),
+        ("Group Member Removed", "User Management", 3),
+        ("TTP URL Policy Updated", "Policy", 4),
+        ("Message Released from Hold Queue", "Message", 6),
+        ("Admin Console Access", "Logon", 8),
+        ("API Key Created", "API", 2),
+        ("Two-Factor Authentication Enabled", "Security", 2),
+    ]
+    names = [n for n, _, _ in audit_types]
+    cats = [c for _, c, _ in audit_types]
+    weights = [w for _, _, w in audit_types]
+    idx = random.choices(range(len(audit_types)), weights=weights, k=1)[0]
+    return {
+        "id": generate_uuid(),
+        "auditType": names[idx],
+        "user": user,
+        "eventTime": _past(),
+        "eventInfo": f"{names[idx]} by {user}",
+        "category": cats[idx],
+        "source": random.choice(["Administration Console", "API", "Email Gateway", "System"]),
+        "sourceIp": generate_ip(),
+    }
+
+
+def generate_audit_events_response(count: int = 25, page_token: str = "") -> dict[str, Any]:
+    """POST /api/audit/get-audit-events — admin audit event logs."""
+    ctx = profiles.get_context("mimecast")
+    count = profiles.scale_count("mimecast", count)
+    logs = [_audit_event_log(ctx=ctx) for _ in range(count)]
+    total = max(count, random.randint(count, count * 5))
+    next_token = _make_token(count) if count >= 10 else None
+    return {
+        "fail": [],
+        "meta": {
+            "status": 200,
+            "pagination": {"pageSize": count, "next": next_token, "totalCount": total},
+        },
+        "data": [{"auditEvents": logs}],
+    }

@@ -451,7 +451,11 @@ SOURCES: dict[str, dict[str, Any]] = {
             {"method": "POST", "path": "/oauth/token",            "desc": "OAuth2 token (client_credentials grant, 30-min expiry)"},
             {"method": "GET",  "path": "/siem/v1/events/cg",      "desc": "SIEM event stream — receipt, process, delivery, AV, spam, TTP URL/Attach/Impersonation"},
             {"method": "GET",  "path": "/siem/v1/batch/events/cg", "desc": "SIEM batch events (larger page size, up to 5000)"},
-            {"method": "POST", "path": "/api/ttp/impersonation/get-logs", "desc": "TTP Impersonation Protect logs — dedicated BEC/spoofing detection events"},
+            {"method": "POST", "path": "/api/audit/get-siem-logs",          "desc": "API 1.0 SIEM logs — MTA receipt/process/delivery (mc-siem-token pagination)"},
+            {"method": "POST", "path": "/api/ttp/url/get-logs",              "desc": "TTP URL Protect click logs — clickLogs (cursor pagination)"},
+            {"method": "POST", "path": "/api/ttp/attachment/get-logs",       "desc": "TTP Attachment Protect sandbox logs — attachmentLogs (cursor pagination)"},
+            {"method": "POST", "path": "/api/ttp/impersonation/get-logs",    "desc": "TTP Impersonation Protect logs — impersonationLogs (cursor pagination)"},
+            {"method": "POST", "path": "/api/audit/get-audit-events",        "desc": "Admin audit events — auditEvents (cursor pagination)"},
         ],
         "curl": (
             f'# Step 1: Get OAuth token\n'

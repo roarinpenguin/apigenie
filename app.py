@@ -53,7 +53,14 @@ from sources.cato import generate_events as cato_events
 from sources.cloudflare import generate_events as cloudflare_events
 from sources.zscaler_zpa import generate_events as zpa_events
 from sources.sentinelone import generate_threats as s1_threats, generate_activities as s1_activities, generate_agents as s1_agents
-from sources.mimecast import generate_siem_response as mimecast_siem, generate_ttp_impersonation_response as mimecast_ttp_impersonation
+from sources.mimecast import (
+    generate_siem_response as mimecast_siem,
+    generate_siem_logs_response as mimecast_siem_logs,
+    generate_ttp_impersonation_response as mimecast_ttp_impersonation,
+    generate_ttp_url_response as mimecast_ttp_url,
+    generate_ttp_attachment_response as mimecast_ttp_attachment,
+    generate_audit_events_response as mimecast_audit_events,
+)
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
@@ -1091,6 +1098,103 @@ async def mimecast_siem_batch(request: Request,
     if next_token:
         headers["mc-siem-token"] = next_token
     return JSONResponse(content=resp, headers=headers)
+
+
+@app.post("/api/audit/get-siem-logs")
+async def mimecast_get_siem_logs(request: Request) -> JSONResponse:
+    """Mimecast API 1.0 — SIEM logs (MTA receipt/process/delivery).
+
+    Pagination via mc-siem-token response header.
+    Auth: MC (HMAC-SHA1) or Bearer (mock accepts any Authorization header).
+    """
+    auth = request.headers.get("authorization", "")
+    if not auth:
+        return JSONResponse({"fail": [{"errors": [{"code": "err_xdk_client_unauthorized",
+                             "message": "Authorization header missing"}]}]}, status_code=401)
+    page_size = 25
+    log_type = ""
+    try:
+        body = await request.json()
+        meta = body.get("meta", {})
+        pag = meta.get("pagination", {})
+        page_size = min(pag.get("pageSize", 25), 500)
+        data = body.get("data", [{}])
+        if data:
+            log_type = data[0].get("type", "")
+    except Exception:
+        pass
+    events, token = mimecast_siem_logs(count=page_size, log_type=log_type)
+    headers = {"mc-siem-token": token} if token else {}
+    return JSONResponse(content={"fail": [], "meta": {"status": 200}, "data": events}, headers=headers)
+
+
+@app.post("/api/ttp/url/get-logs")
+async def mimecast_ttp_url_logs(request: Request) -> dict[str, Any]:
+    """Mimecast API 1.0 — TTP URL Protect click logs.
+
+    Cursor pagination via meta.pagination.next. Event key: clickLogs.
+    """
+    auth = request.headers.get("authorization", "")
+    if not auth:
+        return JSONResponse({"fail": [{"errors": [{"code": "err_xdk_client_unauthorized",
+                             "message": "Authorization header missing"}]}]}, status_code=401)
+    page_size = 25
+    page_token = ""
+    try:
+        body = await request.json()
+        meta = body.get("meta", {})
+        pag = meta.get("pagination", {})
+        page_size = min(pag.get("pageSize", 25), 500)
+        page_token = pag.get("pageToken", "")
+    except Exception:
+        pass
+    return mimecast_ttp_url(count=page_size, page_token=page_token)
+
+
+@app.post("/api/ttp/attachment/get-logs")
+async def mimecast_ttp_attachment_logs(request: Request) -> dict[str, Any]:
+    """Mimecast API 1.0 — TTP Attachment Protect sandbox logs.
+
+    Cursor pagination via meta.pagination.next. Event key: attachmentLogs.
+    """
+    auth = request.headers.get("authorization", "")
+    if not auth:
+        return JSONResponse({"fail": [{"errors": [{"code": "err_xdk_client_unauthorized",
+                             "message": "Authorization header missing"}]}]}, status_code=401)
+    page_size = 25
+    page_token = ""
+    try:
+        body = await request.json()
+        meta = body.get("meta", {})
+        pag = meta.get("pagination", {})
+        page_size = min(pag.get("pageSize", 25), 500)
+        page_token = pag.get("pageToken", "")
+    except Exception:
+        pass
+    return mimecast_ttp_attachment(count=page_size, page_token=page_token)
+
+
+@app.post("/api/audit/get-audit-events")
+async def mimecast_get_audit_events(request: Request) -> dict[str, Any]:
+    """Mimecast API 1.0 — Admin audit event logs.
+
+    Cursor pagination via meta.pagination.next. Event key: auditEvents.
+    """
+    auth = request.headers.get("authorization", "")
+    if not auth:
+        return JSONResponse({"fail": [{"errors": [{"code": "err_xdk_client_unauthorized",
+                             "message": "Authorization header missing"}]}]}, status_code=401)
+    page_size = 25
+    page_token = ""
+    try:
+        body = await request.json()
+        meta = body.get("meta", {})
+        pag = meta.get("pagination", {})
+        page_size = min(pag.get("pageSize", 25), 500)
+        page_token = pag.get("pageToken", "")
+    except Exception:
+        pass
+    return mimecast_audit_events(count=page_size, page_token=page_token)
 
 
 @app.post("/api/ttp/impersonation/get-logs")
