@@ -464,3 +464,104 @@ def generate_siem_response(count: int = 20, event_type: str = "",
             "status": 200,
         },
     }
+
+
+# ── TTP Impersonation Protect dedicated endpoint ────────────────────────────
+# Matches POST /api/ttp/impersonation/get-logs response format exactly.
+# This is a separate API from the SIEM stream, used by collectors that pull
+# impersonation events directly.
+
+_SIMILAR_DOMAINS = [
+    ("contoso.com", "c0ntoso.com"), ("contoso.com", "contoso-mail.com"),
+    ("acme-corp.com", "acme-c0rp.com"), ("acme-corp.com", "acmecorp.net"),
+    ("roarinpenguin.com", "roarinpenguin.org"), ("starfleet.com", "starfl33t.com"),
+    ("company.com", "c0mpany.com"), ("company.com", "company-secure.com"),
+]
+_IDENTIFIER_TYPES = [
+    "internal_user_name", "similar_internal_domain", "similar_custom_domain",
+    "reply_address_mismatch", "targeted_threat_dictionary", "new_domain",
+]
+_IMPERSONATION_ACTIONS = ["none", "hold", "bounce", "tag_subject"]
+
+
+def _ttp_impersonation_log(ctx=None) -> dict[str, Any]:
+    """Generate a single TTP Impersonation Protect log in the exact format
+    returned by POST /api/ttp/impersonation/get-logs."""
+    pu = ctx.pick_user() if ctx else None
+    pms = ctx.pick_mail_sender() if ctx else None
+
+    recipient = pu.get("email", _internal_email()) if pu else _internal_email()
+    sender = pms.get("mail_address", _external_email()) if pms else _external_email()
+    sender_domain = sender.split("@", 1)[1] if "@" in sender else random.choice(_EXTERNAL_DOMAINS)
+    recipient_domain = recipient.split("@", 1)[1] if "@" in recipient else random.choice(_INTERNAL_DOMAINS)
+
+    tagged_malicious = random.random() < 0.6
+    tagged_external = random.random() < 0.3
+    hits = random.randint(1, 5)
+
+    # Build impersonation results — why this was flagged
+    num_results = random.randint(1, 3)
+    impersonation_results = []
+    similar_pair = random.choice(_SIMILAR_DOMAINS)
+    for _ in range(num_results):
+        source_type = random.choice([
+            "internal_user_name", "similar_internal_domain",
+            "similar_custom_external_domain", "new_domain",
+            "reply_address_mismatch", "targeted_threat_dictionary",
+        ])
+        impersonation_results.append({
+            "checkerResult": source_type,
+            "impersonationDomainSource": similar_pair[0],
+            "stringSimilarToDomain": similar_pair[1],
+        })
+
+    # Identifiers — which impersonation checks matched
+    identifiers = random.sample(_IDENTIFIER_TYPES, k=min(hits, len(_IDENTIFIER_TYPES)))
+
+    return {
+        "id": generate_uuid(),
+        "senderAddress": sender,
+        "recipientAddress": recipient,
+        "subject": pms.get("subject", random.choice(_SUBJECTS_MALICIOUS)) if pms else random.choice(_SUBJECTS_MALICIOUS),
+        "eventTime": _past(),
+        "definition": random.choice(_IMPERSONATION_DEFS),
+        "action": random.choice(_IMPERSONATION_ACTIONS),
+        "hits": hits,
+        "taggedMalicious": tagged_malicious,
+        "taggedExternal": tagged_external,
+        "senderIpAddress": generate_ip(),
+        "messageId": _msg_id(),
+        "identifiers": identifiers,
+        "impersonationResults": impersonation_results,
+    }
+
+
+def generate_ttp_impersonation_response(count: int = 25,
+                                         page_token: str = "") -> dict[str, Any]:
+    """Generate a full /api/ttp/impersonation/get-logs response.
+
+    Matches the exact Mimecast API response schema with impersonationLogs array,
+    pagination, and proper field names.
+    """
+    ctx = profiles.get_context("mimecast")
+    count = profiles.scale_count("mimecast", count)
+    logs = [_ttp_impersonation_log(ctx=ctx) for _ in range(count)]
+    logs = inject_detection_events("mimecast", logs)
+    total = max(count, random.randint(count, count * 5))
+    next_token = _make_token(count) if count >= 10 else None
+    return {
+        "fail": [],
+        "meta": {
+            "status": 200,
+            "pagination": {
+                "pageSize": count,
+                "next": next_token,
+                "totalCount": total,
+            },
+        },
+        "data": [
+            {
+                "impersonationLogs": logs,
+            }
+        ],
+    }

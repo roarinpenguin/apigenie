@@ -53,7 +53,7 @@ from sources.cato import generate_events as cato_events
 from sources.cloudflare import generate_events as cloudflare_events
 from sources.zscaler_zpa import generate_events as zpa_events
 from sources.sentinelone import generate_threats as s1_threats, generate_activities as s1_activities, generate_agents as s1_agents
-from sources.mimecast import generate_siem_response as mimecast_siem
+from sources.mimecast import generate_siem_response as mimecast_siem, generate_ttp_impersonation_response as mimecast_ttp_impersonation
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
@@ -1091,6 +1091,32 @@ async def mimecast_siem_batch(request: Request,
     if next_token:
         headers["mc-siem-token"] = next_token
     return JSONResponse(content=resp, headers=headers)
+
+
+@app.post("/api/ttp/impersonation/get-logs")
+async def mimecast_ttp_impersonation_logs(request: Request) -> dict[str, Any]:
+    """Mimecast TTP Impersonation Protect logs — dedicated endpoint.
+
+    Matches the real Mimecast POST /api/ttp/impersonation/get-logs API.
+    Auth: MC (HMAC-SHA1) or Bearer token (mock accepts any Authorization header).
+    """
+    auth = request.headers.get("authorization", "")
+    if not auth:
+        return JSONResponse({"fail": [{"errors": [{"code": "err_xdk_client_unauthorized",
+                             "message": "Authorization header missing"}]}]},
+                            status_code=401)
+    # Parse optional pagination from request body
+    page_size = 25
+    page_token = ""
+    try:
+        body = await request.json()
+        meta = body.get("meta", {})
+        pag = meta.get("pagination", {})
+        page_size = min(pag.get("pageSize", 25), 500)
+        page_token = pag.get("pageToken", "")
+    except Exception:
+        pass
+    return mimecast_ttp_impersonation(count=page_size, page_token=page_token)
 
 
 # =============================================================================

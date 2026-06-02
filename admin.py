@@ -451,6 +451,7 @@ SOURCES: dict[str, dict[str, Any]] = {
             {"method": "POST", "path": "/oauth/token",            "desc": "OAuth2 token (client_credentials grant, 30-min expiry)"},
             {"method": "GET",  "path": "/siem/v1/events/cg",      "desc": "SIEM event stream — receipt, process, delivery, AV, spam, TTP URL/Attach/Impersonation"},
             {"method": "GET",  "path": "/siem/v1/batch/events/cg", "desc": "SIEM batch events (larger page size, up to 5000)"},
+            {"method": "POST", "path": "/api/ttp/impersonation/get-logs", "desc": "TTP Impersonation Protect logs — dedicated BEC/spoofing detection events"},
         ],
         "curl": (
             f'# Step 1: Get OAuth token\n'

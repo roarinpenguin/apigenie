@@ -62,7 +62,7 @@ _SOURCE_PATTERNS: list[tuple[str, list[str]]] = [
     ("cloudflare",        ["/client/v4/"]),
     ("zscaler_zpa",       ["/mgmtconfig/"]),
     ("sentinelone",       ["/web/api/v2.1/"]),
-    ("mimecast",          ["/siem/v1/", "/oauth/token"]),
+    ("mimecast",          ["/siem/v1/", "/api/ttp/", "/oauth/token"]),
 ]
 
 # Skip the admin UI itself (login/logout/dashboard/admin API) but NOT Cisco Duo,
