@@ -43,9 +43,9 @@ _AGG_LOCK = threading.Lock()
 _SOURCE_PATTERNS: list[tuple[str, list[str]]] = [
     ("okta",       ["/api/v1/logs"]),
     ("netskope",   ["/api/v2/"]),
-    ("m365",       ["/activity/feed/", "/v1.0/security/alerts_v2"]),
-    ("entra_id",   ["/v1.0/auditLogs/", "/v1.0/identityProtection/"]),
-    ("defender",   ["/v1.0/subscriptions/", "/subscriptions/", "/v1.0/security/", "/security/incidents", "/security/secureScores", "/security/assessments"]),
+    ("m365",       ["/activity/feed/", "/api/v1.0/", "/v1.0/security/alerts_v2", "/v1.0/security/alerts"]),
+    ("entra_id",   ["/v1.0/auditLogs/", "/v1.0/identityProtection/", "/v1.0/users/"]),
+    ("defender",   ["/v1.0/subscriptions/", "/subscriptions/", "/v1.0/security/incidents", "/v1.0/security/recommendations", "/v1.0/security/secureScores", "/v1.0/security/assessments"]),
     ("cisco_duo",  ["/admin/v1/", "/admin/v2/"]),
     ("gcp_audit",  ["/v2/entries"]),
     ("tenable",    ["/vulns/", "/assets/", "/audit-log/", "/api/v1/refresh-access-token"]),
@@ -77,10 +77,13 @@ def get_source(path: str, body: str = "") -> str | None:
             if path == p or path.startswith(p):
                 return source
     # Tenant-prefixed Microsoft OAuth: /{tenant}/oauth2/v2.0/token
-    # Distinguish M365 vs Entra ID by checking the scope in the POST body.
+    # Distinguish M365 vs Entra ID vs Defender by checking the scope in the POST body.
     if path.endswith("/oauth2/v2.0/token") or path.endswith("/oauth2/token"):
-        if "manage.office.com" in body or "office365" in body:
+        body_lower = body.lower()
+        if "manage.office.com" in body_lower or "office365" in body_lower or "activityfeed" in body_lower:
             return "m365"
+        if "securityevents" in body_lower or "security.read" in body_lower:
+            return "defender"
         return "entra_id"
     return None
 

@@ -46,8 +46,25 @@ def _wchoice(items: list[tuple[str, int]]) -> str:
 _TENANT_IDS = ["contoso.onmicrosoft.com", "72f988bf-86f1-41af-91ab-2d7cd011db47"]
 _USERS = ["jsmith@contoso.com", "agarcia@contoso.com", "mwilson@contoso.com",
            "lchen@contoso.com", "admin@contoso.com", "ceo@contoso.com",
-           "hr-manager@contoso.com", "finance@contoso.com"]
+           "hr-manager@contoso.com", "finance@contoso.com",
+           "riker@starfleet.com", "data@starfleet.com",
+           "ops@acme-corp.com", "analyst@roarinpenguin.com"]
 _EXTERNAL_USERS = ["partner@vendor.com", "guest@external.org", "contractor@thirdparty.net"]
+
+def _domain_from_user(email: str) -> str:
+    """Extract domain from email, e.g. 'jsmith@contoso.com' -> 'contoso.com'."""
+    return email.split("@", 1)[1] if "@" in email else "contoso.com"
+
+def _org_id_for_domain(domain: str) -> str:
+    """Return a tenant/org ID derived from domain (deterministic per domain)."""
+    import hashlib
+    h = hashlib.md5(domain.encode()).hexdigest()
+    return f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}"
+
+def _sharepoint_url(domain: str, site: str = "General") -> str:
+    """Generate a SharePoint URL for the given domain."""
+    org = domain.split(".")[0]
+    return f"https://{org}.sharepoint.com/sites/{site}"
 _APPS = ["Microsoft Teams", "SharePoint Online", "Exchange Online", "OneDrive for Business",
          "Power Automate", "Power Apps", "Microsoft Forms", "Planner",
          "Dynamics 365", "Azure Portal"]
@@ -88,13 +105,14 @@ def _user(ctx=None) -> str:
 
 def _base(operation: str, workload: str, ctx=None) -> dict[str, Any]:
     user = _user(ctx)
+    domain = _domain_from_user(user)
     loc = random.choice(_IP_LOCATIONS)
     return {
         "Id": generate_uuid(),
         "RecordType": random.randint(1, 100),
         "CreationTime": _now(),
         "Operation": operation,
-        "OrganizationId": random.choice(_TENANT_IDS),
+        "OrganizationId": _org_id_for_domain(domain),
         "UserType": random.choice([0, 2, 3, 4, 5]),
         "UserKey": generate_uuid(),
         "Workload": workload,
@@ -106,6 +124,7 @@ def _base(operation: str, workload: str, ctx=None) -> dict[str, Any]:
         "ActorIpAddress": generate_ip(),
         "City": loc["city"],
         "CountryCode": loc["country"],
+        "_domain": domain,
     }
 
 
@@ -226,7 +245,9 @@ def _sharepoint(ctx=None) -> dict[str, Any]:
     ]
     op = _wchoice(ops)
     e = _base(op, "SharePoint", ctx)
-    site = random.choice(_SITES)
+    domain = e.get("_domain", "contoso.com")
+    site_name = random.choice(["Engineering", "Finance", "HR", "Legal", "General"])
+    site = _sharepoint_url(domain, site_name)
     fname = random.choice(_FILE_NAMES)
     e["SiteUrl"] = site
     e["SourceRelativeUrl"] = f"Shared Documents/{random.choice(['', 'Confidential/', 'Public/', 'Archive/'])}"
