@@ -17,7 +17,8 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from admin import router as admin_router
+import admin as _admin
+from admin import router as admin_router, portal_router
 from auth import BearerAuth, BasicAuth, DuoAuth, XApiKeysAuth
 from trace import TraceMiddleware
 import listeners as _listeners
@@ -73,6 +74,12 @@ DOMAIN = os.environ.get("APIGENIE_DOMAIN", "apigenie.example.com")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    try:
+        import accounts
+        accounts.init_db()
+        logger.info("Accounts DB ready at %s", accounts.DB_PATH)
+    except Exception as exc:
+        logger.warning(f"Could not initialize accounts DB: {exc}")
     if _publishers_enabled:
         try:
             from publishers import kafka_publisher, pubsub_publisher
@@ -119,7 +126,67 @@ app = FastAPI(
 )
 
 app.add_middleware(TraceMiddleware)
+
+
+@app.middleware("http")
+async def _portal_role_guard(request: Request, call_next):
+    """Reject user-portal sessions reaching admin-only API endpoints.
+
+    UI visibility is handled client-side per role, but this guard enforces the
+    boundary server-side so a user-role session cannot call sensitive admin
+    APIs (settings, password changes, intrusions, investigations, bans,
+    container logs, request-log downloads) by crafting requests directly.
+    """
+    path = request.url.path
+    if _admin.is_admin_only_path(path):
+        role = _admin.session_role(request.cookies.get(_admin.COOKIE))
+        if role is None:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        if role != "admin":
+            return JSONResponse(
+                {"error": "forbidden", "note": "admin role required for this endpoint"},
+                status_code=403,
+            )
+    else:
+        # Enforce entitlement permissions on user-portal write endpoints.
+        perr = _admin.permission_error(
+            request.cookies.get(_admin.COOKIE), path, request.method)
+        if perr is not None:
+            category, needed = perr
+            return JSONResponse(
+                {"error": "forbidden",
+                 "note": f"your entitlement does not grant '{needed}' on {category}",
+                 "category": category, "needed": needed},
+                status_code=403,
+            )
+
+    # RBAC Phase 3.5 — bind the resolved caller for control-plane requests so
+    # per-user S1 console overrides (and other caller-aware helpers) apply on
+    # /admin/api/s1/* without each endpoint having to plumb it manually. The
+    # context is reset after the response is built so it never leaks across
+    # requests on the same worker.
+    caller_token = None
+    if path.startswith("/admin/api/") or path.startswith("/portal/api/"):
+        try:
+            import profiles as _profiles
+            uid, _is_admin = _admin._session_identity(
+                request.cookies.get(_admin.COOKIE))
+            caller_token = _profiles.set_current_user(uid)
+        except Exception:
+            caller_token = None
+    try:
+        return await call_next(request)
+    finally:
+        if caller_token is not None:
+            try:
+                import profiles as _profiles
+                _profiles.reset_current_user(caller_token)
+            except Exception:
+                pass
+
+
 app.include_router(admin_router)
+app.include_router(portal_router)
 
 
 # =============================================================================

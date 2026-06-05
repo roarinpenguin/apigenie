@@ -57,6 +57,8 @@ def create_rule(data: dict[str, Any]) -> dict[str, Any]:
         "name": data.get("name", "Untitled rule"),
         "source": data.get("source", ""),
         "description": data.get("description", ""),
+        "owner_id": data.get("owner_id"),
+        "visibility": data.get("visibility", "private"),
         "enabled": data.get("enabled", True),
         "field_overrides": data.get("field_overrides", {}),
         "periodicity": max(1, int(data.get("periodicity", 10))),
@@ -87,7 +89,7 @@ def update_rule(rule_id: str, data: dict[str, Any]) -> dict[str, Any] | None:
         rules = _load_rules()
         for r in rules:
             if r["id"] == rule_id:
-                for key in ("name", "description", "enabled", "field_overrides", "source"):
+                for key in ("name", "description", "enabled", "field_overrides", "source", "visibility"):
                     if key in data:
                         r[key] = data[key]
                 if "periodicity" in data:
@@ -140,19 +142,48 @@ def _apply_overrides(log_entry: dict[str, Any], overrides: dict[str, Any]) -> di
 
 # ── Injection into log batches ───────────────────────────────────────────────
 
+def _rule_visible_to_caller(rule: dict[str, Any], caller_id: str | None) -> bool:
+    """Mirror admin._can_see_obj for detection rules.
+
+    Rules with no owner_id are admin/global and fire for everyone. Public rules
+    fire for everyone. Private rules fire only when their owner is the resolved
+    caller. Legacy rules saved before Phase 2 lack both keys and default to
+    admin-owned/public (fire for everyone) — see test_legacy_rule_without_owner.
+    """
+    owner = rule.get("owner_id")
+    if owner is None:
+        return True
+    visibility = rule.get("visibility") or "public"
+    if visibility == "public":
+        return True
+    return caller_id is not None and owner == caller_id
+
+
 def inject_detection_events(source: str, logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Inject detection-rule events into a batch of normal logs.
 
-    For each active rule matching *source*, inject one event every N logs
-    (where N = rule periodicity). The injected event is a copy of a random
-    normal log with the rule's field_overrides applied.
+    For each active rule matching *source* AND visible to the resolved caller,
+    inject one event every N logs (where N = rule periodicity). The injected
+    event is a copy of a random normal log with the rule's field_overrides
+    applied.
 
     Also supports time-based periodicity: if periodicity > 100, it's treated
     as seconds between fires (e.g. 300 = fire once every 5 minutes).
 
     Returns the modified log list (may be longer than the input).
     """
-    rules = [r for r in _load_rules() if r["source"] == source and r.get("enabled", True)]
+    # Resolve the caller (set by auth.py when a request's credential matches a
+    # registered identifier; None for unauthenticated / bus-based ingest).
+    # Imported lazily to avoid a hard dependency for callers that don't set it.
+    try:
+        from profiles import get_current_user
+        caller_id = get_current_user()
+    except Exception:
+        caller_id = None
+    rules = [r for r in _load_rules()
+             if r["source"] == source
+             and r.get("enabled", True)
+             and _rule_visible_to_caller(r, caller_id)]
     if not rules or not logs:
         return logs
 

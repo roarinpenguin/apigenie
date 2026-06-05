@@ -162,7 +162,8 @@ def create_profile(data: dict[str, Any]) -> dict[str, Any]:
         "duration": data.get("duration", {"value": 1, "unit": "hours"}),
         "rate": max(1, min(1000, int(data.get("rate", 10)))),
         "profile_id": data.get("profile_id"),
-        "password": data.get("password") or None,
+        "owner_id": data.get("owner_id"),
+        "visibility": data.get("visibility", "private"),
         "status": "stopped",
         "error": "",
         "events_sent": 0,
@@ -191,7 +192,7 @@ def update_profile(profile_id: str, data: dict[str, Any]) -> dict[str, Any] | No
         if not p:
             return None
         for key in ("name", "source_type", "format", "transport", "destination",
-                     "duration", "rate", "profile_id", "password"):
+                     "duration", "rate", "profile_id", "visibility"):
             if key in data:
                 p[key] = data[key]
         if "rate" in data:
@@ -524,10 +525,27 @@ def _load_source_module(source_type: str):
     return importlib.import_module(info["module"])
 
 
+def _set_caller_for_loop(profile_id: str) -> None:
+    """Bind this thread's caller-context to the push profile's owner.
+
+    RBAC Phase 3 — the push worker runs in its own background thread. Setting
+    the caller via the profiles contextvar makes detection_rules and the log-
+    profile shaper filter to rules / profiles visible to that user (their own
+    + admin/public). For admin-owned (owner_id=None) and unknown profiles the
+    caller is cleared, so only global/public rules fire.
+    """
+    import profiles as _user_ctx
+    p = get_profile(profile_id) or {}
+    _user_ctx.set_current_user(p.get("owner_id"))
+
+
 def _push_loop(profile_id: str) -> None:
     """Main push loop for a profile. Runs in a background thread."""
     import detection_rules
     import profiles as log_profiles
+    # Bind this worker thread's caller-context to the push profile's owner so
+    # detection rules and log-profile shaping are personalised for the user.
+    _set_caller_for_loop(profile_id)
 
     # Observability hooks — import lazily to avoid circular deps
     try:
@@ -650,12 +668,14 @@ def _update_status(profile_id: str, status: str, **kwargs) -> None:
 # ── Start / Stop ─────────────────────────────────────────────────────────────
 
 def start_push(profile_id: str, password: str | None = None) -> dict[str, Any] | str:
-    """Start pushing logs for a profile. Returns the profile or an error string."""
+    """Start pushing logs for a profile. Returns the profile or an error string.
+
+    The *password* parameter is retained for signature compatibility but is no
+    longer used — Log Push access is governed by entitlements.
+    """
     profile = get_profile(profile_id)
     if not profile:
         return "Profile not found"
-    if profile.get("password") and profile["password"] != password:
-        return "Invalid password"
     if profile_id in _active_threads and _active_threads[profile_id].is_alive():
         return "Already running"
 

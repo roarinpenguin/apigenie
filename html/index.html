@@ -151,6 +151,64 @@
         }
         .btn-admin svg { width: 16px; height: 16px; }
 
+        /* ── Top-nav menu dropdown ─────────────────────────────────────────── */
+        details.menu { position: relative; }
+        details.menu > summary {
+            list-style: none;
+            cursor: pointer;
+        }
+        details.menu > summary::-webkit-details-marker { display: none; }
+        details.menu > summary .chev { transition: transform 0.18s ease; }
+        details.menu[open] > summary .chev { transform: rotate(90deg); }
+        .menu-panel {
+            position: absolute;
+            right: 0;
+            top: calc(100% + 10px);
+            min-width: 220px;
+            background: var(--surface);
+            border-radius: var(--r-md);
+            box-shadow:
+                8px 8px 18px var(--shadow-dark),
+                -8px -8px 18px var(--shadow-light);
+            padding: 8px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            z-index: 20;
+            animation: menuIn 0.14s ease;
+        }
+        @keyframes menuIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+        .menu-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 14px;
+            border-radius: 12px;
+            text-decoration: none;
+            color: var(--text);
+            font-weight: 600;
+            font-size: 0.92rem;
+            transition: all 0.15s ease;
+        }
+        .menu-item small {
+            display: block;
+            font-size: 0.72rem;
+            font-weight: 500;
+            color: var(--text-mute);
+            margin-top: 2px;
+        }
+        .menu-item:hover { background: linear-gradient(135deg, var(--primary), var(--primary-deep)); color: #fff; }
+        .menu-item:hover small { color: rgba(255, 255, 255, 0.8); }
+        .menu-item .mi-icon {
+            display: inline-flex;
+            width: 22px;
+            height: 22px;
+            color: var(--primary);
+            flex-shrink: 0;
+        }
+        .menu-item .mi-icon svg { width: 22px; height: 22px; }
+        .menu-item:hover .mi-icon { color: #fff; }
+
         /* ── Layout ────────────────────────────────────────────────────────── */
         main {
             max-width: 880px;
@@ -505,12 +563,32 @@
             </span>
         </a>
         <div class="domain" title="Service status" id="domain-pill">apigenie.example.com</div>
-        <a class="btn-admin" href="/admin/login">
-            Admin
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M5 12h14M13 5l7 7-7 7"/>
-            </svg>
-        </a>
+        <details class="menu">
+            <summary class="btn-admin">
+                Menu
+                <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M5 12h14M13 5l7 7-7 7"/>
+                </svg>
+            </summary>
+            <div class="menu-panel">
+                <a class="menu-item" href="/portal/login">
+                    <span class="mi-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+                        </svg>
+                    </span>
+                    <span>User Portal<small>Telemetry config &amp; monitoring</small></span>
+                </a>
+                <a class="menu-item" href="/admin/login">
+                    <span class="mi-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                        </svg>
+                    </span>
+                    <span>Admin<small>Infrastructure &amp; security</small></span>
+                </a>
+            </div>
+        </details>
     </header>
 
     <div class="subbar">

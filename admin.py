@@ -1,10 +1,12 @@
 """Admin UI — authentication, container logs, request inspector, source config guide."""
 
 import asyncio
+import functools
 import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import time
 from pathlib import Path
@@ -20,6 +22,7 @@ import listeners as _listeners
 import replay as _replay
 import profiles
 import request_log
+import accounts
 
 # ── Config ────────────────────────────────────────────────────────────────────
 ADMIN_USER   = os.environ.get("ADMIN_USERNAME", "admin")
@@ -39,6 +42,16 @@ ADMIN_PASSWORD_FILE = Path(os.environ.get("ADMIN_PASSWORD_FILE", "/var/lib/apige
 INVESTIGATE_PASSWORD = os.environ.get("APIGENIE_INVESTIGATE_PASSWORD", "")
 INVESTIGATE_PASSWORD_HASH = os.environ.get("APIGENIE_INVESTIGATE_PASSWORD_HASH", "").strip()
 INVESTIGATE_PASSWORD_FILE = Path(os.environ.get("INVESTIGATE_PASSWORD_FILE", "/var/lib/apigenie/investigate_pass"))
+
+# ── User portal credentials ───────────────────────────────────────────────────
+# The user portal (/portal) is a separate login from the admin portal (/admin)
+# with its own password. To keep upgrades of existing deployments seamless, the
+# user-portal password DEFAULTS to the current admin password until an explicit
+# user password is configured (env var or the System Settings → User Portal form).
+USER_USER = os.environ.get("USER_PORTAL_USERNAME", "user")
+USER_PASS = os.environ.get("USER_PORTAL_PASSWORD", "")
+USER_HASH = os.environ.get("USER_PORTAL_PASSWORD_HASH", "").strip()
+USER_PASSWORD_FILE = Path(os.environ.get("USER_PASSWORD_FILE", "/var/lib/apigenie/user_pass"))
 
 # Public-facing hostname collectors will use to reach this stack. Required at
 # import time because the SOURCES reference dict (curl examples, advertised
@@ -125,25 +138,360 @@ def _check_investigate_password(plain: str) -> bool:
     return bool(INVESTIGATE_PASSWORD) and hmac.compare_digest(plain, INVESTIGATE_PASSWORD)
 
 
+def _user_password_explicitly_set() -> bool:
+    """True if a dedicated user-portal password has been configured."""
+    try:
+        if USER_PASSWORD_FILE.is_file():
+            return True
+    except OSError:
+        pass
+    return bool(USER_HASH) or bool(USER_PASS)
+
+
+def _current_user_hash() -> str:
+    """Resolve the active user-portal hash.
+
+    Precedence: override file > env hash. If none is set, fall back to the
+    *admin* hash so that upgrading an existing deployment leaves the user
+    portal reachable with the current admin password until it is changed.
+    """
+    try:
+        if USER_PASSWORD_FILE.is_file():
+            return USER_PASSWORD_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        pass
+    if USER_HASH:
+        return USER_HASH
+    # No dedicated user password configured → mirror the admin password.
+    return _current_admin_hash()
+
+
+def _check_user_password(plain: str) -> bool:
+    active_hash = _current_user_hash()
+    if active_hash:
+        return _verify_password_hash(plain, active_hash)
+    # Plaintext fallback: dedicated user plaintext, else mirror admin plaintext.
+    if USER_PASS:
+        return hmac.compare_digest(plain, USER_PASS)
+    return bool(ADMIN_PASS) and hmac.compare_digest(plain, ADMIN_PASS)
+
+
 router = APIRouter(prefix="/admin", tags=["admin"])
+portal_router = APIRouter(prefix="/portal", tags=["portal"])
 
-_sessions: dict[str, float] = {}   # token → expires_at
+# token → {"exp": float, "role": "admin"|"user", "user_id": str|None,
+#          "username": str, "is_admin": bool}
+# - Built-in admin (env/file creds): is_admin=True, user_id=None. role is
+#   "admin" in the admin portal and "user" when the admin signs into the user
+#   portal (acting-as-user; a per-user switcher arrives in Phase 2).
+# - Registered accounts (accounts.py / SQLite): is_admin=False, user_id set.
+_sessions: dict[str, dict[str, Any]] = {}
 
 
-def _new_session() -> str:
+def _new_session(role: str = "admin", *, user_id: str | None = None,
+                 username: str = "", is_admin: bool = False) -> str:
     tok = secrets.token_urlsafe(32)
-    _sessions[tok] = time.time() + SESSION_TTL
+    _sessions[tok] = {
+        "exp": time.time() + SESSION_TTL,
+        "role": role,
+        "user_id": user_id,
+        "username": username,
+        "is_admin": is_admin,
+    }
     return tok
+
+
+def session_info(token: str | None) -> dict[str, Any] | None:
+    """Return the full session record for a valid token, or None."""
+    if not token:
+        return None
+    sess = _sessions.get(token)
+    if not sess or time.time() > sess["exp"]:
+        _sessions.pop(token, None)
+        return None
+    return sess
+
+
+def session_user(token: str | None) -> dict[str, Any] | None:
+    """Resolve the account dict bound to a session.
+
+    The built-in admin has no DB row, so a synthetic superuser dict is returned.
+    Registered users are loaded from accounts.py.
+    """
+    sess = session_info(token)
+    if not sess:
+        return None
+    if sess.get("is_admin"):
+        return {"id": None, "username": sess.get("username") or ADMIN_USER,
+                "is_admin": True, "entitlement_id": None}
+    uid = sess.get("user_id")
+    return accounts.get_user(uid) if uid else None
 
 
 def _valid(token: str | None) -> bool:
     if not token:
         return False
-    exp = _sessions.get(token)
-    if not exp or time.time() > exp:
+    sess = _sessions.get(token)
+    if not sess or time.time() > sess["exp"]:
         _sessions.pop(token, None)
         return False
     return True
+
+
+def session_role(token: str | None) -> str | None:
+    """Return the role bound to a valid session token, or None."""
+    if not token:
+        return None
+    sess = _sessions.get(token)
+    if not sess or time.time() > sess["exp"]:
+        _sessions.pop(token, None)
+        return None
+    return sess.get("role")
+
+
+# API path prefixes (under the /admin router) reserved for the admin portal.
+# A user-portal session that hits any of these is rejected by the role guard
+# middleware in app.py. Everything else under /admin/api is available to both
+# roles (the user portal drives most of the day-to-day telemetry config).
+ADMIN_ONLY_API_PREFIXES: tuple[str, ...] = (
+    # NOTE: /admin/api/act-as is intentionally NOT here. The endpoint gates on
+    # is_admin so an admin signed into the user portal (role="user") can still
+    # call it; this prefix list checks portal role only.
+    "/admin/api/intrusions",
+    "/admin/api/investigate",                  # investigate/{ip}
+    "/admin/api/bans",
+    "/admin/api/logs/",                        # container log streaming
+    "/admin/api/settings",
+    "/admin/api/cert",
+    "/admin/api/change-password",
+    "/admin/api/request-logs",
+    "/admin/api/rbac",                         # entitlements + user account management
+)
+
+
+def is_admin_only_path(path: str) -> bool:
+    return any(path == p or path.startswith(p) for p in ADMIN_ONLY_API_PREFIXES)
+
+
+# ── Entitlement permission enforcement (user-portal write endpoints) ─────────
+# Maps a write request (path, method) to the permission category and the set of
+# permission levels that satisfy it. A user-role session must hold at least one
+# of the listed perms in that category. The built-in admin bypasses all checks.
+def _perm_requirement(path: str, method: str) -> tuple[str, tuple[str, ...]] | None:
+    m = (method or "GET").upper()
+    if m in ("GET", "HEAD", "OPTIONS"):
+        return None
+    C, P = accounts.Category, accounts.Perm
+    # Log Profiles
+    if path == "/admin/api/profiles":
+        if m == "POST":
+            return (C.LOG_PROFILES, (P.CREATE,))
+    elif path.startswith("/admin/api/profiles/"):
+        if path.endswith("/clone"):
+            return (C.LOG_PROFILES, (P.CREATE,))
+        if m in ("PUT", "PATCH"):
+            return (C.LOG_PROFILES, (P.MODIFY,))
+        if m == "DELETE":
+            return (C.LOG_PROFILES, (P.DELETE,))
+    # Detection Rules
+    if path == "/admin/api/detection-rules":
+        if m == "POST":
+            return (C.DETECTION_RULES, (P.CREATE,))
+    elif path.startswith("/admin/api/detection-rules/"):
+        if path.endswith("/clone"):
+            return (C.DETECTION_RULES, (P.CREATE,))
+        if m in ("PUT", "PATCH"):
+            return (C.DETECTION_RULES, (P.MODIFY,))
+        if m == "DELETE":
+            return (C.DETECTION_RULES, (P.DELETE,))
+    # Log Push
+    if path == "/admin/api/push/profiles":
+        if m == "POST":
+            return (C.LOG_PUSH, (P.CREATE,))
+    elif path.startswith("/admin/api/push/profiles/"):
+        if path.endswith("/clone"):
+            return (C.LOG_PUSH, (P.CREATE,))
+        if path.endswith("/start") or path.endswith("/stop"):
+            return (C.LOG_PUSH, (P.MANAGE, P.MODIFY))
+        if m in ("PUT", "PATCH"):
+            return (C.LOG_PUSH, (P.MODIFY,))
+        if m == "DELETE":
+            return (C.LOG_PUSH, (P.DELETE,))
+    # Custom Listeners
+    if path == "/admin/api/listeners":
+        if m == "POST":
+            return (C.LISTENERS, (P.CREATE,))
+    elif path.startswith("/admin/api/listeners/"):
+        if path.endswith("/clone"):
+            return (C.LISTENERS, (P.CREATE,))
+        if path.endswith("/hits"):
+            return (C.LISTENERS, (P.MODIFY,))
+        if m in ("PUT", "PATCH"):
+            return (C.LISTENERS, (P.MODIFY,))
+        if m == "DELETE":
+            return (C.LISTENERS, (P.DELETE,))
+    # Source ↔ Profile bindings (+ per-source log volume / intensity)
+    if path.startswith("/admin/api/source-profiles/"):
+        if m in ("PUT", "PATCH"):
+            return (C.SOURCE_BINDINGS, (P.CREATE, P.MODIFY))
+        if m == "DELETE":
+            return (C.SOURCE_BINDINGS, (P.DELETE, P.MODIFY))
+    if path.startswith("/admin/api/source-intensity/"):
+        if m in ("PUT", "PATCH"):
+            return (C.SOURCE_BINDINGS, (P.MODIFY,))
+    return None
+
+
+def permission_error(token: str | None, path: str, method: str) -> tuple[str, str] | None:
+    """Return (category, needed_perms) if the session lacks the required
+    permission for this write request, else None (allowed)."""
+    req = _perm_requirement(path, method)
+    if req is None:
+        return None
+    category, allowed = req
+    sess = session_info(token)
+    # No valid session (missing/expired/unknown token). This is an auth problem,
+    # not a permission problem — defer to the endpoint so it returns 401 rather
+    # than a misleading 403. (Prevents stale-cookie sessions, e.g. after a server
+    # restart wipes in-memory sessions, from looking like a permission denial.)
+    if sess is None:
+        return None
+    # Admin role (built-in superuser) bypasses entitlement checks entirely.
+    if sess.get("role") == "admin" or sess.get("is_admin"):
+        return None
+    user = session_user(token)
+    if user is None:
+        # Valid session token but its account row is gone — treat as unauthenticated.
+        return None
+    if user.get("is_admin"):
+        return None
+    perms = accounts.get_permissions(user).get(category, [])
+    if any(p in perms for p in allowed):
+        return None
+    return (category, "/".join(allowed))
+
+
+# ── Object ownership & visibility (per-user isolation, public publishing) ────
+# Every user-customizable object (log profile, detection rule, push profile,
+# custom listener) carries owner_id + visibility. A user sees their own objects
+# plus public ones, but may only modify/delete their own. The built-in admin is
+# a superuser (sees & edits everything). Legacy objects (no owner_id/visibility)
+# are treated as admin-owned & public for seamless upgrades.
+def _session_identity(token: str | None) -> tuple[str | None, bool]:
+    """Return (effective_user_id, is_admin) for a session.
+
+    Honors the admin user-switcher: when an admin is "acting as" a user, the
+    effective owner id becomes that user while admin powers are retained.
+    """
+    sess = session_info(token) or {}
+    is_admin = bool(sess.get("is_admin") or sess.get("role") == "admin")
+    acting = sess.get("acting_as_user_id")
+    if is_admin and acting:
+        return acting, True
+    if is_admin:
+        return None, True
+    return sess.get("user_id"), False
+
+
+# ── Admin "Viewing as" user-switcher (RBAC Phase 2.4) ─────────────────────────
+# Stashes a target user id on the admin's in-memory session record. All owner-
+# scoped endpoints already resolve through _session_identity, so flipping this
+# flag is enough to make the admin's view & writes happen inside that user's
+# namespace (their bindings, identifiers, profiles, …). Cleared on logout.
+
+def _admin_session_or_none(token: str | None) -> dict[str, Any] | None:
+    sess = session_info(token)
+    if not sess:
+        return None
+    if not (sess.get("is_admin") or sess.get("role") == "admin"):
+        return None
+    return sess
+
+
+@router.get("/api/act-as")
+async def api_act_as_get(ag_session: str | None = Cookie(None)):
+    sess = _admin_session_or_none(ag_session)
+    if sess is None:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    target_uid = sess.get("acting_as_user_id")
+    target_user = accounts.get_user(target_uid) if target_uid else None
+    # Embed the user list so the switcher works from both portals without
+    # needing the admin-only /admin/api/rbac/users endpoint.
+    users = [{"id": u["id"], "username": u.get("username") or u["id"]}
+             for u in accounts.list_users()]
+    return JSONResponse({
+        "is_admin": True,
+        "acting_as_user_id": target_uid,
+        "acting_as_username": (target_user or {}).get("username") if target_user else None,
+        "users": users,
+    })
+
+
+@router.put("/api/act-as")
+async def api_act_as_set(request: Request, ag_session: str | None = Cookie(None)):
+    sess = _admin_session_or_none(ag_session)
+    if sess is None:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    target_uid = (body.get("user_id") or "").strip() or None
+    if target_uid:
+        user = accounts.get_user(target_uid)
+        if not user:
+            return JSONResponse({"error": "user not found"}, status_code=404)
+        sess["acting_as_user_id"] = target_uid
+        return JSONResponse({"ok": True, "acting_as_user_id": target_uid,
+                             "acting_as_username": user["username"]})
+    sess.pop("acting_as_user_id", None)
+    return JSONResponse({"ok": True, "acting_as_user_id": None})
+
+
+@router.delete("/api/act-as")
+async def api_act_as_clear(ag_session: str | None = Cookie(None)):
+    sess = _admin_session_or_none(ag_session)
+    if sess is None:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    sess.pop("acting_as_user_id", None)
+    return JSONResponse({"ok": True})
+
+
+def _owner_stamp(token: str | None, body: dict[str, Any]) -> dict[str, Any]:
+    """Stamp owner_id + a default visibility onto a create payload."""
+    uid, is_admin = _session_identity(token)
+    body["owner_id"] = uid
+    vis = body.get("visibility")
+    if vis not in ("private", "public"):
+        # Admin-owned objects default to public (shared, preserves prior single
+        # tenant behavior); user-owned objects default to private.
+        vis = "public" if (is_admin and uid is None) else "private"
+    body["visibility"] = vis
+    return body
+
+
+def _obj_visibility(obj: dict[str, Any] | None) -> str:
+    return (obj or {}).get("visibility") or "public"
+
+
+def _can_see_obj(obj: dict[str, Any] | None, token: str | None) -> bool:
+    uid, is_admin = _session_identity(token)
+    if is_admin:
+        return True
+    return (obj or {}).get("owner_id") == uid or _obj_visibility(obj) == "public"
+
+
+def _can_write_obj(obj: dict[str, Any] | None, token: str | None) -> bool:
+    uid, is_admin = _session_identity(token)
+    if is_admin:
+        return True
+    return (obj or {}).get("owner_id") == uid
+
+
+def _clone_name(name: str) -> str:
+    """Derive a clone's display name, avoiding runaway '(copy) (copy)' chains."""
+    base = (name or "Untitled").strip()
+    return base if base.endswith("(copy)") else f"{base} (copy)"
 
 
 # ── Source config reference ───────────────────────────────────────────────────
@@ -486,7 +834,7 @@ _LOGIN_HTML = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>API Genie · Admin Login</title>
+<title>API Genie · {login_console} Login</title>
 <link rel="icon" type="image/png" href="/logo.png"/>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -550,12 +898,12 @@ footer .brand-text{color:var(--primary-deep);font-weight:600}
 <body>
 <a class="brand" href="/" aria-label="Back to API Genie home">
   <span class="brand-logo"><img src="/logo.png" alt=""/></span>
-  <span class="brand-name">API Genie<small>Admin Console</small></span>
+  <span class="brand-name">API Genie<small>{login_console} Console</small></span>
 </a>
 <div class="card">
   <h1>Sign in</h1>
-  <p class="sub">Restricted access · authorised operators only</p>
-  <form method="post" action="/admin/login">
+  <p class="sub">{login_sub}</p>
+  <form method="post" action="{login_action}">
     <label for="u">Username</label>
     <input id="u" name="username" type="text" autocomplete="username" autofocus/>
     <label for="p">Password</label>
@@ -578,7 +926,7 @@ _DASH_HTML = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>ApiGenie · Admin</title>
+<title>{dash_title}</title>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js" defer></script>
 <style>
 :root{--deep:#10002b;--violet:#5a189a;--purple:#7b2cbf;--orchid:#9d4edd;--lilac:#c77dff;--mist:#e0aaff;--glow:rgba(199,125,255,.45);--sidebar:220px}
@@ -586,7 +934,16 @@ _DASH_HTML = """<!doctype html>
 body{display:flex;min-height:100vh;background:var(--deep);color:var(--mist);font-family:"Segoe UI",system-ui,sans-serif;font-size:.92rem}
 /* Sidebar */
 .sidebar{width:var(--sidebar);background:rgba(36,0,70,.8);border-right:1px solid rgba(199,125,255,.15);display:flex;flex-direction:column;padding:20px 0;flex-shrink:0;position:fixed;top:0;left:0;height:100vh;z-index:10}
-.sidebar .brand{padding:0 20px 20px;font-size:1.1rem;font-weight:700;background:linear-gradient(90deg,#e0aaff,#c77dff);-webkit-background-clip:text;background-clip:text;color:transparent;border-bottom:1px solid rgba(199,125,255,.15)}
+.sidebar .brand{display:flex;align-items:center;gap:11px;padding:0 16px 18px;border-bottom:1px solid rgba(199,125,255,.15)}
+.sidebar .brand .brand-title{font-size:1.1rem;font-weight:700;background:linear-gradient(90deg,#e0aaff,#c77dff);-webkit-background-clip:text;background-clip:text;color:transparent;line-height:1.15}
+/* Neumorphic logo chip — light surface with lilac/violet shadows so the raised
+   effect is visible against the dark sidebar (no black shadows). */
+.brand-logo{width:42px;height:42px;border-radius:13px;background:#ece6fa;display:grid;place-items:center;padding:5px;flex-shrink:0;
+  box-shadow:5px 5px 12px rgba(90,24,154,.6),-5px -5px 12px rgba(199,125,255,.32),inset 0 0 0 1px rgba(199,125,255,.45);
+  transition:transform .15s,box-shadow .15s}
+.brand-logo:hover{transform:translateY(-1px);
+  box-shadow:6px 6px 16px rgba(123,44,191,.7),-5px -5px 14px rgba(199,125,255,.45),0 0 18px rgba(157,78,221,.55),inset 0 0 0 1px rgba(199,125,255,.6)}
+.brand-logo img{width:100%;height:100%;object-fit:contain;mix-blend-mode:multiply}
 .nav-item{display:block;padding:11px 20px;color:rgba(224,170,255,.7);text-decoration:none;cursor:pointer;border-left:3px solid transparent;transition:all .15s}
 .nav-item:hover,.nav-item.active{color:var(--mist);background:rgba(123,44,191,.2);border-left-color:var(--lilac)}
 .nav-icon{font-size:.85rem;margin-right:4px;display:inline-block;width:20px;text-align:center;filter:saturate(0) brightness(1.2) sepia(1) hue-rotate(230deg) saturate(2.5)}
@@ -737,23 +1094,26 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
 <body>
 
 <nav class="sidebar">
-  <div class="brand">⚙ ApiGenie Admin</div>
-  <span class="nav-section">Monitor</span>
-  <a class="nav-item" onclick="showTab('observability', this); initObservability()"><span class="nav-icon">📊</span> Observability</a>
-  <a class="nav-item active" onclick="showTab('requests', this)"><span class="nav-icon">📋</span> Requests</a>
-  <span class="nav-section">Troubleshooting</span>
-  <a class="nav-item" onclick="showTab('intrusions', this); loadIntrusions()"><span class="nav-icon">🛡</span> Intrusions</a>
-  <a class="nav-item" onclick="showTab('investigate', this); gateInvestigate()"><span class="nav-icon">🔍</span> Investigations</a>
-  <a class="nav-item" onclick="showTab('logs', this)"><span class="nav-icon">📜</span> Container Logs</a>
-  <span class="nav-section">Configuration &amp; Reference</span>
-  <a class="nav-item" onclick="showTab('listeners', this); loadListeners()"><span class="nav-icon">🎯</span> Listeners</a>
-  <a class="nav-item" onclick="showTab('profiles', this); loadProfiles()"><span class="nav-icon">🎭</span> Log Profiles &amp;<br/><span style="padding-left:1.65rem">Detection Rules</span></a>
-  <a class="nav-item" onclick="showTab('push', this); loadPushProfiles()"><span class="nav-icon">🚀</span> Log Push</a>
-  <a class="nav-item" style="display:none" onclick="showTab('scenarios', this); loadScenarios()"><span class="nav-icon">⚔</span> Attack Scenarios</a>
-  <a class="nav-item" onclick="showTab('config', this)"><span class="nav-icon">🔧</span> Source Details</a>
-  <a class="nav-item" onclick="showTab('settings', this); loadSettings()"><span class="nav-icon">⚙</span> System Settings</a>
+  <a class="brand" href="/" title="API Genie home"><span class="brand-logo"><img src="/logo.png" alt="API Genie"/></span><span class="brand-title">ApiGenie {brand_label}</span></a>
+  <span class="nav-section" data-portal="user admin">Monitor</span>
+  <a class="nav-item" data-portal="admin" onclick="showTab('observability', this); initObservability()"><span class="nav-icon">📊</span> Observability</a>
+  <a class="nav-item active" data-portal="user" onclick="showTab('requests', this)"><span class="nav-icon">📋</span> Requests</a>
+  <span class="nav-section" data-portal="admin">Troubleshooting</span>
+  <a class="nav-item" data-portal="admin" onclick="showTab('intrusions', this); loadIntrusions()"><span class="nav-icon">🛡</span> Intrusions</a>
+  <a class="nav-item" data-portal="admin" onclick="showTab('investigate', this); gateInvestigate()"><span class="nav-icon">🔍</span> Investigations</a>
+  <a class="nav-item" data-portal="admin" onclick="showTab('logs', this)"><span class="nav-icon">📜</span> Container Logs</a>
+  <span class="nav-section" data-portal="user">Configuration &amp; Reference</span>
+  <a class="nav-item" data-portal="user" onclick="showTab('listeners', this); loadListeners()"><span class="nav-icon">🎯</span> Listeners</a>
+  <a class="nav-item" data-portal="user" onclick="showTab('profiles', this); loadProfiles()"><span class="nav-icon">🎭</span> Log Profiles &amp;<br/><span style="padding-left:1.65rem">Detection Rules</span></a>
+  <a class="nav-item" data-portal="user" onclick="showTab('push', this); loadPushProfiles()"><span class="nav-icon">🚀</span> Log Push</a>
+  <a class="nav-item" data-portal="user" onclick="showTab('identifiers', this); loadIdentifiers()"><span class="nav-icon">🔑</span> Source Identifiers</a>
+  <a class="nav-item" data-portal="user" style="display:none" onclick="showTab('scenarios', this); loadScenarios()"><span class="nav-icon">⚔</span> Attack Scenarios</a>
+  <a class="nav-item" data-portal="user" onclick="showTab('config', this)"><span class="nav-icon">🔧</span> Source Details</a>
+  <a class="nav-item" data-portal="user" onclick="showTab('account', this); loadAccount()"><span class="nav-icon">👤</span> My Account</a>
+  <span class="nav-section" data-portal="admin">System</span>
+  <a class="nav-item" data-portal="admin" onclick="showTab('settings', this); loadSettings()"><span class="nav-icon">⚙</span> System Settings</a>
   <div class="footer">
-    <div class="logout"><a href="/admin/logout">Sign out</a></div>
+    <div class="logout"><a href="{logout_url}">Sign out</a></div>
     <div class="tagline">
       Crafted with
       <svg class="heart" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
@@ -763,7 +1123,25 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
 </nav>
 
 <div class="main">
-  <div class="topbar"><h2 id="page-title">Request Inspector</h2></div>
+  <div class="topbar" style="display:flex;align-items:center;justify-content:space-between;gap:14px">
+    <h2 id="page-title">Request Inspector</h2>
+    <div style="display:flex;align-items:center;gap:14px">
+      <div id="act-as-bar" style="display:none;align-items:center;gap:8px"></div>
+      <div id="my-avatar-wrap" style="display:none;position:relative">
+        <div id="my-avatar" title="Click to upload a new avatar"
+             style="width:36px;height:36px;border-radius:50%;cursor:pointer;background:linear-gradient(135deg,#7b2cbf,#5a189a);
+                    display:flex;align-items:center;justify-content:center;color:#fff;font-weight:600;font-size:.85rem;
+                    border:1px solid rgba(199,125,255,.45);overflow:hidden"
+             onclick="document.getElementById('avatar-file').click()"></div>
+        <button id="my-avatar-remove" title="Remove avatar" onclick="removeMyAvatar(event)"
+                style="display:none;position:absolute;top:-4px;right:-4px;width:16px;height:16px;border-radius:50%;
+                       border:1px solid rgba(199,125,255,.5);background:#160028;color:#e0aaff;font-size:10px;
+                       line-height:14px;padding:0;cursor:pointer">×</button>
+        <input type="file" id="avatar-file" accept="image/*" style="display:none"
+               onchange="uploadMyAvatar(this.files[0])"/>
+      </div>
+    </div>
+  </div>
   <div class="content">
 
     <!-- REQUESTS TAB -->
@@ -876,7 +1254,7 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
         <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
           <span>Custom HTTP listeners</span>
           <span>
-            <button class="btn-sm" onclick="openWizard()">＋ New listener</button>
+            <button class="btn-sm" data-need="listeners:create" onclick="openWizard()">＋ New listener</button>
             <button class="btn-sm" onclick="openManageUploads()" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2);margin-left:6px">📁 Replay uploads</button>
             <button class="btn-sm" onclick="loadListeners()" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2);margin-left:6px">↺ Refresh</button>
           </span>
@@ -912,7 +1290,7 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
       <div class="card">
         <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
           <span>Push Profiles</span>
-          <button class="btn-sm" onclick="openPushEditor()">+ New Push Profile</button>
+          <button class="btn-sm" data-need="log_push:create" onclick="openPushEditor()">+ New Push Profile</button>
         </div>
         <p style="font-size:.78rem;color:rgba(224,170,255,.45);margin-bottom:14px">
           Actively send generated logs to external destinations. Configure the source type, log format (JSON/Syslog/CEF),
@@ -988,17 +1366,21 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
               <option value="seconds">seconds</option><option value="minutes">minutes</option><option value="hours" selected>hours</option><option value="days">days</option><option value="weeks">weeks</option></select></div>
           </div>
           <div style="display:flex;gap:10px;align-items:center">
-            <div style="flex:1"><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Password (optional)</label>
-              <input id="push-password" type="password" placeholder="Protect this profile" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/></div>
             <div style="flex:1"><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Log Profile</label>
               <select id="push-profile-id" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
                 <option value="">— none —</option></select></div>
+            <div style="flex:1"><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Visibility</label>
+              <select id="push-visibility" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
+                <option value="private">Private</option>
+                <option value="public">Public</option></select></div>
           </div>
         </div>
+        <div id="push-readonly-banner" style="display:none;margin:0 16px 4px;padding:8px 12px;border-radius:8px;background:rgba(128,200,255,.1);border:1px solid rgba(128,200,255,.3);color:#9cd3ff;font-size:.78rem">This is a shared push profile you don't own — it's read-only. Use <b>Clone</b> to make your own editable copy.</div>
         <div class="modal-foot"><div></div><div class="right">
           <button class="btn-sm" style="background:rgba(90,24,154,.3)" onclick="closePushModal()">Cancel</button>
           <button class="btn-sm" id="push-delete-btn" style="background:rgba(120,30,40,.4);color:#ff8080;display:none" onclick="deletePushProfile()">Delete</button>
-          <button class="btn-sm" onclick="savePushProfile()">Save</button>
+          <button class="btn-sm" id="push-clone-btn" style="display:none;background:rgba(128,200,255,.2);border:1px solid rgba(128,200,255,.4)" onclick="clonePushProfile()">⧉ Clone</button>
+          <button class="btn-sm" id="push-save-btn" onclick="savePushProfile()">Save</button>
         </div></div>
       </div>
     </div>
@@ -1060,12 +1442,112 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
       <div id="cfg-detail"><p class="empty">Select a source above</p></div>
     </div>
 
+    <!-- SOURCE IDENTIFIERS TAB -->
+    <div class="pane" id="pane-identifiers">
+      <div class="card">
+        <div class="card-title">Register a source identifier</div>
+        <p style="font-size:.78rem;color:rgba(224,170,255,.55);margin-bottom:14px">
+          Register the credential value your collector presents for a source (e.g. its
+          Bearer token, tenant id or API key). ApiGenie matches an inbound request to
+          you and shapes the pull response with <b>your own</b> bound log profile.
+          Each value is unique per source.
+        </p>
+        <div class="row" style="flex-wrap:wrap;gap:10px">
+          <select id="ident-source" style="min-width:170px"></select>
+          <select id="ident-kind" style="min-width:150px"></select>
+          <input id="ident-value" type="text" placeholder="Credential value (e.g. my-team-token-001)"
+                 style="flex:1;min-width:220px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.3);border-radius:8px;padding:7px 12px;color:var(--mist);font-family:inherit;font-size:.88rem;outline:none"/>
+          <button class="btn-sm" onclick="addIdentifier()">+ Register</button>
+        </div>
+        <div id="ident-err" style="color:#ff7f7f;font-size:.8rem;min-height:1.1em;margin-top:8px"></div>
+      </div>
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span>My identifiers</span>
+          <button class="btn-sm" onclick="loadIdentifiers()" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2)">↺ Refresh</button>
+        </div>
+        <div id="ident-list"><p class="empty">Loading…</p></div>
+      </div>
+    </div>
+
+    <!-- MY ACCOUNT TAB (Phase 3.5 self-service) -->
+    <div class="pane" id="pane-account">
+      <div class="card">
+        <div class="card-title">My account</div>
+        <p style="font-size:.78rem;color:rgba(224,170,255,.55);margin-bottom:14px">
+          Manage your email address, change your password, and configure your
+          <b>personal SentinelOne console URL + API token</b>. When set, these
+          override the global S1 settings for every detection-rule import and
+          enrichment performed in your session.
+        </p>
+        <div id="acct-builtin-note" style="display:none;font-size:.78rem;color:#f0c040;background:rgba(240,192,64,.08);border:1px solid rgba(240,192,64,.3);border-radius:8px;padding:8px 12px;margin-bottom:14px">
+          You are signed in as the <b>built-in admin</b>. Self-service settings
+          live on registered user accounts. Use <b>System Settings → User
+          Portal Password</b> and <b>S1 Detection Library</b> for the global
+          equivalents.
+        </div>
+        <div class="cfg-grid" id="acct-identity" style="display:grid;grid-template-columns:160px 1fr;gap:8px 14px;align-items:center;font-size:.85rem">
+          <div style="color:rgba(224,170,255,.6)">Username</div>
+          <div id="acct-username" style="color:var(--mist)">—</div>
+          <div style="color:rgba(224,170,255,.6)">User ID</div>
+          <div id="acct-uid" style="color:rgba(224,170,255,.55);font-family:monospace;font-size:.78rem">—</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Email address</div>
+        <div class="row" style="gap:10px;flex-wrap:wrap">
+          <input id="acct-email" type="email" placeholder="you@example.com"
+                 style="flex:1;min-width:240px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.3);border-radius:8px;padding:7px 12px;color:var(--mist);font-family:inherit;font-size:.88rem;outline:none"/>
+          <button class="btn-sm" onclick="saveAccountEmail()">Save email</button>
+        </div>
+        <div id="acct-email-msg" style="font-size:.78rem;min-height:1.1em;margin-top:8px"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Change password</div>
+        <p style="font-size:.75rem;color:rgba(224,170,255,.55);margin-bottom:10px">
+          Minimum 8 characters. The change applies to your <b>own</b> account even
+          while admins are viewing the portal as you.
+        </p>
+        <div class="row" style="gap:10px;flex-wrap:wrap">
+          <input id="acct-pw-current" type="password" placeholder="Current password"
+                 style="flex:1;min-width:200px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.3);border-radius:8px;padding:7px 12px;color:var(--mist);font-family:inherit;font-size:.88rem;outline:none"/>
+          <input id="acct-pw-new" type="password" placeholder="New password (min 8 chars)"
+                 style="flex:1;min-width:220px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.3);border-radius:8px;padding:7px 12px;color:var(--mist);font-family:inherit;font-size:.88rem;outline:none"/>
+          <button class="btn-sm" onclick="saveAccountPassword()">Change password</button>
+        </div>
+        <div id="acct-pw-msg" style="font-size:.78rem;min-height:1.1em;margin-top:8px"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">My SentinelOne console</div>
+        <p style="font-size:.75rem;color:rgba(224,170,255,.55);margin-bottom:10px">
+          Optional. When set, ApiGenie pulls detection rules from <b>your</b> S1
+          console (and uses <b>your</b> API token) instead of the global one.
+          Leave the token blank to keep the saved value. To remove your override
+          entirely, click <i>Clear</i>.
+        </p>
+        <div class="row" style="gap:10px;flex-wrap:wrap;margin-bottom:8px">
+          <input id="acct-s1-url" type="text" placeholder="https://yourtenant.sentinelone.net"
+                 style="flex:2;min-width:260px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.3);border-radius:8px;padding:7px 12px;color:var(--mist);font-family:inherit;font-size:.88rem;outline:none"/>
+          <input id="acct-s1-token" type="password" placeholder="API token (leave blank to keep)"
+                 style="flex:2;min-width:260px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.3);border-radius:8px;padding:7px 12px;color:var(--mist);font-family:inherit;font-size:.88rem;outline:none"/>
+        </div>
+        <div class="row" style="gap:10px">
+          <button class="btn-sm" onclick="saveAccountS1()">Save S1 console</button>
+          <button class="btn-sm" onclick="clearAccountS1()" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.3);color:#e0aaff">Clear override</button>
+        </div>
+        <div id="acct-s1-msg" style="font-size:.78rem;min-height:1.1em;margin-top:8px"></div>
+      </div>
+    </div>
+
     <!-- LOG PROFILES TAB -->
     <div class="pane" id="pane-profiles">
       <div class="card">
         <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleSection('sec-profiles')">
           <span>▸ Log Profiles</span>
-          <button onclick="event.stopPropagation();openProfileEditor()">+ New profile</button>
+          <button data-need="log_profiles:create" onclick="event.stopPropagation();openProfileEditor()">+ New profile</button>
         </div>
         <div id="sec-profiles" style="display:none">
         <p style="font-size:.78rem;color:rgba(224,170,255,.45);margin-bottom:14px">
@@ -1091,7 +1573,7 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
           <span>▸ Detection Rules</span>
           <div style="display:flex;gap:6px" onclick="event.stopPropagation()">
             <button class="btn-sm" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2)" onclick="openS1Drawer()">Browse S1 Library</button>
-            <button class="btn-sm" onclick="openDetectionRuleEditor()">+ New Rule</button>
+            <button class="btn-sm" data-need="detection_rules:create" onclick="openDetectionRuleEditor()">+ New Rule</button>
           </div>
         </div>
         <div id="sec-detrules" style="display:none">
@@ -1162,16 +1644,23 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
               </div></div>
             <div><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Enabled</label>
               <input id="dr-enabled" type="checkbox" checked style="accent-color:#c77dff;margin-top:8px"/></div>
+            <div style="flex:1"><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Visibility</label>
+              <select id="dr-visibility" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
+                <option value="private">Private</option>
+                <option value="public">Public</option>
+              </select></div>
           </div>
           <div><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Field Overrides <span style="color:rgba(224,170,255,.3)">(dot notation for nested fields, e.g. outcome.result)</span></label>
             <div id="dr-overrides" style="display:flex;flex-direction:column;gap:4px"></div>
-            <button class="btn-sm" style="margin-top:6px;font-size:.68rem;padding:3px 10px" onclick="addOverrideRow()">+ Add field</button>
+            <button class="btn-sm" id="dr-add-field-btn" style="margin-top:6px;font-size:.68rem;padding:3px 10px" onclick="addOverrideRow()">+ Add field</button>
           </div>
+          <div id="dr-readonly-banner" style="display:none;margin-top:10px;padding:8px 12px;border-radius:8px;background:rgba(128,200,255,.1);border:1px solid rgba(128,200,255,.3);color:#9cd3ff;font-size:.78rem">This is a shared rule you don't own — it's read-only. Use <b>Clone</b> to make your own editable copy.</div>
         </div>
         <div class="modal-foot"><div></div><div class="right">
           <button class="btn-sm" style="background:rgba(90,24,154,.3)" onclick="closeDetectionRuleModal()">Cancel</button>
           <button class="btn-sm" id="dr-delete-btn" style="background:rgba(120,30,40,.4);color:#ff8080;display:none" onclick="deleteDetectionRule()">Delete</button>
-          <button class="btn-sm" onclick="saveDetectionRule()">Save</button>
+          <button class="btn-sm" id="dr-clone-btn" style="display:none;background:rgba(128,200,255,.2);border:1px solid rgba(128,200,255,.4)" onclick="cloneDetectionRule()">⧉ Clone</button>
+          <button class="btn-sm" id="dr-save-btn" onclick="saveDetectionRule()">Save</button>
         </div></div>
       </div>
     </div>
@@ -1294,24 +1783,28 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-title">Change investigation password</div>
+      <div class="card" id="card-entitlements">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          Entitlements
+          <button class="btn-sm" onclick="openEntitlementModal()">+ New entitlement</button>
+        </div>
         <p style="font-size:.78rem;color:rgba(224,170,255,.45);margin-bottom:10px">
-          The investigation password protects the 🔍 Investigations tab (IP lookup, WHOIS, banning).
-          Not set by default (tab is open). Set a password here to enable the gate.
+          An entitlement is a named bundle of permissions (View / Create / Modify / Delete / Operate)
+          per category. Assign one to each user account below. <em>Operate</em> governs starting &amp; stopping log-push generation.
         </p>
-        <div class="row"><label style="min-width:140px;font-size:.82rem;color:rgba(224,170,255,.7)">Current password</label>
-          <input id="inv-pw-current" type="password" autocomplete="off" style="flex:1;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 12px;color:var(--mist);outline:none"/>
+        <div id="entitlements-list"><p class="empty">Loading…</p></div>
+      </div>
+
+      <div class="card" id="card-users">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          User Accounts
+          <button class="btn-sm" onclick="openUserModal()">+ New user</button>
         </div>
-        <div class="row"><label style="min-width:140px;font-size:.82rem;color:rgba(224,170,255,.7)">New password</label>
-          <input id="inv-pw-new" type="password" autocomplete="new-password" style="flex:1;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 12px;color:var(--mist);outline:none"/>
-        </div>
-        <div class="row"><label style="min-width:140px;font-size:.82rem;color:rgba(224,170,255,.7)">Confirm new</label>
-          <input id="inv-pw-confirm" type="password" autocomplete="new-password" style="flex:1;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 12px;color:var(--mist);outline:none"/>
-        </div>
-        <div class="row"><button onclick="changeInvPassword()">Save</button>
-          <span id="inv-pw-msg" style="font-size:.85rem"></span>
-        </div>
+        <p style="font-size:.78rem;color:rgba(224,170,255,.45);margin-bottom:10px">
+          Registered users sign in at <code>/portal</code> with their own credentials and see only
+          their own customizations. The built-in admin is always a superuser.
+        </p>
+        <div id="users-list"><p class="empty">Loading…</p></div>
       </div>
     </div>
 
@@ -1320,6 +1813,7 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
 
 <script>
 const SOURCES = {sources_json};
+const PORTAL_ROLE = "{portal_role}";   // "admin" | "user"
 let activeSource = null;
 let activeTab = 'requests';
 let logES = null;
@@ -1331,7 +1825,7 @@ function showTab(tab, el) {
   document.getElementById('pane-' + tab).classList.add('active');
   if (el) el.classList.add('active');
   activeTab = tab;
-  const titles = {requests:'Request Inspector', observability:'Observability', intrusions:'Intrusions', listeners:'Listeners', profiles:'Log Profiles & Detection Rules', push:'Log Push', scenarios:'Attack Scenarios', investigate:'Investigations', logs:'Container Logs', config:'Source Details', settings:'System Settings'};
+  const titles = {requests:'Request Inspector', observability:'Observability', intrusions:'Intrusions', listeners:'Listeners', profiles:'Log Profiles & Detection Rules', push:'Log Push', scenarios:'Attack Scenarios', investigate:'Investigations', logs:'Container Logs', config:'Source Details', identifiers:'Source Identifiers', settings:'System Settings'};
   // Resize viz canvases when the Observability tab becomes active.
   if (tab === 'observability') {
     if (window._sankey) window._sankey.resize();
@@ -1563,16 +2057,6 @@ function askPassword(title) {
 async function banFromIntrusions(ip) {
   if (!confirm('Ban IP ' + ip + '? All future requests from this IP will be blocked.')) return;
   try {
-    var gr = await fetch('/admin/api/investigate-gate', {credentials:'same-origin'});
-    var gd = await gr.json();
-    if (gd.gate_enabled) {
-      var pw = await askPassword('Enter investigation password to ban ' + ip);
-      if (pw === null) return;
-      var vr = await fetch('/admin/api/verify-investigate-password', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify({password:pw})});
-      if (!vr.ok) { alert('Invalid investigation password.'); return; }
-    }
-  } catch(e) { alert('Password verification failed: ' + e); return; }
-  try {
     var r = await fetch('/admin/api/bans', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ip:ip, hours:720, reason:'Banned from Intrusions tab - suspicious scanning activity'})});
     if (!r.ok) { var d = await r.json(); alert('Error: ' + (d.error || r.status)); return; }
     toast('Banned ' + ip);
@@ -1721,11 +2205,19 @@ function showConfig(id) {
   ).join('');
 
   const curl = src.curl || '';
+  const userHint = (PORTAL_ROLE === 'user')
+    ? `<p style="font-size:.72rem;color:rgba(224,170,255,.6);background:rgba(90,24,154,.18);border:1px solid rgba(199,125,255,.25);border-radius:8px;padding:8px 12px;margin:0 0 14px">
+         <b>Placeholders below.</b> The values shown here (<code>&lt;YOUR_…&gt;</code>) are not live credentials —
+         register your own under <a href="javascript:void(0)" onclick="showTab('identifiers', document.querySelector('[onclick*=&quot;identifiers&quot;]')); loadIdentifiers()" style="color:#e0aaff;text-decoration:underline">Source Identifiers</a>
+         so ApiGenie can resolve your collector to your profile.
+       </p>`
+    : '';
 
   wrap.innerHTML = `
     <div class="card">
       <div class="card-title">${src.name}</div>
       <p style="font-size:.82rem;color:rgba(224,170,255,.55);margin-bottom:14px">Auth: ${src.auth_type}</p>
+      ${userHint}
       <div class="card-title" style="font-size:.72rem">Credentials</div>
       <div class="cfg-grid">${creds}</div>
       <div class="card-title" style="font-size:.72rem">Endpoints</div>
@@ -1803,6 +2295,9 @@ async function loadSettings() {
       ? '<span style="color:#2ecc71">Configured</span>'
       : '<span style="color:rgba(224,170,255,.3)">Not configured</span>';
   } catch(e) {}
+  // RBAC: entitlements + user accounts
+  loadEntitlements();
+  loadUsersList();
 }
 
 async function saveS1Settings() {
@@ -1831,6 +2326,242 @@ async function testS1Connection() {
       el.innerHTML = '<span style="color:#ff5050">Failed: ' + escHtml(d.error || 'unknown') + '</span>';
     }
   } catch(e) { el.innerHTML = '<span style="color:#ff5050">Error: ' + escHtml(String(e)) + '</span>'; }
+}
+
+// ── RBAC: entitlements + user accounts ───────────────────────────────────────
+var RBAC_META = null;       // {categories:[{key,label}], perms:[{key,label}], identifier_kinds:[]}
+var ENTITLEMENTS = [];      // last fetch
+var _editingEntId = null;
+var _editingUserId = null;
+
+async function ensureRbacMeta() {
+  if (RBAC_META) return RBAC_META;
+  var r = await fetch('/admin/api/rbac/meta', {credentials:'same-origin'});
+  RBAC_META = await r.json();
+  return RBAC_META;
+}
+
+async function loadEntitlements() {
+  var box = document.getElementById('entitlements-list');
+  if (!box) return;
+  try {
+    await ensureRbacMeta();
+    var r = await fetch('/admin/api/rbac/entitlements', {credentials:'same-origin'});
+    var d = await r.json();
+    ENTITLEMENTS = d.entitlements || [];
+    if (!ENTITLEMENTS.length) { box.innerHTML = '<p class="empty">No entitlements yet. Create one to grant scoped permissions.</p>'; return; }
+    var h = '';
+    ENTITLEMENTS.forEach(function(e) {
+      var summary = (RBAC_META.categories || []).map(function(c) {
+        var lv = (e.permissions[c.key] || []);
+        return lv.length ? ('<span style="display:inline-block;background:rgba(123,44,191,.3);border:1px solid rgba(199,125,255,.25);border-radius:6px;padding:1px 7px;margin:2px;font-size:.66rem">' + escHtml(c.label) + ': ' + lv.length + '</span>') : '';
+      }).join('');
+      if (!summary) summary = '<span style="font-size:.7rem;color:rgba(224,170,255,.35)">no permissions</span>';
+      h += '<div style="background:rgba(36,0,70,.4);border:1px solid rgba(199,125,255,.18);border-radius:10px;padding:12px 14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:flex-start;gap:12px">';
+      h += '<div style="flex:1"><div style="font-weight:600;color:var(--mist)">' + escHtml(e.name) + '</div>';
+      if (e.description) h += '<div style="font-size:.74rem;color:rgba(224,170,255,.45);margin:2px 0 4px">' + escHtml(e.description) + '</div>';
+      h += '<div>' + summary + '</div></div>';
+      h += '<button class="btn-sm" onclick="openEntitlementModal(&apos;' + escHtml(e.id) + '&apos;)">Edit</button></div>';
+    });
+    box.innerHTML = h;
+  } catch(e) { box.innerHTML = '<p class="empty">Error: ' + escHtml(String(e)) + '</p>'; }
+}
+
+function _buildPermMatrix(perms) {
+  perms = perms || {};
+  var cats = RBAC_META.categories, pl = RBAC_META.perms;
+  var h = '<table style="width:100%;border-collapse:collapse;font-size:.74rem"><thead><tr>';
+  h += '<th style="text-align:left;padding:6px;color:rgba(224,170,255,.5)">Category</th>';
+  pl.forEach(function(p) { h += '<th style="padding:6px;color:rgba(224,170,255,.5);cursor:help" title="' + escHtml(p.desc || '') + '">' + escHtml(p.label) + '</th>'; });
+  h += '</tr></thead><tbody>';
+  cats.forEach(function(c) {
+    var have = perms[c.key] || [];
+    h += '<tr><td style="padding:6px;color:var(--mist)">' + escHtml(c.label) + '</td>';
+    pl.forEach(function(p) {
+      var ck = have.indexOf(p.key) > -1 ? 'checked' : '';
+      h += '<td style="text-align:center;padding:6px"><input type="checkbox" data-cat="' + c.key + '" data-perm="' + p.key + '" ' + ck + ' style="width:auto"/></td>';
+    });
+    h += '</tr>';
+  });
+  h += '</tbody></table>';
+  return h;
+}
+
+function _collectPermMatrix() {
+  var out = {};
+  document.querySelectorAll('#ent-perms input[type=checkbox]:checked').forEach(function(cb) {
+    var cat = cb.getAttribute('data-cat'), perm = cb.getAttribute('data-perm');
+    (out[cat] = out[cat] || []).push(perm);
+  });
+  return out;
+}
+
+async function openEntitlementModal(eid) {
+  await ensureRbacMeta();
+  _editingEntId = eid || null;
+  var ent = eid ? ENTITLEMENTS.find(function(e){return e.id===eid;}) : null;
+  document.getElementById('ent-modal-title').textContent = ent ? 'Edit Entitlement' : 'New Entitlement';
+  document.getElementById('ent-name').value = ent ? ent.name : '';
+  document.getElementById('ent-desc').value = ent ? ent.description : '';
+  document.getElementById('ent-perms').innerHTML = _buildPermMatrix(ent ? ent.permissions : {});
+  document.getElementById('ent-err').textContent = '';
+  document.getElementById('ent-delete-btn').style.display = ent ? '' : 'none';
+  document.getElementById('ent-modal').classList.remove('hidden');
+}
+
+function closeEntModal() { document.getElementById('ent-modal').classList.add('hidden'); _editingEntId = null; }
+
+async function saveEntitlement() {
+  var body = {
+    name: document.getElementById('ent-name').value.trim(),
+    description: document.getElementById('ent-desc').value.trim(),
+    permissions: _collectPermMatrix()
+  };
+  if (!body.name) { document.getElementById('ent-err').textContent = 'Name is required.'; return; }
+  var url = _editingEntId ? '/admin/api/rbac/entitlements/' + _editingEntId : '/admin/api/rbac/entitlements';
+  var method = _editingEntId ? 'PUT' : 'POST';
+  try {
+    var r = await fetch(url, {method:method, credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    var d = await r.json();
+    if (!r.ok) { document.getElementById('ent-err').textContent = d.error || ('Error ' + r.status); return; }
+    closeEntModal(); toast('Entitlement saved'); loadEntitlements();
+  } catch(e) { document.getElementById('ent-err').textContent = 'Error: ' + e; }
+}
+
+async function deleteEntitlement() {
+  if (!_editingEntId) return;
+  if (!confirm('Delete this entitlement? Users assigned to it will lose its permissions.')) return;
+  try {
+    var r = await fetch('/admin/api/rbac/entitlements/' + _editingEntId, {method:'DELETE', credentials:'same-origin'});
+    if (!r.ok) { var d = await r.json(); document.getElementById('ent-err').textContent = d.error || ('Error ' + r.status); return; }
+    closeEntModal(); toast('Entitlement deleted'); loadEntitlements(); loadUsersList();
+  } catch(e) { document.getElementById('ent-err').textContent = 'Error: ' + e; }
+}
+
+async function loadUsersList() {
+  var box = document.getElementById('users-list');
+  if (!box) return;
+  try {
+    var r = await fetch('/admin/api/rbac/users', {credentials:'same-origin'});
+    var d = await r.json();
+    var users = d.users || [];
+    if (!users.length) { box.innerHTML = '<p class="empty">No user accounts yet. Create one so others can sign in to the portal.</p>'; return; }
+    var entName = {};
+    ENTITLEMENTS.forEach(function(e){ entName[e.id] = e.name; });
+    var h = '';
+    users.forEach(function(u) {
+      var badge = u.disabled
+        ? '<span style="color:#ff8080;font-size:.66rem;border:1px solid rgba(255,128,128,.4);border-radius:6px;padding:1px 6px">disabled</span>'
+        : (u.has_password ? '<span style="color:#80ff80;font-size:.66rem;border:1px solid rgba(128,255,128,.3);border-radius:6px;padding:1px 6px">active</span>'
+                          : '<span style="color:#ffd080;font-size:.66rem;border:1px solid rgba(255,208,128,.4);border-radius:6px;padding:1px 6px">pending</span>');
+      var ent = u.entitlement_id ? (entName[u.entitlement_id] || 'unknown') : 'none';
+      h += '<div style="background:rgba(36,0,70,.4);border:1px solid rgba(199,125,255,.18);border-radius:10px;padding:12px 14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:12px">';
+      h += '<div style="flex:1"><div style="font-weight:600;color:var(--mist)">' + escHtml(u.username) + ' ' + badge + '</div>';
+      h += '<div style="font-size:.72rem;color:rgba(224,170,255,.45);margin-top:2px">' + escHtml(u.email || 'no email') + ' · entitlement: ' + escHtml(ent) + '</div></div>';
+      h += '<button class="btn-sm" onclick="openUserModal(&apos;' + escHtml(u.id) + '&apos;)">Edit</button></div>';
+    });
+    box.innerHTML = h;
+  } catch(e) { box.innerHTML = '<p class="empty">Error: ' + escHtml(String(e)) + '</p>'; }
+}
+
+function _fillEntitlementSelect(selectedId) {
+  var sel = document.getElementById('user-entitlement');
+  var h = '<option value="">— none —</option>';
+  ENTITLEMENTS.forEach(function(e) {
+    h += '<option value="' + escHtml(e.id) + '"' + (e.id===selectedId?' selected':'') + '>' + escHtml(e.name) + '</option>';
+  });
+  sel.innerHTML = h;
+}
+
+var _USERS_CACHE = [];
+async function openUserModal(uid) {
+  await ensureRbacMeta();
+  if (!ENTITLEMENTS.length) { try { var er = await fetch('/admin/api/rbac/entitlements',{credentials:'same-origin'}); ENTITLEMENTS = (await er.json()).entitlements || []; } catch(e){} }
+  _editingUserId = uid || null;
+  var u = null;
+  if (uid) {
+    try { var r = await fetch('/admin/api/rbac/users', {credentials:'same-origin'}); _USERS_CACHE = (await r.json()).users || []; u = _USERS_CACHE.find(function(x){return x.id===uid;}); } catch(e){}
+  }
+  document.getElementById('user-modal-title').textContent = u ? 'Edit User' : 'New User';
+  document.getElementById('user-username').value = u ? u.username : '';
+  document.getElementById('user-username').disabled = !!u;
+  document.getElementById('user-email').value = u ? (u.email||'') : '';
+  _fillEntitlementSelect(u ? u.entitlement_id : '');
+  document.getElementById('user-err').textContent = '';
+  document.getElementById('user-link').style.display = 'none';
+  document.getElementById('user-password').value = '';
+  document.getElementById('user-pw-field').style.display = u ? 'none' : '';
+  document.getElementById('user-disabled-field').style.display = u ? '' : 'none';
+  document.getElementById('user-disabled').checked = u ? !!u.disabled : false;
+  document.getElementById('user-delete-btn').style.display = u ? '' : 'none';
+  document.getElementById('user-resetlink-btn').style.display = u ? '' : 'none';
+  document.getElementById('user-modal').classList.remove('hidden');
+}
+
+function closeUserModal() { document.getElementById('user-modal').classList.add('hidden'); _editingUserId = null; }
+
+function _showUserLink(label, link) {
+  var box = document.getElementById('user-link');
+  var full = window.location.origin + link;
+  box.style.display = '';
+  box.innerHTML = '<div style="color:rgba(224,170,255,.6);margin-bottom:4px">' + escHtml(label) + '</div>' +
+    '<code style="color:var(--mist)">' + escHtml(full) + '</code>' +
+    '<button class="btn-sm" style="margin-left:8px;padding:2px 8px;font-size:.66rem" onclick="navigator.clipboard.writeText(&apos;' + full.replace(/'/g,"\\'") + '&apos;);toast(&apos;Copied&apos;)">Copy</button>';
+}
+
+async function saveUser() {
+  document.getElementById('user-err').textContent = '';
+  try {
+    if (_editingUserId) {
+      var body = {
+        email: document.getElementById('user-email').value.trim(),
+        entitlement_id: document.getElementById('user-entitlement').value,
+        disabled: document.getElementById('user-disabled').checked
+      };
+      var r = await fetch('/admin/api/rbac/users/' + _editingUserId, {method:'PUT', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+      var d = await r.json();
+      if (!r.ok) { document.getElementById('user-err').textContent = d.error || ('Error ' + r.status); return; }
+      var pw = document.getElementById('user-password').value;
+      if (pw) {
+        var pr = await fetch('/admin/api/rbac/users/' + _editingUserId + '/password', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify({password:pw})});
+        if (!pr.ok) { var pd = await pr.json(); document.getElementById('user-err').textContent = pd.error || ('Error ' + pr.status); return; }
+      }
+      closeUserModal(); toast('User updated'); loadUsersList();
+    } else {
+      var body2 = {
+        username: document.getElementById('user-username').value.trim(),
+        email: document.getElementById('user-email').value.trim(),
+        entitlement_id: document.getElementById('user-entitlement').value || null,
+        password: document.getElementById('user-password').value
+      };
+      var r2 = await fetch('/admin/api/rbac/users', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body2)});
+      var d2 = await r2.json();
+      if (!r2.ok) { document.getElementById('user-err').textContent = d2.error || ('Error ' + r2.status); return; }
+      loadUsersList();
+      if (d2.setup_link) { _showUserLink('Share this one-time set-password link with the user:', d2.setup_link); toast('User created'); }
+      else { closeUserModal(); toast('User created'); }
+    }
+  } catch(e) { document.getElementById('user-err').textContent = 'Error: ' + e; }
+}
+
+async function resetUserLink() {
+  if (!_editingUserId) return;
+  try {
+    var r = await fetch('/admin/api/rbac/users/' + _editingUserId + '/reset-link', {method:'POST', credentials:'same-origin'});
+    var d = await r.json();
+    if (!r.ok) { document.getElementById('user-err').textContent = d.error || ('Error ' + r.status); return; }
+    _showUserLink('One-time password-reset link (share with the user):', d.reset_link);
+  } catch(e) { document.getElementById('user-err').textContent = 'Error: ' + e; }
+}
+
+async function deleteUser() {
+  if (!_editingUserId) return;
+  if (!confirm('Delete this user account? Their customizations will be removed.')) return;
+  try {
+    var r = await fetch('/admin/api/rbac/users/' + _editingUserId, {method:'DELETE', credentials:'same-origin'});
+    if (!r.ok) { var d = await r.json(); document.getElementById('user-err').textContent = d.error || ('Error ' + r.status); return; }
+    closeUserModal(); toast('User deleted'); loadUsersList();
+  } catch(e) { document.getElementById('user-err').textContent = 'Error: ' + e; }
 }
 
 async function loadPhaseRules(scenarioId, phaseId, source, mitreTactic, container) {
@@ -1913,36 +2644,6 @@ async function changePassword() {
   }
 }
 
-async function changeInvPassword() {
-  const cur = document.getElementById('inv-pw-current').value;
-  const nw  = document.getElementById('inv-pw-new').value;
-  const cf  = document.getElementById('inv-pw-confirm').value;
-  const msg = document.getElementById('inv-pw-msg');
-  msg.style.color = '#ff7f7f';
-  if (!nw) { msg.textContent = 'Enter a new password.'; return; }
-  if (nw !== cf) { msg.textContent = 'New passwords do not match.'; return; }
-  if (nw.length < 8) { msg.textContent = 'New password must be at least 8 characters.'; return; }
-  msg.style.color = 'rgba(224,170,255,.6)';
-  msg.textContent = 'Saving…';
-  try {
-    const r = await fetch('/admin/api/change-investigate-password', {
-      method:'POST', credentials:'same-origin',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({current:cur, 'new':nw})
-    });
-    const j = await r.json();
-    if (!r.ok) { msg.style.color = '#ff7f7f'; msg.textContent = j.error || ('Error ' + r.status); return; }
-    msg.style.color = '#7fff7f';
-    msg.textContent = 'Investigation password updated.';
-    document.getElementById('inv-pw-current').value = '';
-    document.getElementById('inv-pw-new').value = '';
-    document.getElementById('inv-pw-confirm').value = '';
-    _invUnlocked = false;  // force re-auth on next visit
-  } catch(e) {
-    msg.style.color = '#ff7f7f';
-    msg.textContent = 'Error: ' + e;
-  }
-}
 
 // ── Flows tab (Sankey) ────────────────────────────────────────────────────────
 // We keep the most-recent server response in flowsRaw so the slider can
@@ -2407,64 +3108,14 @@ async function loadSystemDash() {
   }
 }
 
-// ── Investigation password gate ─────────────────────────────────────────────
-let _invUnlocked = false;
+// ── Investigations (admin-only; no password gate) ───────────────────────────
+// The investigation password was removed — Investigations & Bans are plain
+// admin-only features now. _invUnlocked is kept (always true) for back-compat
+// with callers that used to check it.
+let _invUnlocked = true;
 
-async function gateInvestigate() {
-  if (_invUnlocked) { loadBans(); return; }
-  // Check if the gate is enabled at all
-  try {
-    const gr = await fetch('/admin/api/investigate-gate', {credentials:'same-origin'});
-    const gd = await gr.json();
-    if (!gd.gate_enabled) {
-      // No password configured — skip gate
-      _invUnlocked = true;
-      loadBans();
-      return;
-    }
-  } catch(e) { /* fall through to show gate */ }
-  const pane = document.getElementById('pane-investigate');
-  // Check if the gate has already been shown (user is re-clicking the tab)
-  if (document.getElementById('inv-gate-box')) return;
-  // Build the gate UI
-  const original = pane.innerHTML;
-  pane.dataset.original = original;
-  pane.innerHTML = '<div class="inv-gate" id="inv-gate-box">' +
-    '<h3 style="color:var(--mist);margin-bottom:8px">🔒 Investigation Access</h3>' +
-    '<p style="font-size:.82rem;color:rgba(224,170,255,.55)">Enter the investigation password to continue.</p>' +
-    '<input id="inv-pw" type="password" placeholder="Password…" autocomplete="off" onkeydown="if(event.key===&apos;Enter&apos;)submitInvGate()"/>' +
-    '<button onclick="submitInvGate()">Unlock</button>' +
-    '<div id="inv-gate-err"></div></div>';
-  document.getElementById('inv-pw').focus();
-}
-
-async function submitInvGate() {
-  const pw = document.getElementById('inv-pw').value;
-  if (!pw) return;
-  try {
-    const r = await fetch('/admin/api/investigate-auth', {
-      method:'POST', credentials:'same-origin',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({password:pw})
-    });
-    const d = await r.json();
-    if (!r.ok) {
-      document.getElementById('inv-gate-err').innerHTML = '<span class="err">' + escHtml(d.error||'Wrong password') + '</span>';
-      return;
-    }
-    _invUnlocked = true;
-    const pane = document.getElementById('pane-investigate');
-    pane.innerHTML = pane.dataset.original || '';
-    loadBans();
-    // Resume pending investigation if triggered from Sankey/GeoMap
-    if (window._pendingInvestigateIp) {
-      const ip = window._pendingInvestigateIp;
-      window._pendingInvestigateIp = null;
-      setTimeout(() => investigateIp(ip), 100);
-    }
-  } catch(e) {
-    document.getElementById('inv-gate-err').innerHTML = '<span class="err">Error: ' + escHtml(String(e)) + '</span>';
-  }
+function gateInvestigate() {
+  loadBans();
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -2504,21 +3155,29 @@ function renderListenerRow(l) {
   const id = escHtml(l.id);
   const enabled = l.enabled !== false;
   const last = l.last_hit_ts ? new Date(l.last_hit_ts).toLocaleString() : '—';
+  const writable = canWriteObj(l);
+  var actions = '<button class="btn-sm" onclick="viewSnippet(&apos;' + id + '&apos;)">📋 Snippet</button>' +
+    '<button class="btn-sm" onclick="toggleHits(&apos;' + id + '&apos;)">📜 Hits</button>';
+  if (writable) {
+    actions += '<button class="btn-sm" onclick="openWizard(&apos;' + id + '&apos;)">✏ Edit</button>' +
+      '<button class="btn-sm" onclick="toggleEnabled(&apos;' + id + '&apos;, ' + (!enabled) + ')" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2)">' +
+      (enabled ? '⏸ Disable' : '▶ Enable') + '</button>';
+  } else {
+    actions += '<button class="btn-sm" onclick="openWizard(&apos;' + id + '&apos;)">👁 View</button>';
+  }
+  if (canDo('listeners','create')) {
+    actions += '<button class="btn-sm" onclick="cloneListener(&apos;' + id + '&apos;)" style="background:rgba(128,200,255,.2);border:1px solid rgba(128,200,255,.4)">⧉ Clone</button>';
+  }
+  if (writable && canDo('listeners','delete')) {
+    actions += '<button class="btn-sm btn-danger" onclick="deleteListener(&apos;' + id + '&apos;)">🗑 Delete</button>';
+  }
   return `<div class="listener-row${enabled ? '' : ' disabled'}" id="lr-${id}">
     <div class="lr-head">
       <div>
-        <div class="lr-name">${escHtml(l.name || l.id)} <span class="pill">${id}</span></div>
+        <div class="lr-name">${escHtml(l.name || l.id)} <span class="pill">${id}</span>${visBadge(l)}</div>
         <div class="lr-url">${escHtml(l.method)} ${escHtml(l.url)}</div>
       </div>
-      <div class="lr-actions">
-        <button class="btn-sm" onclick="viewSnippet('${id}')">📋 Snippet</button>
-        <button class="btn-sm" onclick="toggleHits('${id}')">📜 Hits</button>
-        <button class="btn-sm" onclick="openWizard('${id}')">✏ Edit</button>
-        <button class="btn-sm" onclick="toggleEnabled('${id}', ${!enabled})" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2)">
-          ${enabled ? '⏸ Disable' : '▶ Enable'}
-        </button>
-        <button class="btn-sm btn-danger" onclick="deleteListener('${id}')">🗑 Delete</button>
-      </div>
+      <div class="lr-actions">${actions}</div>
     </div>
     <div class="lr-meta">
       <span class="pill">auth: ${escHtml(l.auth_kind)}</span>
@@ -2660,7 +3319,30 @@ function _openWizardWith(state, editing) {
   document.getElementById('wiz-chaos-n').value = (state.chaos && state.chaos.every_n) || 0;
   document.getElementById('wiz-chaos-s').value = (state.chaos && state.chaos.status) || 503;
   wizardStep(1);
+  _applyWizMode(editing ? state : null);
   document.getElementById('wiz-modal').classList.remove('hidden');
+}
+
+// Toggle the listener wizard between writable (own/new) and read-only.
+function _applyWizMode(state) {
+  var isNew = !state;
+  var writable = isNew || canWriteObj(state);
+  if (WIZ_STATE) WIZ_STATE._readonly = !writable;
+  var modal = document.getElementById('wiz-modal');
+  modal.querySelectorAll('input, select, textarea').forEach(function(el){ el.disabled = !writable; });
+  document.getElementById('wiz-readonly-banner').style.display = writable ? 'none' : '';
+  document.getElementById('wiz-clone').style.display =
+    (!isNew && canDo('listeners','create')) ? '' : 'none';
+  wizardStep(WIZ_STATE._step || 1);  // refresh Next/Save button visibility for the mode
+}
+
+function cloneListener(id) {
+  if (!id) return;
+  fetch('/admin/api/listeners/' + encodeURIComponent(id) + '/clone', {method:'POST', credentials:'same-origin'})
+    .then(function(r){ if(!r.ok) throw new Error(r.status); return r.json(); })
+    .then(function(l){ toast('Cloned to your listeners'); closeWizard(); loadListeners();
+      if (l && l.id) openWizard(l.id); })
+    .catch(function(e){ toast('Clone failed: ' + e, true); });
 }
 
 function closeWizard(){ document.getElementById('wiz-modal').classList.add('hidden'); WIZ_STATE = null; }
@@ -2676,7 +3358,11 @@ function wizardStep(n) {
     }
   }
   document.getElementById('wiz-prev').style.visibility = n === 1 ? 'hidden' : 'visible';
-  document.getElementById('wiz-next').textContent = n === 4 ? 'Save' : 'Next →';
+  var ro = WIZ_STATE && WIZ_STATE._readonly;
+  var nextBtn = document.getElementById('wiz-next');
+  nextBtn.textContent = n === 4 ? 'Save' : 'Next →';
+  // In read-only mode there is nothing to save on the last step, so hide the action there.
+  nextBtn.style.display = (ro && n === 4) ? 'none' : '';
   WIZ_STATE._step = n;
   // Show only the relevant auth field set
   if (n === 2) _showAuthFields(document.getElementById('wiz-auth-kind').value);
@@ -2692,6 +3378,7 @@ function _showAuthFields(kind) {
 function wizardNext() {
   const n = WIZ_STATE._step || 1;
   if (n < 4) return wizardStep(n + 1);
+  if (WIZ_STATE._readonly) { toast('Read-only — use Clone to make an editable copy', true); return; }
   return submitWizard();
 }
 
@@ -2962,10 +3649,218 @@ async function deleteReplayFile(fileId) {
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
+// Portal role gating: hide nav entries that don't belong to this portal and,
+// for the admin portal, switch away from the user-default Requests tab.
+(function gatePortalRole() {
+  // data-portal may list one or more space-separated roles (e.g. "user admin").
+  document.querySelectorAll('[data-portal]').forEach(function(el) {
+    var roles = (el.getAttribute('data-portal') || '').split(/\\s+/);
+    if (roles.indexOf(PORTAL_ROLE) === -1) el.style.display = 'none';
+  });
+  if (PORTAL_ROLE === 'admin') {
+    var navEl = document.querySelector('.nav-item[data-portal="admin"]');  // Intrusions
+    document.querySelectorAll('.pane').forEach(function(p) { p.classList.remove('active'); });
+    document.querySelectorAll('.nav-item').forEach(function(n) { n.classList.remove('active'); });
+    showTab('intrusions', navEl);
+    try { loadIntrusions(); } catch (e) {}
+  }
+})();
+
+// ── Effective-permission gating (user portal) ────────────────────────────────
+// Fetches the signed-in account's entitlement permissions and hides controls it
+// cannot use. Server-side enforcement is authoritative; this is UX only.
+var MY_PERMS = {};
+var MY_IS_SUPER = true;
+var MY_UID = null;
+function canDo(category, perm) {
+  if (MY_IS_SUPER) return true;
+  return (MY_PERMS[category] || []).indexOf(perm) !== -1;
+}
+// Whether the current session may modify/delete an object (own it, or admin).
+function canWriteObj(obj) {
+  if (MY_IS_SUPER) return true;
+  obj = obj || {};
+  return !!(obj.owner_id && MY_UID && obj.owner_id === MY_UID);
+}
+// Small inline badge showing an object's visibility/ownership.
+function visBadge(obj) {
+  obj = obj || {};
+  var pub = (obj.visibility || 'public') === 'public';
+  var mine = obj.owner_id && MY_UID && obj.owner_id === MY_UID;
+  var parts = [];
+  if (pub) parts.push('<span style="font-size:.6rem;border:1px solid rgba(128,200,255,.4);color:#9cd3ff;border-radius:5px;padding:0 5px;margin-left:6px">public</span>');
+  else parts.push('<span style="font-size:.6rem;border:1px solid rgba(199,125,255,.4);color:#c77dff;border-radius:5px;padding:0 5px;margin-left:6px">private</span>');
+  if (!MY_IS_SUPER && !mine) parts.push('<span style="font-size:.6rem;border:1px solid rgba(224,170,255,.25);color:rgba(224,170,255,.5);border-radius:5px;padding:0 5px;margin-left:4px">shared</span>');
+  return parts.join('');
+}
+function applyPermGates() {
+  document.querySelectorAll('[data-need]').forEach(function(el) {
+    var ok = (el.getAttribute('data-need') || '').split(/\\s+/).every(function(req) {
+      var parts = req.split(':');
+      return parts.length === 2 ? canDo(parts[0], parts[1]) : true;
+    });
+    el.style.display = ok ? '' : 'none';
+  });
+}
+(async function loadMyPerms() {
+  try {
+    var r = await fetch('/admin/api/me', {credentials:'same-origin'});
+    if (!r.ok) return;
+    var d = await r.json();
+    MY_PERMS = d.permissions || {};
+    MY_IS_SUPER = !!d.is_admin;
+    MY_UID = d.user_id || null;
+    applyPermGates();
+    renderMyAvatar(d);
+  } catch(e) {}
+})();
+
+// ── User avatar (RBAC Phase 3) ────────────────────────────────────────────────
+function renderMyAvatar(me) {
+  var wrap = document.getElementById('my-avatar-wrap');
+  var el = document.getElementById('my-avatar');
+  var rm = document.getElementById('my-avatar-remove');
+  if (!wrap || !el || !rm) return;
+  // Only registered users have avatars; the built-in admin (no user_id) does not.
+  if (!me || !me.user_id) { wrap.style.display = 'none'; return; }
+  wrap.style.display = 'inline-block';
+  if (me.has_avatar) {
+    // cache-buster so an upload immediately refreshes the visible image
+    el.innerHTML = '<img src="/admin/api/users/' + encodeURIComponent(me.user_id) +
+                   '/avatar?t=' + Date.now() + '" alt="' + escHtml(me.username || '') +
+                   '" style="width:100%;height:100%;object-fit:cover"/>';
+    rm.style.display = 'inline-block';
+  } else {
+    el.textContent = ((me.username || '?').trim()[0] || '?').toUpperCase();
+    rm.style.display = 'none';
+  }
+}
+
+async function uploadMyAvatar(file) {
+  if (!file) return;
+  if (file.size > 5 * 1024 * 1024) { toast('Image too large (max 5 MB)', true); return; }
+  try {
+    var fd = new FormData();
+    fd.append('file', file);
+    var r = await fetch('/admin/api/users/me/avatar', {method:'POST',credentials:'same-origin',body:fd});
+    var d = await r.json().catch(function(){ return {}; });
+    if (!r.ok) throw new Error(d.error || ('Error ' + r.status));
+    // Re-fetch /me to refresh has_avatar + repaint
+    var m = await (await fetch('/admin/api/me', {credentials:'same-origin'})).json();
+    renderMyAvatar(m);
+    toast('Avatar updated');
+  } catch(e) { toast('Failed: ' + (e.message || e), true); }
+  finally { document.getElementById('avatar-file').value = ''; }
+}
+
+async function removeMyAvatar(ev) {
+  if (ev) ev.stopPropagation();
+  try {
+    var r = await fetch('/admin/api/users/me/avatar', {method:'DELETE',credentials:'same-origin'});
+    if (!r.ok && r.status !== 404) throw new Error(r.status);
+    var m = await (await fetch('/admin/api/me', {credentials:'same-origin'})).json();
+    renderMyAvatar(m);
+    toast('Avatar removed');
+  } catch(e) { toast('Failed: ' + (e.message || e), true); }
+}
+
+// ── My Account self-service (RBAC Phase 3.5) ──────────────────────────────────
+function _acctMsg(id, ok, text) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text || '';
+  el.style.color = ok ? '#2ecc71' : '#ff7f7f';
+}
+
+async function loadAccount() {
+  try {
+    var r = await fetch('/admin/api/me/account', {credentials:'same-origin'});
+    if (!r.ok) return;
+    var d = await r.json();
+    document.getElementById('acct-username').textContent = d.username || '—';
+    document.getElementById('acct-uid').textContent = d.user_id || '—';
+    document.getElementById('acct-email').value = d.email || '';
+    document.getElementById('acct-s1-url').value = d.console_url || '';
+    var tokInput = document.getElementById('acct-s1-token');
+    tokInput.value = '';
+    tokInput.placeholder = d.has_console_token
+      ? '********** (saved — leave blank to keep)'
+      : 'API token (paste once)';
+    document.getElementById('acct-builtin-note').style.display =
+      d.is_builtin_admin ? 'block' : 'none';
+    // Disable forms entirely for the built-in admin (no DB row to update).
+    var disable = !!d.is_builtin_admin;
+    ['acct-email','acct-pw-current','acct-pw-new','acct-s1-url','acct-s1-token']
+      .forEach(function(i){
+        var n = document.getElementById(i); if (n) n.disabled = disable;
+      });
+  } catch(e) {}
+}
+
+async function saveAccountEmail() {
+  var email = document.getElementById('acct-email').value.trim();
+  try {
+    var r = await fetch('/admin/api/me/email', {
+      method:'PUT', credentials:'same-origin',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({email: email})
+    });
+    var d = await r.json().catch(function(){ return {}; });
+    if (!r.ok) { _acctMsg('acct-email-msg', false, d.error || ('Error ' + r.status)); return; }
+    _acctMsg('acct-email-msg', true, 'Email updated.');
+  } catch(e) { _acctMsg('acct-email-msg', false, 'Failed: ' + (e.message || e)); }
+}
+
+async function saveAccountPassword() {
+  var cur = document.getElementById('acct-pw-current').value;
+  var nw  = document.getElementById('acct-pw-new').value;
+  if (nw.length < 8) { _acctMsg('acct-pw-msg', false, 'New password must be at least 8 characters.'); return; }
+  try {
+    var r = await fetch('/admin/api/me/password', {
+      method:'PUT', credentials:'same-origin',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({current: cur, new: nw})
+    });
+    var d = await r.json().catch(function(){ return {}; });
+    if (!r.ok) { _acctMsg('acct-pw-msg', false, d.error || ('Error ' + r.status)); return; }
+    document.getElementById('acct-pw-current').value = '';
+    document.getElementById('acct-pw-new').value = '';
+    _acctMsg('acct-pw-msg', true, 'Password changed.');
+  } catch(e) { _acctMsg('acct-pw-msg', false, 'Failed: ' + (e.message || e)); }
+}
+
+async function saveAccountS1() {
+  var url = document.getElementById('acct-s1-url').value.trim();
+  var tok = document.getElementById('acct-s1-token').value;
+  try {
+    var r = await fetch('/admin/api/me/s1-console', {
+      method:'PUT', credentials:'same-origin',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({console_url: url, api_token: tok})
+    });
+    var d = await r.json().catch(function(){ return {}; });
+    if (!r.ok) { _acctMsg('acct-s1-msg', false, d.error || ('Error ' + r.status)); return; }
+    _acctMsg('acct-s1-msg', true, 'Saved. Detection-rule queries now use your console.');
+    loadAccount();
+  } catch(e) { _acctMsg('acct-s1-msg', false, 'Failed: ' + (e.message || e)); }
+}
+
+async function clearAccountS1() {
+  if (!confirm('Clear your per-user S1 console override?')) return;
+  try {
+    var r = await fetch('/admin/api/me/s1-console', {method:'DELETE', credentials:'same-origin'});
+    var d = await r.json().catch(function(){ return {}; });
+    if (!r.ok) { _acctMsg('acct-s1-msg', false, d.error || ('Error ' + r.status)); return; }
+    _acctMsg('acct-s1-msg', true, 'Override cleared — falling back to global S1 settings.');
+    loadAccount();
+  } catch(e) { _acctMsg('acct-s1-msg', false, 'Failed: ' + (e.message || e)); }
+}
 buildChips('source-chips', selectSource);
 buildChips('cfg-chips', showConfig);
 // auto-select first source
 document.querySelector('#source-chips .chip')?.click();
+// Initialise the admin "Viewing as" user-switcher (no-op for non-admin sessions).
+initActAs();
 // Async: inject custom listeners into Source Config (enhances cfg-chips after load)
 (async function loadListenersIntoSources() {
   try {
@@ -3009,38 +3904,6 @@ window.addEventListener('resize', () => {
 document.addEventListener('change', (e) => {
   if (e.target && e.target.id === 'wiz-auth-kind') _showAuthFields(e.target.value);
 });
-// First-run check: prompt to set investigation password if not configured.
-(async function checkInvSetup() {
-  try {
-    const r = await fetch('/admin/api/investigate-gate', {credentials:'same-origin'});
-    const d = await r.json();
-    if (!d.gate_enabled) {
-      document.getElementById('inv-setup-modal').classList.remove('hidden');
-      document.getElementById('inv-setup-pw').focus();
-    }
-  } catch(e) {}
-})();
-
-async function submitInvSetup() {
-  const pw  = document.getElementById('inv-setup-pw').value;
-  const cf  = document.getElementById('inv-setup-pw-confirm').value;
-  const err = document.getElementById('inv-setup-err');
-  if (!pw) { err.textContent = 'Enter a password.'; return; }
-  if (pw.length < 8) { err.textContent = 'Must be at least 8 characters.'; return; }
-  if (pw !== cf) { err.textContent = 'Passwords do not match.'; return; }
-  err.textContent = '';
-  try {
-    const r = await fetch('/admin/api/change-investigate-password', {
-      method:'POST', credentials:'same-origin',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({current:'', 'new':pw})
-    });
-    const d = await r.json();
-    if (!r.ok) { err.textContent = d.error || 'Error ' + r.status; return; }
-    document.getElementById('inv-setup-modal').classList.add('hidden');
-    toast('Investigation password set.');
-  } catch(e) { err.textContent = 'Error: ' + e; }
-}
 
 // ── Investigation + Ban functions ────────────────────────────────────────────
 
@@ -3342,6 +4205,127 @@ function unbindSource(src) {
     .catch(e=>toast('Failed: '+e,true));
 }
 
+// ── Admin "Viewing as" user-switcher (RBAC Phase 2.4) ─────────────────────────
+async function initActAs() {
+  var bar = document.getElementById('act-as-bar');
+  if (!bar) return;
+  try {
+    var r = await fetch('/admin/api/act-as', {credentials:'same-origin'});
+    if (!r.ok) { bar.style.display = 'none'; return; }
+    var d = await r.json();
+    bar.style.display = 'flex';
+    if (d.acting_as_user_id) {
+      bar.innerHTML =
+        '<span style="font-size:.78rem;background:rgba(199,125,255,.22);border:1px solid rgba(199,125,255,.45);border-radius:8px;padding:5px 10px;color:#e0aaff">' +
+          'Viewing as <b>'+escHtml(d.acting_as_username||d.acting_as_user_id)+'</b>' +
+        '</span>' +
+        '<button class="btn-sm" onclick="stopActAs()" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.3);color:#e0aaff">Stop</button>';
+    } else {
+      var opts = '<option value="">Viewing as: yourself (admin)</option>' +
+        (d.users || []).map(function(u){
+          return '<option value="'+escHtml(u.id)+'">'+escHtml(u.username||u.id)+'</option>';
+        }).join('');
+      bar.innerHTML =
+        '<label style="font-size:.72rem;color:rgba(224,170,255,.55)">Inspect as</label>' +
+        '<select id="act-as-select" onchange="startActAs(this.value)" '+
+          'style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.3);border-radius:8px;padding:5px 10px;color:#e0aaff;font-family:inherit;font-size:.78rem">' +
+          opts + '</select>';
+    }
+  } catch(e) { bar.style.display = 'none'; }
+}
+
+async function startActAs(uid) {
+  if (!uid) return;
+  try {
+    var r = await fetch('/admin/api/act-as', {method:'PUT',credentials:'same-origin',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:uid})});
+    if (!r.ok) { var e = await r.json().catch(()=>({})); throw new Error(e.error || r.status); }
+    location.reload();
+  } catch(e) { toast('Failed: '+(e.message||e), true); }
+}
+
+async function stopActAs() {
+  try {
+    var r = await fetch('/admin/api/act-as', {method:'DELETE',credentials:'same-origin'});
+    if (!r.ok) throw new Error(r.status);
+    location.reload();
+  } catch(e) { toast('Failed: '+(e.message||e), true); }
+}
+
+// ── Source identifiers (RBAC Phase 2.2) ───────────────────────────────────────
+var ALL_IDENT_KINDS = [];   // fallback list from the server
+function _identKindLabel(k){ return (k||'').replace(/_/g,' '); }
+// Populate the kind dropdown with only the identifiers relevant to the selected
+// source (its auth scheme), falling back to all kinds if unknown.
+function _populateIdentKinds() {
+  var srcSel = document.getElementById('ident-source');
+  var kindSel = document.getElementById('ident-kind');
+  if (!srcSel || !kindSel) return;
+  var src = SOURCES[srcSel.value] || {};
+  var kinds = (src.id_kinds && src.id_kinds.length) ? src.id_kinds : ALL_IDENT_KINDS;
+  kindSel.innerHTML = kinds.map(function(k){
+    return '<option value="'+k+'">'+escHtml(_identKindLabel(k))+'</option>';
+  }).join('');
+}
+async function loadIdentifiers() {
+  var srcSel = document.getElementById('ident-source');
+  var kindSel = document.getElementById('ident-kind');
+  if (srcSel && !srcSel.options.length) {
+    srcSel.innerHTML = Object.keys(SOURCES).sort().map(function(id){
+      return '<option value="'+id+'">'+escHtml(SOURCES[id].name||id)+'</option>';
+    }).join('');
+    srcSel.onchange = _populateIdentKinds;
+  }
+  var listEl = document.getElementById('ident-list');
+  listEl.innerHTML = '<p class="empty">Loading…</p>';
+  try {
+    var r = await fetch('/admin/api/identifiers', {credentials:'same-origin'});
+    var d = await r.json();
+    ALL_IDENT_KINDS = d.kinds || [];
+    _populateIdentKinds();
+    if (d.is_admin) {
+      listEl.innerHTML = '<p class="empty">The built-in admin uses the global profile. Identifiers apply to user accounts — sign in as a user to register them.</p>';
+      return;
+    }
+    var items = d.identifiers || [];
+    if (!items.length) { listEl.innerHTML = '<p class="empty">No identifiers registered yet.</p>'; return; }
+    var h = '<table><thead><tr><th>Source</th><th>Kind</th><th>Value</th><th></th></tr></thead><tbody>';
+    items.forEach(function(it){
+      h += '<tr><td>'+escHtml(it.source)+'</td><td>'+escHtml(_identKindLabel(it.id_kind))+'</td>'+
+           '<td><code style="font-size:.75rem">'+escHtml(it.id_value)+'</code></td>'+
+           '<td style="text-align:right"><button class="btn-sm btn-danger" onclick="deleteIdentifier(&apos;'+escHtml(it.id)+'&apos;)">Delete</button></td></tr>';
+    });
+    h += '</tbody></table>';
+    listEl.innerHTML = h;
+  } catch(e) { listEl.innerHTML = '<p class="empty">Error: '+escHtml(String(e))+'</p>'; }
+}
+
+async function addIdentifier() {
+  var err = document.getElementById('ident-err'); err.textContent = '';
+  var source = document.getElementById('ident-source').value;
+  var id_kind = document.getElementById('ident-kind').value;
+  var id_value = document.getElementById('ident-value').value.trim();
+  if (!id_value) { err.textContent = 'Enter a credential value.'; return; }
+  try {
+    var r = await fetch('/admin/api/identifiers', {method:'POST',credentials:'same-origin',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({source:source, id_kind:id_kind, id_value:id_value})});
+    var d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP '+r.status));
+    document.getElementById('ident-value').value = '';
+    toast('Identifier registered');
+    loadIdentifiers();
+  } catch(e) { err.textContent = String(e.message || e); }
+}
+
+function deleteIdentifier(iid) {
+  if (!confirm('Delete this identifier?')) return;
+  fetch('/admin/api/identifiers/'+encodeURIComponent(iid), {method:'DELETE',credentials:'same-origin'})
+    .then(function(r){ if(!r.ok) throw new Error(r.status); return r.json(); })
+    .then(function(){ toast('Deleted'); loadIdentifiers(); })
+    .catch(function(e){ toast('Failed: '+e, true); });
+}
+
 function saveIntensity(src) {
   var slider = document.getElementById('bnd-int-'+src);
   var val = slider ? parseInt(slider.value) : 50;
@@ -3586,7 +4570,6 @@ function openDetectionRuleEditor(ruleId) {
   });
   if (_editingRuleId) {
     document.getElementById('dr-modal-title').textContent = 'Edit Detection Rule';
-    document.getElementById('dr-delete-btn').style.display = '';
     fetch('/admin/api/detection-rules/' + _editingRuleId, {credentials:'same-origin'})
       .then(function(r) { return r.json(); })
       .then(function(rule) {
@@ -3595,18 +4578,50 @@ function openDetectionRuleEditor(ruleId) {
         document.getElementById('dr-desc').value = rule.description || '';
         document.getElementById('dr-period').value = rule.periodicity || 10;
         document.getElementById('dr-enabled').checked = rule.enabled !== false;
+        document.getElementById('dr-visibility').value = rule.visibility || 'private';
         var ov = rule.field_overrides || {};
         Object.keys(ov).forEach(function(k) { addOverrideRow(k, ov[k]); });
+        _applyDrMode(rule);
       });
   } else {
     document.getElementById('dr-modal-title').textContent = 'New Detection Rule';
-    document.getElementById('dr-delete-btn').style.display = 'none';
     document.getElementById('dr-name').value = '';
     document.getElementById('dr-desc').value = '';
     document.getElementById('dr-period').value = 10;
     document.getElementById('dr-enabled').checked = true;
+    document.getElementById('dr-visibility').value = 'private';
     addOverrideRow('', '');
+    _applyDrMode(null);
   }
+}
+
+// Toggle the detection-rule editor between writable (own/new) and read-only.
+function _applyDrMode(rule) {
+  var isNew = !rule;
+  var writable = isNew || canWriteObj(rule);
+  var modal = document.getElementById('detection-rule-modal');
+  modal.querySelectorAll('input, select, textarea').forEach(function(el){ el.disabled = !writable; });
+  document.getElementById('dr-add-field-btn').disabled = !writable;
+  modal.querySelectorAll('#dr-overrides button').forEach(function(b){ b.disabled = !writable; });
+  var _drBanner = document.getElementById('dr-readonly-banner');
+  _drBanner.style.display = writable ? 'none' : '';
+  if (!writable) _drBanner.innerHTML = canDo('detection_rules','create')
+    ? "This is a shared rule you don't own — it's read-only. Use <b>Clone</b> to make your own editable copy."
+    : "This is a shared rule you don't own — it's read-only. You don't have <b>Create</b> rights on Detection Rules, so it can't be cloned — ask an administrator.";
+  document.getElementById('dr-save-btn').style.display = writable ? '' : 'none';
+  document.getElementById('dr-delete-btn').style.display =
+    (!isNew && writable && canDo('detection_rules','delete')) ? '' : 'none';
+  document.getElementById('dr-clone-btn').style.display =
+    (!isNew && canDo('detection_rules','create')) ? '' : 'none';
+}
+
+function cloneDetectionRule() {
+  if (!_editingRuleId) return;
+  fetch('/admin/api/detection-rules/' + _editingRuleId + '/clone', {method:'POST', credentials:'same-origin'})
+    .then(function(r){ if(!r.ok) throw new Error(r.status); return r.json(); })
+    .then(function(rule){ toast('Cloned to your rules'); closeDetectionRuleModal(); loadDetectionRules();
+      if (rule && rule.id) openDetectionRuleEditor(rule.id); })
+    .catch(function(e){ toast('Clone failed: ' + e, true); });
 }
 
 function closeDetectionRuleModal() {
@@ -3632,6 +4647,7 @@ async function saveDetectionRule() {
     description: document.getElementById('dr-desc').value,
     periodicity: parseInt(document.getElementById('dr-period').value) || 10,
     enabled: document.getElementById('dr-enabled').checked,
+    visibility: document.getElementById('dr-visibility').value,
     field_overrides: _collectOverrides()
   };
   try {
@@ -3798,7 +4814,6 @@ async function openPushEditor(profileId) {
   });
   if (_editingPushId) {
     document.getElementById('push-modal-title').textContent = 'Edit Push Profile';
-    document.getElementById('push-delete-btn').style.display = '';
     fetch('/admin/api/push/profiles/' + _editingPushId, {credentials:'same-origin'})
       .then(function(r) { return r.json(); })
       .then(function(p) {
@@ -3820,13 +4835,13 @@ async function openPushEditor(profileId) {
         var dur = p.duration || {};
         document.getElementById('push-duration-val').value = dur.value || 1;
         document.getElementById('push-duration-unit').value = dur.unit || 'hours';
-        document.getElementById('push-password').value = '';
         document.getElementById('push-profile-id').value = p.profile_id || '';
+        document.getElementById('push-visibility').value = p.visibility || 'private';
         togglePushPath();
+        _applyPushMode(p);
       });
   } else {
     document.getElementById('push-modal-title').textContent = 'New Push Profile';
-    document.getElementById('push-delete-btn').style.display = 'none';
     document.getElementById('push-name').value = '';
     document.getElementById('push-host').value = '';
     document.getElementById('push-port').value = 514;
@@ -3834,10 +4849,38 @@ async function openPushEditor(profileId) {
     document.getElementById('push-rate').value = 10;
     document.getElementById('push-duration-val').value = 1;
     document.getElementById('push-duration-unit').value = 'hours';
-    document.getElementById('push-password').value = '';
     document.getElementById('push-profile-id').value = '';
+    document.getElementById('push-visibility').value = 'private';
     togglePushPath();
+    _applyPushMode(null);
   }
+}
+
+// Toggle the push-profile editor between writable (own/new) and read-only.
+function _applyPushMode(p) {
+  var isNew = !p;
+  var writable = isNew || canWriteObj(p);
+  var modal = document.getElementById('push-modal');
+  modal.querySelectorAll('input, select, textarea').forEach(function(el){ el.disabled = !writable; });
+  var _pushBanner = document.getElementById('push-readonly-banner');
+  _pushBanner.style.display = writable ? 'none' : '';
+  if (!writable) _pushBanner.innerHTML = canDo('log_push','create')
+    ? "This is a shared push profile you don't own — it's read-only. Use <b>Clone</b> to make your own editable copy."
+    : "This is a shared push profile you don't own — it's read-only. You don't have <b>Create</b> rights on Log Push, so it can't be cloned — ask an administrator.";
+  document.getElementById('push-save-btn').style.display = writable ? '' : 'none';
+  document.getElementById('push-delete-btn').style.display =
+    (!isNew && writable && canDo('log_push','delete')) ? '' : 'none';
+  document.getElementById('push-clone-btn').style.display =
+    (!isNew && canDo('log_push','create')) ? '' : 'none';
+}
+
+function clonePushProfile() {
+  if (!_editingPushId) return;
+  fetch('/admin/api/push/profiles/' + _editingPushId + '/clone', {method:'POST', credentials:'same-origin'})
+    .then(function(r){ if(!r.ok) throw new Error(r.status); return r.json(); })
+    .then(function(p){ toast('Cloned to your push profiles'); closePushModal(); loadPushProfiles();
+      if (p && p.id) openPushEditor(p.id); })
+    .catch(function(e){ toast('Clone failed: ' + e, true); });
 }
 
 function closePushModal() {
@@ -3871,10 +4914,9 @@ async function savePushProfile() {
       value: parseInt(document.getElementById('push-duration-val').value) || 1,
       unit: document.getElementById('push-duration-unit').value
     },
-    profile_id: document.getElementById('push-profile-id').value || null
+    profile_id: document.getElementById('push-profile-id').value || null,
+    visibility: document.getElementById('push-visibility').value
   };
-  var pw = document.getElementById('push-password').value;
-  if (pw) body.password = pw;
   try {
     var url = _editingPushId ? '/admin/api/push/profiles/' + _editingPushId : '/admin/api/push/profiles';
     var method = _editingPushId ? 'PUT' : 'POST';
@@ -3941,15 +4983,8 @@ async function viewPushEvents(profileId) {
 
 async function startPush(profileId) {
   try {
-    // First try without password
     var r = await fetch('/admin/api/push/profiles/' + profileId + '/start', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:'{}'});
     var d = await r.json();
-    if (!r.ok && d.error === 'Invalid password') {
-      var pw = prompt('This push profile is password-protected. Enter password:');
-      if (!pw) return;
-      r = await fetch('/admin/api/push/profiles/' + profileId + '/start', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify({password: pw})});
-      d = await r.json();
-    }
     if (!r.ok) { alert('Error: ' + (d.error || r.status)); return; }
     toast('Push started');
     loadPushProfiles();
@@ -4163,14 +5198,44 @@ function openProfileEditor(profileId) {
   modal.classList.remove('hidden');
   if (_editingProfileId) {
     document.getElementById('profile-modal-title').textContent = 'Edit profile';
-    document.getElementById('profile-delete-btn').style.display = '';
     fetch('/admin/api/profiles/'+_editingProfileId, {credentials:'same-origin'})
-      .then(r=>r.json()).then(p => _fillProfileForm(p));
+      .then(r=>r.json()).then(p => { _fillProfileForm(p); _applyProfileMode(p); });
   } else {
     document.getElementById('profile-modal-title').textContent = 'New profile';
-    document.getElementById('profile-delete-btn').style.display = 'none';
     _fillProfileForm({name:'',description:'',users:[],machines:[],c2_servers:[],malware:[],mail_senders:[]});
+    _applyProfileMode(null);
   }
+}
+
+// Toggle the editor between writable (own/new) and read-only (shared, not yours).
+function _applyProfileMode(p) {
+  var isNew = !p;
+  var writable = isNew || canWriteObj(p);
+  var modal = document.getElementById('profile-modal');
+  modal.querySelectorAll('input, select, textarea').forEach(function(el){ el.disabled = !writable; });
+  modal.querySelectorAll('.entity-row button, button[id^="pf-add-"]').forEach(function(b){ b.disabled = !writable; });
+  var _pfBanner = document.getElementById('profile-readonly-banner');
+  _pfBanner.style.display = writable ? 'none' : '';
+  if (!writable) _pfBanner.innerHTML = canDo('log_profiles','create')
+    ? "This is a shared profile you don't own — it's read-only. Use <b>Clone to my profiles</b> to make your own editable copy."
+    : "This is a shared profile you don't own — it's read-only. You don't have <b>Create</b> rights on Log Profiles, so it can't be cloned — ask an administrator.";
+  document.getElementById('profile-save-btn').style.display = writable ? '' : 'none';
+  // Delete only if writable AND the entitlement grants delete.
+  document.getElementById('profile-delete-btn').style.display =
+    (!isNew && writable && canDo('log_profiles','delete')) ? '' : 'none';
+  // Clone offered for any existing profile the user can see (esp. read-only shared ones),
+  // provided they may create.
+  document.getElementById('profile-clone-btn').style.display =
+    (!isNew && canDo('log_profiles','create')) ? '' : 'none';
+}
+
+function cloneProfile() {
+  if (!_editingProfileId) return;
+  fetch('/admin/api/profiles/'+_editingProfileId+'/clone', {method:'POST', credentials:'same-origin'})
+    .then(r=>{if(!r.ok)throw new Error(r.status);return r.json()})
+    .then(function(p){ toast('Cloned to your profiles'); closeProfileEditor(); loadProfiles();
+      if (p && p.id) openProfileEditor(p.id); })
+    .catch(e=>toast('Clone failed: '+e,true));
 }
 
 function closeProfileEditor() {
@@ -4180,6 +5245,7 @@ function closeProfileEditor() {
 function _fillProfileForm(p) {
   document.getElementById('pf-name').value = p.name||'';
   document.getElementById('pf-desc').value = p.description||'';
+  document.getElementById('pf-visibility').value = p.visibility || 'private';
   _ENTITY_SECTIONS.forEach(sec => {
     const wrap = document.getElementById('pf-'+sec.key);
     wrap.innerHTML = '';
@@ -4231,6 +5297,7 @@ function _collectProfileForm() {
   const data = {
     name: document.getElementById('pf-name').value.trim(),
     description: document.getElementById('pf-desc').value.trim(),
+    visibility: document.getElementById('pf-visibility').value,
   };
   _ENTITY_SECTIONS.forEach(sec => {
     const wrap = document.getElementById('pf-'+sec.key);
@@ -4284,6 +5351,11 @@ function deleteProfile() {
         <input id="pf-name" type="text" placeholder="e.g. Starfleet" style="flex:1"/></div>
       <div class="field"><label>Description</label>
         <input id="pf-desc" type="text" placeholder="Optional description" style="flex:1"/></div>
+      <div class="field"><label>Visibility</label>
+        <select id="pf-visibility" style="flex:1">
+          <option value="private">Private — only you can see &amp; use it</option>
+          <option value="public">Public — shared with all users (view/use only)</option>
+        </select></div>
       <h4 style="margin-top:16px;font-size:.85rem;color:var(--lilac)">Users (up to 10)</h4>
       <div id="pf-users"></div>
       <h4 style="margin-top:16px;font-size:.85rem;color:var(--lilac)">Machines (up to 10)</h4>
@@ -4295,13 +5367,15 @@ function deleteProfile() {
       <h4 style="margin-top:16px;font-size:.85rem;color:var(--lilac)">Mail Senders (up to 5)</h4>
       <div id="pf-mail_senders"></div>
     </div>
+    <div id="profile-readonly-banner" style="display:none;margin:0 0 10px;padding:8px 12px;border-radius:8px;background:rgba(128,200,255,.1);border:1px solid rgba(128,200,255,.3);color:#9cd3ff;font-size:.78rem">This is a shared profile you don't own — it's read-only. Use <b>Clone to my profiles</b> to make your own editable copy.</div>
     <div class="modal-foot">
       <div class="left">
         <button class="btn-sm btn-danger" id="profile-delete-btn" onclick="deleteProfile()" style="display:none">🗑 Delete</button>
       </div>
       <div class="right">
         <button class="btn-sm" onclick="closeProfileEditor()" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2)">Cancel</button>
-        <button class="btn-sm" onclick="saveProfile()">Save</button>
+        <button class="btn-sm" id="profile-clone-btn" onclick="cloneProfile()" style="display:none;background:rgba(128,200,255,.2);border:1px solid rgba(128,200,255,.4)">⧉ Clone to my profiles</button>
+        <button class="btn-sm" id="profile-save-btn" onclick="saveProfile()">Save</button>
       </div>
     </div>
   </div>
@@ -4464,12 +5538,14 @@ function deleteProfile() {
         <div class="hint" style="grid-column:2">For testing collector retry logic. 0 = disabled.</div>
       </div>
     </div>
+    <div id="wiz-readonly-banner" style="display:none;margin:0 16px 4px;padding:8px 12px;border-radius:8px;background:rgba(128,200,255,.1);border:1px solid rgba(128,200,255,.3);color:#9cd3ff;font-size:.78rem">This is a shared listener you don't own — it's read-only. Use <b>Clone</b> to make your own editable copy.</div>
     <div class="modal-foot">
       <div class="left">
         <button class="btn-sm" id="wiz-prev" onclick="wizardStep((WIZ_STATE._step||1)-1)" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2)">← Back</button>
       </div>
       <div class="right">
         <button class="btn-sm" onclick="closeWizard()" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2)">Cancel</button>
+        <button class="btn-sm" id="wiz-clone" onclick="cloneListener(WIZ_STATE && WIZ_STATE.id)" style="display:none;background:rgba(128,200,255,.2);border:1px solid rgba(128,200,255,.4)">⧉ Clone</button>
         <button class="btn-sm" id="wiz-next" onclick="wizardNext()">Next →</button>
       </div>
     </div>
@@ -4559,42 +5635,197 @@ function deleteProfile() {
   </div>
 </div>
 
-<!-- Investigation password first-run setup modal -->
-<div id="inv-setup-modal" class="modal-overlay hidden">
-  <div class="modal" style="width:min(440px,100%)">
-    <div class="modal-head">
-      <h3>🔒 Set Investigation Password</h3>
-    </div>
+<!-- Entitlement editor modal -->
+<div id="ent-modal" class="modal-overlay hidden">
+  <div class="modal" style="width:min(620px,100%)">
+    <div class="modal-head"><h3 id="ent-modal-title">New Entitlement</h3></div>
     <div class="modal-body">
-      <p style="font-size:.85rem;color:rgba(224,170,255,.65);margin-bottom:14px">
-        The Investigations tab provides IP lookup, WHOIS, and banning capabilities.
-        Please set a password to protect it.
-      </p>
-      <div class="field"><label>New password</label>
-        <input id="inv-setup-pw" type="password" autocomplete="new-password" placeholder="Min. 8 characters"/>
-      </div>
-      <div class="field"><label>Confirm</label>
-        <input id="inv-setup-pw-confirm" type="password" autocomplete="new-password" placeholder="Repeat password" onkeydown="if(event.key==='Enter')submitInvSetup()"/>
-      </div>
-      <div id="inv-setup-err" style="color:#ff7f7f;font-size:.82rem;min-height:1.2em"></div>
+      <div class="field"><label>Name</label>
+        <input id="ent-name" type="text" placeholder="e.g. Telemetry Engineer"/></div>
+      <div class="field"><label>Description</label>
+        <input id="ent-desc" type="text" placeholder="Short description"/></div>
+      <div class="field"><label>Permissions</label>
+        <div id="ent-perms" style="overflow-x:auto"></div></div>
+      <div id="ent-err" style="color:#ff7f7f;font-size:.82rem;min-height:1.2em"></div>
     </div>
     <div class="modal-foot">
-      <div class="left"></div>
+      <div class="left"><button class="btn-sm" id="ent-delete-btn" style="background:rgba(120,30,40,.4);color:#ff8080;display:none" onclick="deleteEntitlement()">Delete</button></div>
       <div class="right">
-        <button onclick="submitInvSetup()">Set password</button>
+        <button class="btn-sm" style="background:rgba(90,24,154,.3)" onclick="closeEntModal()">Cancel</button>
+        <button class="btn-sm" onclick="saveEntitlement()">Save</button>
       </div>
     </div>
   </div>
 </div>
+
+<!-- User account editor modal -->
+<div id="user-modal" class="modal-overlay hidden">
+  <div class="modal" style="width:min(480px,100%)">
+    <div class="modal-head"><h3 id="user-modal-title">New User</h3></div>
+    <div class="modal-body">
+      <div class="field"><label>Username</label>
+        <input id="user-username" type="text" placeholder="e.g. alice" autocomplete="off"/></div>
+      <div class="field"><label>Email (optional)</label>
+        <input id="user-email" type="email" placeholder="alice@example.com" autocomplete="off"/></div>
+      <div class="field"><label>Entitlement</label>
+        <select id="user-entitlement"><option value="">— none —</option></select></div>
+      <div class="field" id="user-pw-field"><label>Password</label>
+        <input id="user-password" type="password" placeholder="Leave blank to generate a set-password link" autocomplete="new-password"/></div>
+      <div class="field" id="user-disabled-field" style="display:none">
+        <label><input id="user-disabled" type="checkbox" style="width:auto;margin-right:8px"/>Account disabled</label></div>
+      <div id="user-err" style="color:#ff7f7f;font-size:.82rem;min-height:1.2em"></div>
+      <div id="user-link" style="display:none;background:rgba(10,0,20,.5);border:1px solid rgba(199,125,255,.2);border-radius:8px;padding:10px;margin-top:8px;font-size:.78rem;word-break:break-all"></div>
+    </div>
+    <div class="modal-foot">
+      <div class="left">
+        <button class="btn-sm" id="user-resetlink-btn" style="display:none;background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2)" onclick="resetUserLink()">Reset link</button>
+        <button class="btn-sm" id="user-delete-btn" style="background:rgba(120,30,40,.4);color:#ff8080;display:none" onclick="deleteUser()">Delete</button>
+      </div>
+      <div class="right">
+        <button class="btn-sm" style="background:rgba(90,24,154,.3)" onclick="closeUserModal()">Cancel</button>
+        <button class="btn-sm" onclick="saveUser()">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>"""
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+def _render_login(console: str, sub: str, action: str, error: str = "") -> str:
+    return (
+        _LOGIN_HTML
+        .replace("{login_console}", console)
+        .replace("{login_sub}", sub)
+        .replace("{login_action}", action)
+        .replace("{error}", error)
+    )
+
+
+@functools.lru_cache(maxsize=1)
+def _user_mask_table() -> dict[str, str]:
+    """Build the shared-secret → placeholder substitution table for user portal.
+
+    Every value in this table is a *built-in* mock credential (those listed in
+    auth.py — the same ones rejected by is_reserved_credential). When the user
+    portal is rendered we substitute these in Source Details so users never see
+    the shared demo values and are nudged toward registering their own under
+    Source Identifiers. Admin portal continues to show the real demo values.
+    """
+    import auth  # local import keeps module import order safe
+    out: dict[str, str] = {}
+    for t in auth.VALID_TOKENS:
+        if t:
+            out[t] = "<YOUR_BEARER_TOKEN>"
+    for u, p in auth.VALID_BASIC_AUTH:
+        if u:
+            out[u] = "<YOUR_USERNAME>"
+        if p:
+            out[p] = "<YOUR_PASSWORD>"
+    for a, s in auth.VALID_API_KEY_PAIRS:
+        if a:
+            out[a] = "<YOUR_ACCESS_KEY>"
+        if s:
+            out[s] = "<YOUR_SECRET_KEY>"
+    for k in auth.VALID_API_KEYS:
+        if k:
+            out[k] = "<YOUR_API_KEY>"
+    if getattr(auth, "DUO_IKEY", None):
+        out[auth.DUO_IKEY] = "<YOUR_IKEY>"
+    if getattr(auth, "DUO_SKEY", None):
+        out[auth.DUO_SKEY] = "<YOUR_SKEY>"
+    return out
+
+
+def _mask_text_for_user(text: str) -> str:
+    """Substitute shared-mock secrets with placeholders for user-portal views."""
+    if not text:
+        return text
+    for k, v in _user_mask_table().items():
+        if k in text:
+            text = text.replace(k, v)
+    return text
+
+
+def _source_identifier_kinds(v: dict[str, Any]) -> list[str]:
+    """Identifier kinds that are meaningful for a source's auth scheme.
+
+    Derived from the source's auth_type description and credential keys so the
+    "Source Identifiers" dropdown only offers credentials a collector could
+    actually present for that source. Falls back to all kinds if unrecognised.
+    """
+    at = (v.get("auth_type") or "").lower()
+    creds = {str(k).lower() for k in v.get("credentials", {}).keys()}
+    kinds: list[str] = []
+
+    def add(k: str):
+        if k not in kinds:
+            kinds.append(k)
+
+    if "bearer" in at or "apitoken" in at or "token" in at or "hmac" in at or "token" in creds:
+        add("bearer_token")
+    if "oauth" in at or "client_id" in creds or "client_secret" in creds:
+        add("client_id")
+        add("bearer_token")
+    if "tenant" in at:
+        add("tenant_id")
+    if ("apikey" in at or "api-key" in at or "x-api-key" in at or "x-apikeys" in at
+            or "accesskey" in creds or "secretkey" in creds or "x-api-key" in creds):
+        add("api_key")
+    if "basic" in at or ("username" in creds and "password" in creds) or "ikey" in creds:
+        add("basic_user")
+    if "kafka" in at or "sasl" in at or "event hubs" in at or "eventhub" in at:
+        add("consumer_group")
+    if "pub/sub" in at or "pubsub" in at or "subscription" in at:
+        add("subscription")
+    return kinds or list(accounts.IDENTIFIER_KINDS)
+
+
+def _render_dashboard(role: str) -> str:
+    """Render the single dashboard template for a given portal role."""
+    opts = "\n".join(f'<option value="{c}">{c}</option>' for c in CONTAINERS)
+    # User portal sees placeholders instead of the shared mock secrets — they
+    # register their own values under Source Identifiers. Admin keeps real
+    # demo values for quick local testing.
+    mask = _mask_text_for_user if role == "user" else (lambda s: s)
+    sources_json = json.dumps({k: {
+        "name": v["name"],
+        "auth_type": v["auth_type"],
+        "credentials": {str(ck): mask(str(cv)) for ck, cv in v.get("credentials", {}).items()},
+        "id_kinds": _source_identifier_kinds(v),
+        "endpoints": v.get("endpoints", []),
+        "curl": mask(v.get("curl", "")),
+    } for k, v in SOURCES.items()})
+
+    if role == "user":
+        brand_label = "Portal"
+        logout_url = "/portal/logout"
+        title = "ApiGenie · Portal"
+    else:
+        brand_label = "Admin"
+        logout_url = "/admin/logout"
+        title = "ApiGenie · Admin"
+
+    return (
+        _DASH_HTML
+        .replace("{container_options}", opts)
+        .replace("{sources_json}", sources_json)
+        .replace("{portal_role}", role)
+        .replace("{brand_label}", brand_label)
+        .replace("{logout_url}", logout_url)
+        .replace("{dash_title}", title)
+    )
+
+
+# ── Admin portal (full infra/security control) ───────────────────────────────
+
 @router.get("/login", response_class=HTMLResponse)
 async def login_page():
-    return HTMLResponse(_LOGIN_HTML.replace("{error}", ""))
+    return HTMLResponse(_render_login(
+        "Admin", "Restricted access · authorised operators only", "/admin/login"))
 
 
 @router.post("/login")
@@ -4602,11 +5833,13 @@ async def login_submit(username: str = Form(...), password: str = Form(...)):
     user_ok = hmac.compare_digest(username, ADMIN_USER)
     pass_ok = _check_password(password)
     if user_ok and pass_ok:
-        tok = _new_session()
+        tok = _new_session("admin", username=ADMIN_USER, is_admin=True)
         resp = RedirectResponse("/admin/", status_code=303)
         resp.set_cookie(COOKIE, tok, httponly=True, samesite="lax", max_age=SESSION_TTL)
         return resp
-    html = _LOGIN_HTML.replace("{error}", '<p class="err">Invalid credentials.</p>')
+    html = _render_login(
+        "Admin", "Restricted access · authorised operators only", "/admin/login",
+        '<p class="err">Invalid credentials.</p>')
     return HTMLResponse(html, status_code=401)
 
 
@@ -4621,20 +5854,117 @@ async def logout(ag_session: str | None = Cookie(None)):
 @router.get("/", response_class=HTMLResponse)
 @router.get("", response_class=HTMLResponse)
 async def dashboard(ag_session: str | None = Cookie(None)):
-    if not _valid(ag_session):
+    # Admin portal requires an admin-role session. A user-role session is
+    # bounced to the admin login so the two portals stay disjoint.
+    if session_role(ag_session) != "admin":
         return RedirectResponse("/admin/login", status_code=303)
+    return HTMLResponse(_render_dashboard("admin"))
 
-    opts = "\n".join(f'<option value="{c}">{c}</option>' for c in CONTAINERS)
-    sources_json = json.dumps({k: {
-        "name": v["name"],
-        "auth_type": v["auth_type"],
-        "credentials": {str(ck): str(cv) for ck, cv in v.get("credentials", {}).items()},
-        "endpoints": v.get("endpoints", []),
-        "curl": v.get("curl", ""),
-    } for k, v in SOURCES.items()})
 
-    html = _DASH_HTML.replace("{container_options}", opts).replace("{sources_json}", sources_json)
-    return HTMLResponse(html)
+# ── User portal (day-to-day telemetry config & monitoring) ────────────────────
+
+@portal_router.get("/login", response_class=HTMLResponse)
+async def portal_login_page():
+    return HTMLResponse(_render_login(
+        "Portal", "Sign in to the ApiGenie user portal", "/portal/login"))
+
+
+@portal_router.post("/login")
+async def portal_login_submit(username: str = Form(...), password: str = Form(...)):
+    # 1) Registered account (accounts.py / SQLite).
+    acct = accounts.verify_login(username, password)
+    if acct:
+        tok = _new_session("user", user_id=acct["id"], username=acct["username"], is_admin=False)
+        resp = RedirectResponse("/portal/", status_code=303)
+        resp.set_cookie(COOKIE, tok, httponly=True, samesite="lax", max_age=SESSION_TTL)
+        return resp
+    # 2) Built-in admin may also sign into the user portal (acting-as-user).
+    if hmac.compare_digest(username, ADMIN_USER) and _check_password(password):
+        tok = _new_session("user", username=ADMIN_USER, is_admin=True)
+        resp = RedirectResponse("/portal/", status_code=303)
+        resp.set_cookie(COOKIE, tok, httponly=True, samesite="lax", max_age=SESSION_TTL)
+        return resp
+    html = _render_login(
+        "Portal", "Sign in to the ApiGenie user portal", "/portal/login",
+        '<p class="err">Invalid credentials.</p>')
+    return HTMLResponse(html, status_code=401)
+
+
+@portal_router.get("/logout")
+async def portal_logout(ag_session: str | None = Cookie(None)):
+    _sessions.pop(ag_session or "", None)
+    resp = RedirectResponse("/portal/login", status_code=303)
+    resp.delete_cookie(COOKIE)
+    return resp
+
+
+def _render_set_password(token: str, username: str, error: str = "", done: bool = False) -> str:
+    inner = ""
+    if done:
+        inner = (
+            '<p style="color:#7fff7f;font-size:.9rem">Password set successfully.</p>'
+            '<a href="/portal/login" style="color:var(--lilac)">Continue to sign in →</a>')
+    elif not username:
+        inner = '<p class="err">This link is invalid or has expired. Ask your administrator for a new one.</p>'
+    else:
+        err = f'<p class="err">{error}</p>' if error else ''
+        inner = (
+            f'<p style="font-size:.85rem;color:rgba(224,170,255,.7);margin-bottom:14px">'
+            f'Set a password for <strong>{username}</strong>.</p>'
+            f'<form method="post" action="/portal/set-password">'
+            f'<input type="hidden" name="token" value="{token}"/>'
+            f'<input type="password" name="password" placeholder="New password (min 8 chars)" autocomplete="new-password" required/>'
+            f'<input type="password" name="confirm" placeholder="Confirm password" autocomplete="new-password" required/>'
+            f'<button type="submit">Set password</button>{err}</form>')
+    return (
+        '<!doctype html><html><head><meta charset="utf-8"><title>Set password · ApiGenie</title>'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<style>:root{--lilac:#c77dff;--mist:#e0aaff}body{margin:0;min-height:100vh;display:flex;'
+        'align-items:center;justify-content:center;background:#160028;font-family:system-ui,sans-serif;color:var(--mist)}'
+        '.box{background:rgba(36,0,70,.85);border:1px solid rgba(199,125,255,.25);border-radius:14px;'
+        'padding:30px;max-width:360px;width:90%}h2{margin:0 0 6px}input{width:100%;box-sizing:border-box;'
+        'margin:8px 0;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;'
+        'padding:10px 12px;color:var(--mist);outline:none}button{width:100%;margin-top:8px;background:'
+        'linear-gradient(135deg,#7b2cbf,#5a189a);color:#fff;border:none;border-radius:8px;padding:10px;'
+        'font-weight:600;cursor:pointer}.err{color:#ff7f7f;font-size:.82rem;margin-top:8px}</style></head>'
+        '<body><div class="box"><h2>ApiGenie</h2>' + inner + '</div></body></html>')
+
+
+@portal_router.get("/set-password", response_class=HTMLResponse)
+async def portal_set_password_page(token: str = ""):
+    info = accounts.peek_token(token)
+    username = ""
+    if info:
+        u = accounts.get_user(info["user_id"])
+        username = u["username"] if u else ""
+    return HTMLResponse(_render_set_password(token, username))
+
+
+@portal_router.post("/set-password", response_class=HTMLResponse)
+async def portal_set_password_submit(token: str = Form(...), password: str = Form(...),
+                                     confirm: str = Form(...)):
+    info = accounts.peek_token(token)
+    if not info:
+        return HTMLResponse(_render_set_password(token, ""), status_code=400)
+    u = accounts.get_user(info["user_id"])
+    username = u["username"] if u else ""
+    if password != confirm:
+        return HTMLResponse(_render_set_password(token, username, "Passwords do not match."), status_code=400)
+    if len(password) < 8:
+        return HTMLResponse(_render_set_password(token, username, "Password must be at least 8 characters."), status_code=400)
+    uid = accounts.consume_token(token)
+    if not uid:
+        return HTMLResponse(_render_set_password(token, ""), status_code=400)
+    accounts.set_password(uid, password)
+    return HTMLResponse(_render_set_password("", username, done=True))
+
+
+@portal_router.get("/", response_class=HTMLResponse)
+@portal_router.get("", response_class=HTMLResponse)
+async def portal_dashboard(ag_session: str | None = Cookie(None)):
+    if session_role(ag_session) != "user":
+        return RedirectResponse("/portal/login", status_code=303)
+    return HTMLResponse(_render_dashboard("user"))
 
 
 # Lazy, per-process disposable RSA key for the dummy GCP SA JSON.
@@ -5004,6 +6334,8 @@ async def api_settings(ag_session: str | None = Cookie(None)):
         "tls_mode": TLS_MODE,
         "admin_username": ADMIN_USER,
         "password_source": _password_source(),
+        "user_username": USER_USER,
+        "user_password_set": _user_password_explicitly_set(),
     })
 
 
@@ -5121,6 +6453,32 @@ async def api_change_password(
     return JSONResponse({"ok": True})
 
 
+@router.post("/api/change-user-password")
+async def api_change_user_password(
+    new:     str = Form(...),
+    ag_session: str | None = Cookie(None),
+):
+    """Set the user-portal password. Admin-only (gated by the role middleware
+    on /admin/api/change-user-password). The admin does not need to know the
+    current user password — being authenticated as admin is sufficient."""
+    if session_role(ag_session) != "admin":
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if len(new) < 8:
+        return JSONResponse({"error": "New password must be at least 8 characters."}, status_code=400)
+
+    new_hash = _hash_password(new)
+    try:
+        USER_PASSWORD_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = USER_PASSWORD_FILE.with_suffix(".tmp")
+        tmp.write_text(new_hash + "\n", encoding="utf-8")
+        tmp.chmod(0o600)
+        tmp.replace(USER_PASSWORD_FILE)
+    except OSError as exc:
+        return JSONResponse({"error": f"Could not persist new hash: {exc}"}, status_code=500)
+
+    return JSONResponse({"ok": True})
+
+
 # ── Custom Listeners — Phase 1 CRUD ───────────────────────────────────────────
 # Design: docs/CUSTOM_LISTENERS.md
 # All endpoints are session-cookie gated (same as the rest of /admin/api).
@@ -5155,6 +6513,8 @@ def _listener_summary(listener: "_listeners.Listener") -> dict[str, Any]:
         "hit_count_mem": len(hits) if hits is not None else 0,
         "last_hit_ts": last_ts,
         "created_at": listener.created_at,
+        "owner_id": listener.owner_id,
+        "visibility": listener.visibility,
     }
 
 
@@ -5163,7 +6523,8 @@ async def api_listeners_list(ag_session: str | None = Cookie(None)):
     if not _valid(ag_session):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     return JSONResponse({
-        "listeners": [_listener_summary(l) for l in _listeners.LISTENERS.values()],
+        "listeners": [_listener_summary(l) for l in _listeners.LISTENERS.values()
+                      if _can_see_obj({"owner_id": l.owner_id, "visibility": l.visibility}, ag_session)],
         "limits": {
             "hits_mem_cap": _listeners.HITS_MEM_CAP,
             "hits_disk_cap": _listeners.HITS_DISK_CAP,
@@ -5190,6 +6551,38 @@ async def api_listeners_create(request: Request, ag_session: str | None = Cookie
     if payload["id"] in _listeners.LISTENERS:
         return JSONResponse({"error": f"listener id '{payload['id']}' already exists"}, status_code=409)
 
+    _owner_stamp(ag_session, payload)
+    try:
+        listener = _listeners.Listener.from_dict(payload)
+        _listeners.save(listener)
+    except Exception as exc:
+        return JSONResponse({"error": f"could not save: {exc}"}, status_code=500)
+    return JSONResponse(_listener_summary(listener), status_code=201)
+
+
+@router.post("/api/listeners/{lid}/clone")
+async def api_listeners_clone(lid: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    src = _listeners.LISTENERS.get(lid)
+    if not src:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_see_obj({"owner_id": src.owner_id, "visibility": src.visibility}, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    payload = src.to_dict()
+    # Mint a unique, schema-valid id ([a-z0-9][a-z0-9_-]{1,30}).
+    base = re.sub(r"[^a-z0-9_-]", "", lid.lower())[:24] or "listener"
+    new_id = base
+    while new_id in _listeners.LISTENERS:
+        new_id = f"{base}-{secrets.token_hex(2)}"
+    payload["id"] = new_id
+    payload["name"] = _clone_name(src.name)
+    payload["visibility"] = "private"
+    _owner_stamp(ag_session, payload)
+    payload["created_at"] = None  # force a fresh timestamp
+    ok, err = _listeners.validate_listener_payload(payload)
+    if not ok:
+        return JSONResponse({"error": err}, status_code=400)
     try:
         listener = _listeners.Listener.from_dict(payload)
         _listeners.save(listener)
@@ -5205,6 +6598,8 @@ async def api_listeners_get(lid: str, ag_session: str | None = Cookie(None)):
     listener = _listeners.LISTENERS.get(lid)
     if not listener:
         return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_see_obj({"owner_id": listener.owner_id, "visibility": listener.visibility}, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
     return JSONResponse(listener.to_dict())
 
 
@@ -5215,6 +6610,8 @@ async def api_listeners_patch(lid: str, request: Request, ag_session: str | None
     listener = _listeners.LISTENERS.get(lid)
     if not listener:
         return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_write_obj({"owner_id": listener.owner_id, "visibility": listener.visibility}, ag_session):
+        return JSONResponse({"error": "forbidden", "note": "you can only modify your own objects"}, status_code=403)
     try:
         patch = await request.json()
     except Exception as exc:
@@ -5225,9 +6622,10 @@ async def api_listeners_patch(lid: str, request: Request, ag_session: str | None
     merged = listener.to_dict()
     # Shallow merge for top-level scalars; nested dicts overwrite wholesale.
     for k, v in patch.items():
-        if k == "id":
+        if k in ("id", "owner_id"):
             continue  # immutable
         merged[k] = v
+    merged["owner_id"] = listener.owner_id  # owner never changes via patch
 
     ok, err = _listeners.validate_listener_payload(merged)
     if not ok:
@@ -5244,8 +6642,11 @@ async def api_listeners_patch(lid: str, request: Request, ag_session: str | None
 async def api_listeners_delete(lid: str, ag_session: str | None = Cookie(None)):
     if not _valid(ag_session):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    if lid not in _listeners.LISTENERS:
+    listener = _listeners.LISTENERS.get(lid)
+    if not listener:
         return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_write_obj({"owner_id": listener.owner_id, "visibility": listener.visibility}, ag_session):
+        return JSONResponse({"error": "forbidden", "note": "you can only delete your own objects"}, status_code=403)
     _listeners.delete(lid)
     return JSONResponse({"ok": True, "id": lid})
 
@@ -5254,8 +6655,11 @@ async def api_listeners_delete(lid: str, ag_session: str | None = Cookie(None)):
 async def api_listeners_hits(lid: str, ag_session: str | None = Cookie(None)):
     if not _valid(ag_session):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    if lid not in _listeners.LISTENERS:
+    listener = _listeners.LISTENERS.get(lid)
+    if not listener:
         return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_see_obj({"owner_id": listener.owner_id, "visibility": listener.visibility}, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
     hits = list(_listeners.LISTENER_HITS.get(lid, []))
     return JSONResponse({"hits": hits, "count": len(hits)})
 
@@ -5264,8 +6668,11 @@ async def api_listeners_hits(lid: str, ag_session: str | None = Cookie(None)):
 async def api_listeners_hits_clear(lid: str, ag_session: str | None = Cookie(None)):
     if not _valid(ag_session):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    if lid not in _listeners.LISTENERS:
+    listener = _listeners.LISTENERS.get(lid)
+    if not listener:
         return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_write_obj({"owner_id": listener.owner_id, "visibility": listener.visibility}, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
     _listeners.clear_hits(lid)
     return JSONResponse({"ok": True, "id": lid})
 
@@ -5543,87 +6950,410 @@ async def api_replays_delete(file_id: str, ag_session: str | None = Cookie(None)
     return JSONResponse({"ok": True, "file_id": file_id})
 
 
-# ── Investigation auth ────────────────────────────────────────────────────────
+# ── Current session identity + effective permissions (both roles) ────────────
 
-# Per-session set of tokens that have unlocked the investigation tab.
-_investigate_tokens: set[str] = set()
-
-
-@router.get("/api/investigate-gate")
-async def api_investigate_gate(ag_session: str | None = Cookie(None)):
-    """Check whether the investigation gate is enabled."""
-    if not _valid(ag_session):
+@router.get("/api/me")
+async def api_me(ag_session: str | None = Cookie(None)):
+    sess = session_info(ag_session)
+    if not sess:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    return JSONResponse({"gate_enabled": _investigate_password_configured()})
+    user = session_user(ag_session)
+    is_admin = bool(sess.get("is_admin") or sess.get("role") == "admin")
+    perms = (
+        {c: list(accounts.ALL_PERMS) for c in accounts.ALL_CATEGORIES}
+        if is_admin else accounts.get_permissions(user)
+    )
+    has_avatar = bool((user or {}).get("avatar_path"))
+    return JSONResponse({
+        "username": sess.get("username") or "",
+        "role": sess.get("role"),
+        "is_admin": is_admin,
+        "user_id": sess.get("user_id"),
+        "entitlement_id": (user or {}).get("entitlement_id"),
+        "permissions": perms,
+        "categories": list(accounts.ALL_CATEGORIES),
+        "perms": list(accounts.ALL_PERMS),
+        "has_avatar": has_avatar,
+    })
 
 
-@router.post("/api/investigate-auth")
-async def api_investigate_auth(request: Request, ag_session: str | None = Cookie(None)):
-    """Validate the investigation password (separate from admin login)."""
-    if not _valid(ag_session):
+# ── RBAC: entitlements + user accounts (admin-only) ──────────────────────────
+
+def _require_admin(ag_session: str | None) -> bool:
+    return session_role(ag_session) == "admin"
+
+
+@router.get("/api/rbac/meta")
+async def api_rbac_meta(ag_session: str | None = Cookie(None)):
+    if not _require_admin(ag_session):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    # If no password is configured, auto-pass
-    if not _investigate_password_configured():
-        _investigate_tokens.add(ag_session)
-        return JSONResponse({"ok": True})
+    return JSONResponse({
+        "categories": [{"key": c, "label": accounts.CATEGORY_LABELS[c]} for c in accounts.ALL_CATEGORIES],
+        "perms": [{"key": p, "label": accounts.PERM_LABELS[p],
+                   "desc": accounts.PERM_DESCRIPTIONS.get(p, "")} for p in accounts.ALL_PERMS],
+        "identifier_kinds": list(accounts.IDENTIFIER_KINDS),
+    })
+
+
+@router.get("/api/rbac/entitlements")
+async def api_rbac_entitlements(ag_session: str | None = Cookie(None)):
+    if not _require_admin(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return JSONResponse({"entitlements": accounts.list_entitlements()})
+
+
+@router.post("/api/rbac/entitlements")
+async def api_rbac_entitlement_create(request: Request, ag_session: str | None = Cookie(None)):
+    if not _require_admin(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
     try:
         body = await request.json()
     except Exception:
         return JSONResponse({"error": "invalid JSON"}, status_code=400)
-    pw = body.get("password", "")
-    if not _check_investigate_password(pw):
-        return JSONResponse({"error": "Wrong investigation password"}, status_code=403)
-    _investigate_tokens.add(ag_session)
+    try:
+        ent = accounts.create_entitlement(
+            body.get("name", ""), body.get("description", ""), body.get("permissions") or {})
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return JSONResponse(ent)
+
+
+@router.put("/api/rbac/entitlements/{eid}")
+async def api_rbac_entitlement_update(eid: str, request: Request, ag_session: str | None = Cookie(None)):
+    if not _require_admin(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    try:
+        ent = accounts.update_entitlement(
+            eid, name=body.get("name"), description=body.get("description"),
+            permissions=body.get("permissions"))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    if ent is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return JSONResponse(ent)
+
+
+@router.delete("/api/rbac/entitlements/{eid}")
+async def api_rbac_entitlement_delete(eid: str, ag_session: str | None = Cookie(None)):
+    if not _require_admin(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not accounts.delete_entitlement(eid):
+        return JSONResponse({"error": "not_found"}, status_code=404)
     return JSONResponse({"ok": True})
 
 
-@router.post("/api/verify-investigate-password")
-async def api_verify_investigate_password(request: Request, ag_session: str | None = Cookie(None)):
-    """Verify the investigation password (used by Intrusions ban flow)."""
-    if not _valid(ag_session):
+@router.get("/api/rbac/users")
+async def api_rbac_users(ag_session: str | None = Cookie(None)):
+    if not _require_admin(ag_session):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    if not _investigate_password_configured():
-        return JSONResponse({"ok": True})
+    return JSONResponse({"users": accounts.list_users()})
+
+
+@router.post("/api/rbac/users")
+async def api_rbac_user_create(request: Request, ag_session: str | None = Cookie(None)):
+    if not _require_admin(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
     try:
         body = await request.json()
     except Exception:
         return JSONResponse({"error": "invalid JSON"}, status_code=400)
-    pw = body.get("password", "")
-    if not _check_investigate_password(pw):
-        return JSONResponse({"error": "Wrong investigation password"}, status_code=403)
+    password = (body.get("password") or "").strip()
+    if password and len(password) < 8:
+        return JSONResponse({"error": "Password must be at least 8 characters"}, status_code=400)
+    try:
+        user = accounts.create_user(
+            body.get("username", ""), body.get("email", ""),
+            password=password or None,
+            entitlement_id=body.get("entitlement_id") or None,
+            confirmed=bool(password))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    # If the admin did not set a password, mint a one-time set-password link
+    # (no-SMTP handoff) for them to give to the user.
+    setup_link = None
+    if not password:
+        tok = accounts.issue_token(user["id"], "confirm")
+        setup_link = f"/portal/set-password?token={tok}"
+    return JSONResponse({"user": user, "setup_link": setup_link})
+
+
+@router.put("/api/rbac/users/{uid}")
+async def api_rbac_user_update(uid: str, request: Request, ag_session: str | None = Cookie(None)):
+    if not _require_admin(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    try:
+        user = accounts.update_user(
+            uid, email=body.get("email"), entitlement_id=body.get("entitlement_id"),
+            disabled=body.get("disabled"))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    if user is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return JSONResponse({"user": user})
+
+
+@router.post("/api/rbac/users/{uid}/password")
+async def api_rbac_user_set_password(uid: str, request: Request, ag_session: str | None = Cookie(None)):
+    if not _require_admin(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    pw = (body.get("password") or "").strip()
+    try:
+        if not accounts.set_password(uid, pw):
+            return JSONResponse({"error": "not_found"}, status_code=404)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
     return JSONResponse({"ok": True})
 
 
-@router.post("/api/change-investigate-password")
-async def api_change_investigate_password(request: Request, ag_session: str | None = Cookie(None)):
-    """Change the investigation password (requires knowing the current one)."""
+# ── Avatars (RBAC Phase 3) ────────────────────────────────────────────────────
+# Per-user 250×250 circular PNG portraits. Upload/delete operate on the *real*
+# session user (never the acting-as target). Serving is open to any valid
+# session so the admin user list and switcher can render avatars.
+
+@router.post("/api/users/me/avatar")
+async def api_my_avatar_upload(file: UploadFile = File(...),
+                               ag_session: str | None = Cookie(None)):
+    sess = session_info(ag_session)
+    if not sess:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    uid = sess.get("user_id")
+    if not uid:
+        return JSONResponse({"error": "Avatars are per registered user; the built-in "
+                             "admin account has no avatar."}, status_code=400)
+    data = await file.read()
+    import avatars as _avatars
+    try:
+        _avatars.save_for_user(uid, data)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True})
+
+
+@router.delete("/api/users/me/avatar")
+async def api_my_avatar_delete(ag_session: str | None = Cookie(None)):
+    sess = session_info(ag_session)
+    if not sess:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    uid = sess.get("user_id")
+    if not uid:
+        return JSONResponse({"error": "no avatar to delete"}, status_code=400)
+    import avatars as _avatars
+    if _avatars.delete_for_user(uid):
+        return JSONResponse({"ok": True})
+    return JSONResponse({"error": "not_found"}, status_code=404)
+
+
+@router.get("/api/users/{uid}/avatar")
+async def api_avatar_serve(uid: str, ag_session: str | None = Cookie(None)):
     if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import avatars as _avatars
+    data = _avatars.load_for_user(uid)
+    if not data:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return Response(content=data, media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=60"})
+
+
+# ── Phase 3.5: Self-service account settings ────────────────────────────────
+# Every registered user can self-manage their email, password, and their own
+# SentinelOne console URL + API token. Admin "acting as" a user mutates the
+# *target* user; otherwise the real session user. The built-in admin (no DB
+# row) cannot use these endpoints — it keeps its dedicated change-password
+# and global S1 settings flows.
+
+def _self_service_uid(token: str | None) -> str | None:
+    """uid for self-service writes: effective owner via the act-as switcher."""
+    uid, _is_admin = _session_identity(token)
+    return uid
+
+
+@router.get("/api/me/account")
+async def api_me_account(ag_session: str | None = Cookie(None)):
+    """Compact view of the current self-service profile for the Account panel."""
+    sess = session_info(ag_session)
+    if not sess:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    uid = _self_service_uid(ag_session)
+    if not uid:
+        # Real admin not acting-as — the built-in admin has no DB account.
+        return JSONResponse({
+            "is_builtin_admin": True,
+            "username": sess.get("username") or "admin",
+            "email": "",
+            "console_url": "",
+            "has_console_token": False,
+        })
+    u = accounts.get_user(uid) or {}
+    return JSONResponse({
+        "is_builtin_admin": False,
+        "user_id": uid,
+        "username": u.get("username") or sess.get("username") or "",
+        "email": u.get("email", "") or "",
+        "console_url": u.get("console_url", "") or "",
+        "has_console_token": bool(u.get("has_console_token")),
+    })
+
+
+@router.put("/api/me/email")
+async def api_me_email(request: Request, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    uid = _self_service_uid(ag_session)
+    if not uid:
+        return JSONResponse({"error": "the built-in admin account has no email"}, status_code=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    email = (body.get("email") or "").strip()
+    try:
+        user = accounts.update_user(uid, email=email)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    if user is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return JSONResponse({"ok": True, "email": user.get("email", "")})
+
+
+@router.put("/api/me/password")
+async def api_me_password(request: Request, ag_session: str | None = Cookie(None)):
+    """Self-service password change (verifies current).
+
+    Always mutates the *real* session user (never the acting-as target). An
+    admin who needs to reset another user's password uses the dedicated
+    admin endpoint /admin/api/rbac/users/{uid}/password.
+    """
+    sess = session_info(ag_session)
+    if not sess:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     try:
         body = await request.json()
     except Exception:
         return JSONResponse({"error": "invalid JSON"}, status_code=400)
-    current = body.get("current", "")
-    new_pw = body.get("new", "")
-    # If a password is already configured, require the current one
-    if _investigate_password_configured():
-        if not _check_investigate_password(current):
-            return JSONResponse({"error": "Current investigation password is incorrect"}, status_code=403)
-    if len(new_pw) < 8:
-        return JSONResponse({"error": "New password must be at least 8 characters"}, status_code=400)
-    new_hash = _hash_password(new_pw)
+    current = body.get("current") or ""
+    new     = body.get("new") or ""
+    if len(new) < 8:
+        return JSONResponse({"error": "New password must be at least 8 characters."}, status_code=400)
+    uid = sess.get("user_id")
+    if not uid:
+        return JSONResponse({"error": "the built-in admin must use /admin/api/change-password"},
+                            status_code=400)
     try:
-        INVESTIGATE_PASSWORD_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = INVESTIGATE_PASSWORD_FILE.with_suffix(".tmp")
-        tmp.write_text(new_hash + "\n", encoding="utf-8")
-        tmp.chmod(0o600)
-        tmp.replace(INVESTIGATE_PASSWORD_FILE)
-    except OSError as exc:
-        return JSONResponse({"error": f"Could not persist: {exc}"}, status_code=500)
+        ok = accounts.change_password(uid, current, new)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    if not ok:
+        return JSONResponse({"error": "user not found"}, status_code=404)
+    return JSONResponse({"ok": True})
+
+
+@router.get("/api/me/s1-console")
+async def api_me_s1_console_get(ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    uid = _self_service_uid(ag_session)
+    if not uid:
+        return JSONResponse({"is_builtin_admin": True,
+                             "console_url": "", "has_console_token": False})
+    u = accounts.get_user(uid) or {}
+    return JSONResponse({
+        "is_builtin_admin": False,
+        "console_url": u.get("console_url", "") or "",
+        "has_console_token": bool(u.get("has_console_token")),
+    })
+
+
+@router.put("/api/me/s1-console")
+async def api_me_s1_console_put(request: Request, ag_session: str | None = Cookie(None)):
+    """Set this user's personal S1 console URL and/or API token.
+
+    Empty *api_token* preserves the saved token (so the UI can update the URL
+    without re-pasting the secret). To clear both, send an empty *console_url*
+    AND an empty *api_token*, or use DELETE.
+    """
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    uid = _self_service_uid(ag_session)
+    if not uid:
+        return JSONResponse({"error": "the built-in admin has no per-user S1 console; "
+                             "use Settings → S1 Detection Library"}, status_code=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    console_url = (body.get("console_url") or "").rstrip("/")
+    api_token   = (body.get("api_token") or "").strip()
+    kwargs: dict[str, Any] = {"console_url": console_url}
+    if api_token:
+        kwargs["console_token"] = api_token
+    elif not console_url:
+        # Caller explicitly cleared the URL with no token — clear both.
+        kwargs["console_token"] = ""
+    try:
+        user = accounts.update_user(uid, **kwargs)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    if user is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return JSONResponse({
+        "ok": True,
+        "console_url": user.get("console_url", "") or "",
+        "has_console_token": bool(user.get("has_console_token")),
+    })
+
+
+@router.delete("/api/me/s1-console")
+async def api_me_s1_console_delete(ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    uid = _self_service_uid(ag_session)
+    if not uid:
+        return JSONResponse({"error": "the built-in admin has no per-user S1 console"},
+                            status_code=400)
+    try:
+        user = accounts.update_user(uid, console_url="", console_token="")
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    if user is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return JSONResponse({"ok": True})
+
+
+@router.post("/api/rbac/users/{uid}/reset-link")
+async def api_rbac_user_reset_link(uid: str, ag_session: str | None = Cookie(None)):
+    if not _require_admin(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if accounts.get_user(uid) is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    tok = accounts.issue_token(uid, "recovery")
+    return JSONResponse({"reset_link": f"/portal/set-password?token={tok}"})
+
+
+@router.delete("/api/rbac/users/{uid}")
+async def api_rbac_user_delete(uid: str, ag_session: str | None = Cookie(None)):
+    if not _require_admin(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not accounts.delete_user(uid):
+        return JSONResponse({"error": "not_found"}, status_code=404)
     return JSONResponse({"ok": True})
 
 
 # ── Investigation endpoints ──────────────────────────────────────────────────
+# The investigation password gate was removed; Investigations & Bans are plain
+# admin-only features (enforced by ADMIN_ONLY_API_PREFIXES + _valid).
 
 @router.get("/api/investigate/{ip}")
 async def api_investigate(ip: str, days: int = 1, limit: int = 500,
@@ -5768,7 +7498,8 @@ async def api_bans_delete(ip: str, ag_session: str | None = Cookie(None)):
 async def api_profiles_list(ag_session: str | None = Cookie(None)):
     if not _valid(ag_session):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    return JSONResponse({"profiles": profiles.list_profiles()})
+    visible = [p for p in profiles.list_profiles() if _can_see_obj(p, ag_session)]
+    return JSONResponse({"profiles": visible})
 
 
 @router.post("/api/profiles")
@@ -5781,7 +7512,23 @@ async def api_profiles_create(request: Request, ag_session: str | None = Cookie(
         return JSONResponse({"error": "invalid JSON"}, status_code=400)
     if not body.get("name", "").strip():
         return JSONResponse({"error": "name is required"}, status_code=400)
-    profile = profiles.create_profile(body)
+    profile = profiles.create_profile(_owner_stamp(ag_session, body))
+    return JSONResponse(profile, status_code=201)
+
+
+@router.post("/api/profiles/{profile_id}/clone")
+async def api_profiles_clone(profile_id: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    src = profiles.get_profile(profile_id)
+    if not src:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_see_obj(src, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    body = {k: v for k, v in src.items() if k not in ("id", "owner_id", "seed")}
+    body["name"] = _clone_name(src.get("name", "Profile"))
+    body["visibility"] = "private"  # clones start private to the cloner
+    profile = profiles.create_profile(_owner_stamp(ag_session, body))
     return JSONResponse(profile, status_code=201)
 
 
@@ -5792,6 +7539,8 @@ async def api_profiles_get(profile_id: str, ag_session: str | None = Cookie(None
     profile = profiles.get_profile(profile_id)
     if not profile:
         return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_see_obj(profile, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
     return JSONResponse(profile)
 
 
@@ -5799,10 +7548,16 @@ async def api_profiles_get(profile_id: str, ag_session: str | None = Cookie(None
 async def api_profiles_update(profile_id: str, request: Request, ag_session: str | None = Cookie(None)):
     if not _valid(ag_session):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+    existing = profiles.get_profile(profile_id)
+    if not existing:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_write_obj(existing, ag_session):
+        return JSONResponse({"error": "forbidden", "note": "you can only modify your own objects"}, status_code=403)
     try:
         body = await request.json()
     except Exception:
         return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    body.pop("owner_id", None)  # owner is immutable via update
     updated = profiles.update_profile(profile_id, body)
     if not updated:
         return JSONResponse({"error": "not_found"}, status_code=404)
@@ -5813,6 +7568,11 @@ async def api_profiles_update(profile_id: str, request: Request, ag_session: str
 async def api_profiles_delete(profile_id: str, ag_session: str | None = Cookie(None)):
     if not _valid(ag_session):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+    existing = profiles.get_profile(profile_id)
+    if not existing:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_write_obj(existing, ag_session):
+        return JSONResponse({"error": "forbidden", "note": "you can only delete your own objects"}, status_code=403)
     if profiles.delete_profile(profile_id):
         return JSONResponse({"ok": True})
     return JSONResponse({"error": "not_found"}, status_code=404)
@@ -5825,6 +7585,8 @@ async def api_profiles_preview(profile_id: str, source: str = "okta", ag_session
     profile = profiles.get_profile(profile_id)
     if not profile:
         return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_see_obj(profile, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
     ctx = profiles.ProfileContext(profile, source, 100)
     return JSONResponse({
         "users": ctx.users,
@@ -5841,12 +7603,25 @@ async def api_profiles_preview(profile_id: str, source: str = "okta", ag_session
 async def api_source_profiles_list(ag_session: str | None = Cookie(None)):
     if not _valid(ag_session):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    bindings = profiles.list_bindings()
-    # Enrich with profile name
+    uid, is_admin = _session_identity(ag_session)
+    # When uid is None we're the built-in admin without an acting-as target →
+    # show the global ("public") bindings to manage. Otherwise (a real user or
+    # an admin acting-as a user) show that user's effective view: global
+    # bindings overlaid by their own — their binding wins and is editable, the
+    # inherited global ones are shown read-only.
+    if uid is None:
+        effective = profiles.list_bindings()
+        own_sources: set[str] = set()
+    else:
+        glob = profiles.list_bindings()
+        own = profiles.list_bindings_for_user(uid)
+        effective = {**glob, **own}
+        own_sources = set(own.keys())
     enriched = {}
-    for src, bnd in bindings.items():
+    for src, bnd in effective.items():
         p = profiles.get_profile(bnd["profile_id"])
-        enriched[src] = {**bnd, "profile_name": p["name"] if p else "?"}
+        enriched[src] = {**bnd, "profile_name": p["name"] if p else "?",
+                         "own": uid is None or src in own_sources}
     return JSONResponse({"bindings": enriched})
 
 
@@ -5861,10 +7636,17 @@ async def api_source_profiles_bind(source: str, request: Request, ag_session: st
     profile_id = body.get("profile_id", "").strip()
     if not profile_id:
         return JSONResponse({"error": "profile_id is required"}, status_code=400)
-    if not profiles.get_profile(profile_id):
+    prof = profiles.get_profile(profile_id)
+    if not prof:
         return JSONResponse({"error": "profile not found"}, status_code=404)
+    uid, is_admin = _session_identity(ag_session)
+    # A user may only bind a profile they own or a public one.
+    if not is_admin and prof.get("owner_id") not in (uid, None) and prof.get("visibility") != "public":
+        return JSONResponse({"error": "you can only bind your own or public profiles"}, status_code=403)
     ratio = int(body.get("ratio", 70))
-    result = profiles.bind_source(source, profile_id, ratio)
+    # owner_id == uid: built-in admin (uid=None) writes the global binding;
+    # real users and admins-acting-as a user write into that user's namespace.
+    result = profiles.bind_source(source, profile_id, ratio, owner_id=uid)
     return JSONResponse(result)
 
 
@@ -5872,9 +7654,67 @@ async def api_source_profiles_bind(source: str, request: Request, ag_session: st
 async def api_source_profiles_unbind(source: str, ag_session: str | None = Cookie(None)):
     if not _valid(ag_session):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    if profiles.unbind_source(source):
+    uid, is_admin = _session_identity(ag_session)
+    if profiles.unbind_source(source, owner_id=uid):
         return JSONResponse({"ok": True})
     return JSONResponse({"error": "not_found"}, status_code=404)
+
+
+# ── Per-user source identifiers API (RBAC Phase 2.2) ──────────────────────────
+# Each user registers the credential value(s) their collector presents per source
+# (bearer token, tenant id, api key, …). auth.py resolves an inbound credential
+# to the owning user so pull responses are shaped by that user's own profile.
+
+@router.get("/api/identifiers")
+async def api_identifiers_list(ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    uid, is_admin = _session_identity(ag_session)
+    if not uid:
+        # The built-in admin has no per-user identifiers (uses the global profile).
+        return JSONResponse({"identifiers": [], "is_admin": True,
+                             "kinds": list(accounts.IDENTIFIER_KINDS)})
+    return JSONResponse({"identifiers": accounts.list_identifiers(uid),
+                         "is_admin": is_admin, "kinds": list(accounts.IDENTIFIER_KINDS)})
+
+
+@router.post("/api/identifiers")
+async def api_identifiers_add(request: Request, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    uid, is_admin = _session_identity(ag_session)
+    if not uid:
+        return JSONResponse({"error": "Identifiers apply to user accounts; the built-in "
+                             "admin always uses the global profile."}, status_code=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    import auth as _auth
+    if _auth.is_reserved_credential(body.get("id_value", "")):
+        return JSONResponse({"error": "That value is a built-in shared demo credential and "
+                             "cannot be registered. Use a unique value of your own."},
+                            status_code=400)
+    try:
+        ident = accounts.add_identifier(
+            uid, body.get("source", ""), body.get("id_kind", ""), body.get("id_value", ""))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return JSONResponse(ident, status_code=201)
+
+
+@router.delete("/api/identifiers/{iid}")
+async def api_identifiers_delete(iid: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    uid, is_admin = _session_identity(ag_session)
+    if not uid:
+        return JSONResponse({"error": "no user context"}, status_code=400)
+    if not is_admin and not any(i["id"] == iid for i in accounts.list_identifiers(uid)):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if accounts.delete_identifier(iid):
+        return JSONResponse({"ok": True})
+    return JSONResponse({"error": "not found"}, status_code=404)
 
 
 # ── Source intensity API ──────────────────────────────────────────────────────
@@ -5906,7 +7746,8 @@ async def api_detection_rules_list(source: str | None = None, ag_session: str | 
     if not _valid(ag_session):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     import detection_rules
-    return JSONResponse({"rules": detection_rules.list_rules(source)})
+    rules = [r for r in detection_rules.list_rules(source) if _can_see_obj(r, ag_session)]
+    return JSONResponse({"rules": rules})
 
 
 @router.post("/api/detection-rules")
@@ -5922,7 +7763,24 @@ async def api_detection_rules_create(request: Request, ag_session: str | None = 
         return JSONResponse({"error": "name is required"}, status_code=400)
     if not body.get("source", "").strip():
         return JSONResponse({"error": "source is required"}, status_code=400)
-    rule = detection_rules.create_rule(body)
+    rule = detection_rules.create_rule(_owner_stamp(ag_session, body))
+    return JSONResponse(rule, status_code=201)
+
+
+@router.post("/api/detection-rules/{rule_id}/clone")
+async def api_detection_rules_clone(rule_id: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import detection_rules
+    src = detection_rules.get_rule(rule_id)
+    if not src:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_see_obj(src, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    body = {k: v for k, v in src.items() if k not in ("id", "owner_id")}
+    body["name"] = _clone_name(src.get("name", "Rule"))
+    body["visibility"] = "private"
+    rule = detection_rules.create_rule(_owner_stamp(ag_session, body))
     return JSONResponse(rule, status_code=201)
 
 
@@ -5934,6 +7792,8 @@ async def api_detection_rules_get(rule_id: str, ag_session: str | None = Cookie(
     rule = detection_rules.get_rule(rule_id)
     if not rule:
         return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_see_obj(rule, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
     return JSONResponse(rule)
 
 
@@ -5942,10 +7802,16 @@ async def api_detection_rules_update(rule_id: str, request: Request, ag_session:
     if not _valid(ag_session):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     import detection_rules
+    existing = detection_rules.get_rule(rule_id)
+    if not existing:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_write_obj(existing, ag_session):
+        return JSONResponse({"error": "forbidden", "note": "you can only modify your own objects"}, status_code=403)
     try:
         body = await request.json()
     except Exception:
         return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    body.pop("owner_id", None)
     rule = detection_rules.update_rule(rule_id, body)
     if not rule:
         return JSONResponse({"error": "not_found"}, status_code=404)
@@ -5957,6 +7823,11 @@ async def api_detection_rules_delete(rule_id: str, ag_session: str | None = Cook
     if not _valid(ag_session):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     import detection_rules
+    existing = detection_rules.get_rule(rule_id)
+    if not existing:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_write_obj(existing, ag_session):
+        return JSONResponse({"error": "forbidden", "note": "you can only delete your own objects"}, status_code=403)
     if detection_rules.delete_rule(rule_id):
         return JSONResponse({"ok": True})
     return JSONResponse({"error": "not_found"}, status_code=404)
@@ -5979,7 +7850,8 @@ async def api_push_profiles_list(ag_session: str | None = Cookie(None)):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     import log_pusher
     import push_sources
-    return JSONResponse({"profiles": log_pusher.list_profiles()})
+    visible = [p for p in log_pusher.list_profiles() if _can_see_obj(p, ag_session)]
+    return JSONResponse({"profiles": visible})
 
 
 @router.post("/api/push/profiles")
@@ -5996,7 +7868,27 @@ async def api_push_profiles_create(request: Request, ag_session: str | None = Co
         return JSONResponse({"error": "name is required"}, status_code=400)
     if not body.get("source_type", "").strip():
         return JSONResponse({"error": "source_type is required"}, status_code=400)
-    profile = log_pusher.create_profile(body)
+    profile = log_pusher.create_profile(_owner_stamp(ag_session, body))
+    return JSONResponse(profile, status_code=201)
+
+
+@router.post("/api/push/profiles/{profile_id}/clone")
+async def api_push_profiles_clone(profile_id: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import log_pusher
+    import push_sources
+    src = log_pusher.get_profile(profile_id)
+    if not src:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_see_obj(src, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    # Drop runtime/status fields so the clone starts fresh and idle.
+    body = {k: v for k, v in src.items()
+            if k not in ("id", "owner_id", "status", "state", "events", "started_at", "stats")}
+    body["name"] = _clone_name(src.get("name", "Push profile"))
+    body["visibility"] = "private"
+    profile = log_pusher.create_profile(_owner_stamp(ag_session, body))
     return JSONResponse(profile, status_code=201)
 
 
@@ -6008,6 +7900,8 @@ async def api_push_profiles_get(profile_id: str, ag_session: str | None = Cookie
     p = log_pusher.get_profile(profile_id)
     if not p:
         return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_see_obj(p, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
     return JSONResponse(p)
 
 
@@ -6016,10 +7910,16 @@ async def api_push_profiles_update(profile_id: str, request: Request, ag_session
     if not _valid(ag_session):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     import log_pusher
+    existing = log_pusher.get_profile(profile_id)
+    if not existing:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_write_obj(existing, ag_session):
+        return JSONResponse({"error": "forbidden", "note": "you can only modify your own objects"}, status_code=403)
     try:
         body = await request.json()
     except Exception:
         return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    body.pop("owner_id", None)
     p = log_pusher.update_profile(profile_id, body)
     if not p:
         return JSONResponse({"error": "not_found"}, status_code=404)
@@ -6031,6 +7931,11 @@ async def api_push_profiles_delete(profile_id: str, ag_session: str | None = Coo
     if not _valid(ag_session):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     import log_pusher
+    existing = log_pusher.get_profile(profile_id)
+    if not existing:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_write_obj(existing, ag_session):
+        return JSONResponse({"error": "forbidden", "note": "you can only delete your own objects"}, status_code=403)
     if log_pusher.delete_profile(profile_id):
         return JSONResponse({"ok": True})
     return JSONResponse({"error": "not_found"}, status_code=404)
@@ -6042,12 +7947,12 @@ async def api_push_start(profile_id: str, request: Request, ag_session: str | No
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     import log_pusher
     import push_sources
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    password = body.get("password")
-    result = log_pusher.start_push(profile_id, password)
+    existing = log_pusher.get_profile(profile_id)
+    if not existing:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_write_obj(existing, ag_session):
+        return JSONResponse({"error": "forbidden", "note": "you can only operate your own push profiles"}, status_code=403)
+    result = log_pusher.start_push(profile_id)
     if isinstance(result, str):
         return JSONResponse({"error": result}, status_code=400)
     return JSONResponse({"ok": True, "status": "running"})
@@ -6058,6 +7963,11 @@ async def api_push_stop(profile_id: str, ag_session: str | None = Cookie(None)):
     if not _valid(ag_session):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     import log_pusher
+    existing = log_pusher.get_profile(profile_id)
+    if not existing:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_write_obj(existing, ag_session):
+        return JSONResponse({"error": "forbidden", "note": "you can only operate your own push profiles"}, status_code=403)
     stopped = log_pusher.stop_push(profile_id)
     return JSONResponse({"ok": True, "was_running": stopped})
 
@@ -6067,6 +7977,9 @@ async def api_push_status(profile_id: str, ag_session: str | None = Cookie(None)
     if not _valid(ag_session):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     import log_pusher
+    existing = log_pusher.get_profile(profile_id)
+    if existing and not _can_see_obj(existing, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
     return JSONResponse(log_pusher.get_status(profile_id))
 
 
@@ -6075,6 +7988,9 @@ async def api_push_events(profile_id: str, ag_session: str | None = Cookie(None)
     if not _valid(ag_session):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     import log_pusher
+    existing = log_pusher.get_profile(profile_id)
+    if existing and not _can_see_obj(existing, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
     return JSONResponse({"events": log_pusher.get_event_log(profile_id)})
 
 

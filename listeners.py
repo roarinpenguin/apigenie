@@ -144,6 +144,8 @@ class Listener:
     # Exactly one of these is populated. Encoded as a tagged dict on disk.
     synthetic: SyntheticTopicSpec | None = None
     replay: ReplayFileSpec | None = None
+    owner_id: str | None = None
+    visibility: str = "private"
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds"))
 
     # ── (de)serialisation ────────────────────────────────────────────────
@@ -169,6 +171,8 @@ class Listener:
             chaos=_sub(ChaosSpec, "chaos"),
             synthetic=_sub(SyntheticTopicSpec, "synthetic"),
             replay=_sub(ReplayFileSpec, "replay"),
+            owner_id=d.get("owner_id"),
+            visibility=d.get("visibility", "private"),
             created_at=d.get("created_at") or datetime.now(timezone.utc).isoformat(timespec="seconds"),
         )
 

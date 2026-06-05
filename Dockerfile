@@ -14,7 +14,7 @@ COPY pyproject.toml .
 RUN apt-get update -qq && apt-get install -y --no-install-recommends docker-cli whois && rm -rf /var/lib/apt/lists/*
 
 # Install dependencies (no editable install needed for prod)
-RUN uv pip install --system --no-cache fastapi uvicorn[standard] httpx kafka-python google-cloud-pubsub pydantic python-multipart cryptography maxminddb
+RUN uv pip install --system --no-cache fastapi uvicorn[standard] httpx kafka-python google-cloud-pubsub pydantic python-multipart cryptography maxminddb pillow
 
 # Copy source
 COPY . .

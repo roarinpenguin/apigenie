@@ -133,8 +133,8 @@ resource "aws_security_group" "apigenie" {
 # SSH Key Pair — imported from local public key
 # ---------------------------------------------------------------------------
 resource "aws_key_pair" "apigenie" {
-  key_name   = "apigenie-key"
-  public_key = file(pathexpand("~/.ssh/roarinkey.pub"))
+  key_name   = var.key_name
+  public_key = file(pathexpand(var.ssh_public_key_path))
 
   tags = { Project = var.project_name }
 }
@@ -179,7 +179,7 @@ resource "aws_instance" "apigenie" {
   iam_instance_profile   = aws_iam_instance_profile.ssm.name
 
   root_block_device {
-    volume_size           = 30  # GB — Docker images + Kafka data
+    volume_size           = 30 # GB — Docker images + Kafka data
     volume_type           = "gp3"
     delete_on_termination = true
   }

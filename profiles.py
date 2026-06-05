@@ -17,6 +17,7 @@ import os
 import random
 import threading
 import uuid
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,30 @@ PROFILES_DIR = _DATA_ROOT / "profiles"
 _BINDINGS_FILE = _DATA_ROOT / "source_profiles.json"
 
 _lock = threading.Lock()
+
+# ── Per-request caller identity (RBAC Phase 2.2 — identifier matching) ────────
+# auth.py resolves the credential a collector presents to a registered user and
+# stashes that user_id here for the duration of the request. get_context() /
+# scale_count() then personalise the response with that user's own bindings and
+# profiles. Defaults to None → global/admin ("public") behaviour, so Kafka /
+# Pub/Sub publishers and anonymous demos keep working unchanged.
+_CURRENT_USER: ContextVar[str | None] = ContextVar("apigenie_current_user", default=None)
+
+
+def set_current_user(user_id: str | None):
+    """Set the resolved caller user_id for this request; returns a reset token."""
+    return _CURRENT_USER.set(user_id)
+
+
+def reset_current_user(token) -> None:
+    try:
+        _CURRENT_USER.reset(token)
+    except (ValueError, LookupError):
+        pass
+
+
+def get_current_user() -> str | None:
+    return _CURRENT_USER.get()
 
 # ── Star Wars padding pools ──────────────────────────────────────────────────
 # Characters from Star Wars TV Series (The Mandalorian, Ahsoka, Andor,
@@ -158,6 +183,8 @@ def create_profile(data: dict[str, Any]) -> dict[str, Any]:
         "id": profile_id,
         "name": data.get("name", "Untitled"),
         "description": data.get("description", ""),
+        "owner_id": data.get("owner_id"),
+        "visibility": data.get("visibility", "private"),
         "seed": data.get("seed", random.randint(1, 2**31)),
         "users": data.get("users", [])[:LIMITS["users"]],
         "machines": data.get("machines", [])[:LIMITS["machines"]],
@@ -186,7 +213,7 @@ def update_profile(profile_id: str, data: dict[str, Any]) -> dict[str, Any] | No
         existing = get_profile(profile_id)
         if existing is None:
             return None
-        for key in ("name", "description", "seed"):
+        for key in ("name", "description", "seed", "visibility"):
             if key in data:
                 existing[key] = data[key]
         for key in LIMITS:
@@ -226,6 +253,8 @@ def list_profiles() -> list[dict[str, Any]]:
                 "id": data["id"],
                 "name": data.get("name", "?"),
                 "description": data.get("description", ""),
+                "owner_id": data.get("owner_id"),
+                "visibility": data.get("visibility", "public"),
                 "users": len(data.get("users", [])),
                 "machines": len(data.get("machines", [])),
                 "c2_servers": len(data.get("c2_servers", [])),
@@ -238,36 +267,78 @@ def list_profiles() -> list[dict[str, Any]]:
 
 
 # ── Source-profile bindings ───────────────────────────────────────────────────
+# Bindings are keyed by source for the global (admin / "public") binding, and by
+# "{source}::u::{user_id}" for a user's own per-source binding. A user's binding
+# shadows the global one for that user only; everyone else falls back to global.
 
-def bind_source(source: str, profile_id: str, ratio: int = 70, intensity: int | None = None) -> dict[str, Any]:
-    """Bind a source to a profile with a blend ratio (0-100)."""
+_USER_SEP = "::u::"
+
+
+def _user_key(source: str, user_id: str) -> str:
+    return f"{source}{_USER_SEP}{user_id}"
+
+
+def _is_global_key(key: str) -> bool:
+    return _USER_SEP not in key
+
+
+def bind_source(source: str, profile_id: str, ratio: int = 70, intensity: int | None = None,
+                owner_id: str | None = None) -> dict[str, Any]:
+    """Bind a source to a profile with a blend ratio (0-100).
+
+    When *owner_id* is given the binding is private to that user; otherwise it is
+    the global/admin binding.
+    """
     ratio = max(0, min(100, ratio))
+    key = _user_key(source, owner_id) if owner_id else source
     with _lock:
         bindings = _load_bindings()
-        existing = bindings.get(source, {})
-        bindings[source] = {"profile_id": profile_id, "ratio": ratio,
-                            "intensity": intensity if intensity is not None else existing.get("intensity", 50)}
+        existing = bindings.get(key, {})
+        bindings[key] = {"profile_id": profile_id, "ratio": ratio,
+                         "intensity": intensity if intensity is not None else existing.get("intensity", 50),
+                         "owner_id": owner_id}
         _save_bindings(bindings)
-    return bindings[source]
+    return bindings[key]
 
 
-def unbind_source(source: str) -> bool:
+def unbind_source(source: str, owner_id: str | None = None) -> bool:
+    key = _user_key(source, owner_id) if owner_id else source
     with _lock:
         bindings = _load_bindings()
-        if source not in bindings:
+        if key not in bindings:
             return False
-        del bindings[source]
+        del bindings[key]
         _save_bindings(bindings)
     return True
 
 
-def get_binding(source: str) -> dict[str, Any] | None:
+def get_binding(source: str, user_id: str | None = None) -> dict[str, Any] | None:
+    """Return the effective binding for *source*.
+
+    If *user_id* is given and that user has their own binding for the source it
+    wins; otherwise the global/admin binding is returned (or None if unbound).
+    """
     bindings = _load_bindings()
+    if user_id:
+        own = bindings.get(_user_key(source, user_id))
+        if own:
+            return own
     return bindings.get(source)
 
 
 def list_bindings() -> dict[str, Any]:
-    return _load_bindings()
+    """Global (admin) bindings only — keyed by source."""
+    return {k: v for k, v in _load_bindings().items() if _is_global_key(k)}
+
+
+def list_bindings_for_user(user_id: str) -> dict[str, Any]:
+    """A single user's own bindings, keyed by bare source name."""
+    out: dict[str, Any] = {}
+    suffix = f"{_USER_SEP}{user_id}"
+    for k, v in _load_bindings().items():
+        if k.endswith(suffix):
+            out[k[: -len(suffix)]] = v
+    return out
 
 
 # ── Per-source intensity (1-100) ─────────────────────────────────────────────
@@ -318,7 +389,11 @@ def scale_count(source: str, requested: int) -> int:
 
     intensity=100 → full count, intensity=1 → 1 log, intensity=50 → half.
     """
-    intensity = get_intensity(source)
+    binding = get_binding(source, get_current_user())
+    if binding and binding.get("intensity") is not None:
+        intensity = max(1, min(100, int(binding["intensity"])))
+    else:
+        intensity = get_intensity(source)
     scaled = max(1, int(requested * intensity / 100))
     return scaled
 
@@ -385,8 +460,13 @@ class ProfileContext:
 
 
 def get_context(source: str) -> ProfileContext | None:
-    """Return a ProfileContext for *source*, or None if unbound."""
-    binding = get_binding(source)
+    """Return a ProfileContext for *source*, or None if unbound.
+
+    Personalised to the request's resolved caller (see ``set_current_user``):
+    a user with their own binding for *source* gets their own profile; everyone
+    else falls back to the global/admin binding.
+    """
+    binding = get_binding(source, get_current_user())
     if not binding:
         return None
     profile = get_profile(binding["profile_id"])

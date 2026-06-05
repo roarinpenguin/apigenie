@@ -69,8 +69,43 @@ def save_settings(data: dict[str, Any]) -> None:
     tmp.replace(_SETTINGS_FILE)
 
 
-def is_configured() -> bool:
+def _resolved_settings() -> dict[str, Any]:
+    """Return the active S1 console settings for the current request.
+
+    RBAC Phase 3.5 — every user can configure their *own* S1 console URL +
+    API token (stored on the users row via accounts.update_user). When the
+    request's caller-context (``profiles.get_current_user``) points to a
+    user with **both** ``console_url`` and ``console_token`` set, we use
+    them. Otherwise we fall back to the global ``s1_settings.json`` written
+    by the admin "System Settings" page.
+
+    Partial overrides (URL but no token, or vice versa) deliberately fall
+    back to the global blob — mixing a user's URL with the admin's token
+    would point the admin's credentials at an unrelated tenant.
+    """
+    try:
+        from profiles import get_current_user
+        import accounts
+        uid = get_current_user()
+        if uid:
+            u = accounts.get_user(uid, with_secrets=True)
+            if u and u.get("console_url") and u.get("console_token"):
+                return {
+                    "console_url": u["console_url"],
+                    "api_token": u["console_token"],
+                    # account_id is global-only for now — per-user discovery
+                    # would happen on first per-user API call.
+                    "account_id": get_settings().get("account_id", ""),
+                    "_source": "per_user",
+                }
+    except Exception as e:                          # pragma: no cover
+        log.debug("per-user S1 resolution failed: %s", e)
     s = get_settings()
+    return {**s, "_source": "global"}
+
+
+def is_configured() -> bool:
+    s = _resolved_settings()
     return bool(s.get("console_url") and s.get("api_token"))
 
 
@@ -78,7 +113,7 @@ def is_configured() -> bool:
 
 def _api_get(path: str, params: dict[str, str] | None = None) -> dict[str, Any]:
     """Make a GET request to the S1 Management API."""
-    settings = get_settings()
+    settings = _resolved_settings()
     base = settings.get("console_url", "").rstrip("/")
     token = settings.get("api_token", "")
     if not base or not token:
@@ -106,7 +141,7 @@ def _api_get(path: str, params: dict[str, str] | None = None) -> dict[str, Any]:
 
 def _api_put(path: str, body: dict[str, Any]) -> dict[str, Any]:
     """Make a PUT request to the S1 Management API."""
-    settings = get_settings()
+    settings = _resolved_settings()
     base = settings.get("console_url", "").rstrip("/")
     token = settings.get("api_token", "")
     if not base or not token:

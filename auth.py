@@ -2,12 +2,37 @@
 
 import hashlib
 import hmac
+import logging
 import time
 from base64 import b64decode
 from email.utils import formatdate
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, Request
+
+import accounts
+import profiles
+
+log = logging.getLogger(__name__)
+
+
+def _resolve_caller(value: str | None, source: str | None = None) -> str | None:
+    """Resolve a presented credential value to a registered user_id.
+
+    On a match we stash the user on the request-scoped contextvar so
+    ``profiles.get_context`` personalises the response. Returns the user_id (or
+    None). Always (re)sets the contextvar so a request never inherits a stale
+    caller from a recycled execution context.
+    """
+    uid = None
+    if value:
+        try:
+            uid = accounts.match_user_by_identifier(value, source)
+        except Exception as exc:  # DB not ready / transient — fall back to global
+            log.debug("identifier match failed: %s", exc)
+            uid = None
+    profiles.set_current_user(uid)
+    return uid
 
 VALID_TOKENS = frozenset(
     {
@@ -134,6 +159,29 @@ def _check_error_token(token: str) -> None:
             raise HTTPException(status_code=status, detail=body)
 
 
+def is_reserved_credential(value: str) -> bool:
+    """True if *value* is a built-in shared mock credential.
+
+    Users must not be allowed to register these as their own identifier — doing
+    so would let them hijack the shared demo response, since per-user matching
+    runs before the shared-token check.
+    """
+    v = (value or "").strip()
+    if not v:
+        return False
+    if v in VALID_TOKENS or v in ERROR_RESPONSES:
+        return True
+    if v in VALID_API_KEYS:
+        return True
+    if any(v == u or v == p for u, p in VALID_BASIC_AUTH):
+        return True
+    if any(v == a or v == s for a, s in VALID_API_KEY_PAIRS):
+        return True
+    if v in (DUO_IKEY, DUO_SKEY):
+        return True
+    return False
+
+
 async def require_bearer_auth(request: Request) -> None:
     """Tolerant token auth — checks every header a collector might use."""
     token: str | None = None
@@ -143,11 +191,17 @@ async def require_bearer_auth(request: Request) -> None:
         if token:
             break
     if not token:
+        profiles.set_current_user(None)
         raise HTTPException(
             status_code=401,
             detail={"error": "unauthorized", "message": "Missing Bearer token"},
         )
     _check_error_token(token)
+    # A value a user registered as their own identifier authenticates them and
+    # personalises the response (RBAC Phase 2.2). Falls through to the shared
+    # mock tokens otherwise.
+    if _resolve_caller(token):
+        return
     if token not in VALID_TOKENS and not token.startswith("eyJ"):
         raise HTTPException(
             status_code=401,
@@ -163,7 +217,8 @@ async def require_basic_auth(authorization: Annotated[str | None, Header()] = No
         username, _, password = decoded.partition(":")
     except Exception:
         raise HTTPException(status_code=401, detail={"error": "unauthorized", "message": "Invalid Basic auth"})
-    if (username, password) not in VALID_BASIC_AUTH:
+    uid = _resolve_caller(username)
+    if (username, password) not in VALID_BASIC_AUTH and not uid:
         raise HTTPException(status_code=401, detail={"error": "unauthorized", "message": "Invalid credentials"})
 
 
@@ -199,7 +254,8 @@ async def require_x_api_keys(
             status_code=401,
             detail={"error": "unauthorized", "message": "X-ApiKeys must contain accessKey=<...>;secretKey=<...>"},
         )
-    if (access, secret) not in VALID_API_KEY_PAIRS:
+    uid = _resolve_caller(access)
+    if (access, secret) not in VALID_API_KEY_PAIRS and not uid:
         raise HTTPException(
             status_code=401,
             detail={"error": "unauthorized", "message": "Invalid API keys"},

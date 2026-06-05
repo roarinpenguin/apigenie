@@ -1,10 +1,14 @@
 # <img src="assets/logo.png" width="60" align="center" alt="ApiGenie logo"> ApiGenie
 
-> Self-contained mock server for **19 security platform APIs** plus **Azure Event Hubs (Kafka)** and **GCP Cloud Logging (Pub/Sub)** — built for [Observo](https://observo.ai) source-configuration testing.
+> Self-contained, **multi-user** mock server for **19 security platform APIs** plus **Azure Event Hubs (Kafka)** and **GCP Cloud Logging (Pub/Sub)** — built for [Observo](https://observo.ai) source-configuration testing and SE / customer demos.
 
 ApiGenie exposes realistic, dynamically-varied data through the same authentication shapes the real platforms use (Bearer, Basic, X-ApiKeys, Duo HMAC, OAuth2 client-credentials, Microsoft tenant OAuth, GraphQL, Tenable async export, Kafka SASL/PLAIN, gRPC Pub/Sub). It runs as a single Docker Compose stack — nginx, FastAPI, Kafka + Zookeeper, Pub/Sub emulator — with TLS via Let's Encrypt, a self-signed cert, or your own files.
 
 The deployment hostname is fully parameterised: pick any domain, run `./scripts/bootstrap.sh`, and the whole stack (nginx server names, TLS certs, Kafka advertised listeners, admin UI source-config examples) is rebuilt around it.
+
+**Multi-tenant by design.** One ApiGenie deployment can host many isolated users — each with their own log profiles, detection rules, source identifiers, SentinelOne console, avatar and recovery flow. Admins drive the platform from `/admin`; users drive their own corner from `/portal`. Same TLS port, two distinct portals, role-aware UI, owner-scoped APIs. See **[Multi-user & RBAC](#multi-user--rbac)** below for the model, and the two companion guides in [`docs/`](docs/) for hands-on labs.
+
+**Current release: v4.0** — *The Multi-User Edition*. See [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for what's new, the upgrade path from v3.x, and the breaking-change checklist.
 
 ---
 
@@ -92,6 +96,118 @@ A background publisher pushes 5 randomly-generated events into both streams ever
 ```
 
 All containers join the `apigenie-net` Docker network. Two one-shot init services (`kafka-cert-init`, `pubsub-emulator-seed`) prepare TLS material and create the topic/subscription before the broker and emulator start serving.
+
+---
+
+## Multi-user & RBAC
+
+ApiGenie is a **multi-tenant** mock platform: one deployment, many isolated users. The same TLS port (`443`) exposes two distinct UIs — `/admin` for operators and `/portal` for end-users — and two distinct authentication models. Read this section once before configuring users; the rest of the README assumes it.
+
+### Two portals, one stack
+
+| Portal | Path | Who logs in | What they can do |
+|--------|------|-------------|------------------|
+| **Admin** | `/admin` | The built-in admin account (env-set password) | Everything — system settings, S1 console, entitlements, user CRUD, investigations, intrusions, container logs, request-log download, plus all user-portal capabilities |
+| **User** | `/portal` | Any registered user (SQLite-backed account) — and admins can sign in here too, to operate as themselves or as a target user via the "Viewing as" switcher | Their own log profiles, detection rules, custom listeners, source identifiers, log-push profiles, avatar, account settings (Phase 3.5 — email, password, **personal SentinelOne console URL + API token**) |
+
+Both portals share the same cookie (`ag_session`, `HttpOnly`, 24 h TTL). The user portal cannot see admin-only categories; the `_portal_role_guard` HTTP middleware in [`app.py`](app.py) rejects any user-portal session reaching an admin-only prefix at the HTTP layer.
+
+### Authentication: source-data vs control-plane
+
+ApiGenie speaks **two completely different APIs on the same port** — confusing them is the #1 source of "why does my request 401?" tickets:
+
+| API surface | Examples | How you authenticate |
+|-------------|----------|----------------------|
+| **Source-data endpoints** (the whole point of ApiGenie — generate logs for a pipeline) | `/api/v1/logs`, `/web/api/v2.1/threats`, `/siem/v1/events/cg`, `/v1.0/auditLogs/directoryAudits`, … | The header the real vendor expects: `Authorization: SSWS …`, `Authorization: ApiToken …`, `Authorization: Bearer …`, `X-ApiKeys: …`, HTTP Basic, etc. The credential value identifies the *caller* — either a reserved demo token (public profile) or a **per-user identifier** the user registered in the portal. |
+| **Control-plane** (`/admin/api/*` and `/portal/api/*`) | `/admin/api/me`, `/admin/api/rbac/users`, `/admin/api/detection-rules`, `/admin/api/me/s1-console`, … | The `ag_session` cookie issued by `POST /admin/login` or `POST /portal/login`. |
+
+The source-data token authenticates the *caller* for log-shaping (which profile / detection rules to inject). The session cookie authenticates the *operator* for control-plane changes. They never overlap.
+
+### Entitlements + permissions
+
+Every registered user has an **entitlement** — a named bundle of `{category: [permissions]}` assignments — plus a flat `is_admin` bit. Five categories × five permissions:
+
+- Categories: **Log Profiles · Detection Rules · Log Push Profiles · Custom Listeners · Source Bindings**
+- Permissions per category: **View · Create · Modify · Delete · Manage**
+
+Admins implicitly hold every permission. Permission enforcement is **server-side** for every write endpoint (UI hiding is best-effort UX); see `_portal_role_guard` and `permission_error` in [`app.py`](app.py) and `accounts.has_permission` / `accounts.get_permissions` in [`accounts.py`](accounts.py).
+
+Admin-only categories are not in entitlements at all: **Intrusions · Investigations & Bans · Container Logs · Observability · System Settings · Entitlement / User management**.
+
+### Per-user identifier matching (pull sources)
+
+Each pull source stays a **single shared endpoint** (e.g. `GET /api/v1/logs`). The credential the collector presents (Bearer token, tenant id, API key, …) is matched against per-user identifiers the user registered in the portal under **Source Identifiers**. The first match wins:
+
+```
+collector → Authorization: SSWS alice-okta-personal-001
+              │
+              ▼
+  ApiGenie  → match "SSWS alice-okta-personal-001" against `identifiers` table
+              → resolves to user_id=alice
+              → applies Alice's profile binding, log volume intensity, custom fields,
+                detection-rule injections, custom entity blending
+              → response is shaped for Alice
+```
+
+No match? Falls back to the public profile binding (reserved demo tokens like `apigenie-valid-token-001` always hit the public profile).
+
+### Per-user SentinelOne console (Phase 3.5)
+
+Every registered user can configure their **own** S1 console URL + API token via the portal **My Account** tab (or `PUT /admin/api/me/s1-console`). When set, every `/admin/api/s1/*` request made by that user (or by an admin acting-as them) queries **their** tenant — not the global one configured by the admin. Resolution is implemented in `s1_detection_library._resolved_settings()` and triggered automatically by a request-scoped caller-context middleware in [`app.py`](app.py). Two SEs / customers / analysts sharing the same ApiGenie deployment can now point at their own consoles without coordination.
+
+### RBAC quickstart (~5 minutes)
+
+```bash
+# 0. Make sure the stack is up and you can log into /admin
+curl -sk -c /tmp/admin.jar -X POST \
+  -d "username=admin&password=<admin-pw>" \
+  https://<your-domain>/admin/login
+
+# 1. Create an entitlement that grants full access to log profiles + detection rules
+curl -sk -b /tmp/admin.jar -X POST -H "Content-Type: application/json" \
+  -d '{"name":"SOC Analyst","description":"Full LP+DR control",
+       "permissions":{"log_profiles":["view","create","modify","delete","manage"],
+                      "detection_rules":["view","create","modify","delete","manage"],
+                      "source_bindings":["view","create","modify"]}}' \
+  https://<your-domain>/admin/api/rbac/entitlements
+
+ENT_ID=$(curl -sk -b /tmp/admin.jar \
+  https://<your-domain>/admin/api/rbac/entitlements | jq -r '.[] | select(.name=="SOC Analyst") | .id')
+
+# 2. Create Alice WITHOUT a password — get back a one-time handoff link instead
+curl -sk -b /tmp/admin.jar -X POST -H "Content-Type: application/json" \
+  -d "{\"username\":\"alice\",\"email\":\"alice@team.io\",\"entitlement_id\":\"$ENT_ID\"}" \
+  https://<your-domain>/admin/api/rbac/users
+# → { "user": {...}, "setup_link": "/portal/set-password?token=..." }
+
+# 3. Share that setup_link with Alice (chat, ticket, sticky note — no SMTP needed).
+#    Alice opens it, sets her password, and lands on /portal/login.
+
+# 4. Alice signs in and immediately gets her own slice of ApiGenie: My Account, Source
+#    Identifiers, her log profiles, her detection rules, her S1 console.
+```
+
+For the full guided lab — including avatars, recovery links, acting-as switching, per-user S1 verification and cross-user isolation tests — see [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) Section 0 and [`docs/ADMIN_GUIDE.md`](docs/ADMIN_GUIDE.md) Section 0.
+
+### Phase summary & regression tests
+
+The RBAC story landed in four phases. All 91 tests pass under `pytest`:
+
+| Phase | What | Tests |
+|-------|------|-------|
+| **P1** | Identity & RBAC core: SQLite accounts, entitlements, permission model, two-portal auth, admin user-CRUD, retirement of the legacy investigation password gate | `tests/test_rbac_phase2.py` (Phase 1 fundamentals are exercised by every later test) |
+| **P2** | Data ownership: `owner_id` + `visibility` on profiles / rules / push / listeners / bindings, per-user isolation, public publishing, per-source identifier matching, source-detail placeholders in the user portal | `tests/test_rbac_phase2.py`, `tests/test_rbac_phase2_5_detection.py` |
+| **P3** | Polish: per-user avatars (Pillow circle), admin-handoff confirm / recovery links (no SMTP), Log-Push detection-rule injection scoping | `tests/test_rbac_phase3_avatars.py`, `tests/test_rbac_phase3_recovery.py`, `tests/test_rbac_phase3_log_push.py` |
+| **P3.5** | Self-service: email, password (verifies current), per-user SentinelOne console URL + API token. New caller-context middleware automatically scopes every `/admin/api/s1/*` call to the resolved user | `tests/test_rbac_phase35_self_service.py`, `tests/test_rbac_phase35_endpoints.py` |
+
+Run the whole suite inside the container:
+
+```bash
+docker exec apigenie pip install --quiet pytest pytest-asyncio   # one-time
+docker exec apigenie python -m pytest tests/ -v
+```
+
+For the full design rationale see [`docs/MULTI_USER_LOG_PROFILING.md`](docs/MULTI_USER_LOG_PROFILING.md).
 
 ---
 
@@ -216,45 +332,48 @@ Substitute the Bearer token to trigger specific HTTP errors:
 
 ---
 
-## Admin UI — `/admin`
+## Portals — `/admin` and `/portal`
 
-Login: `admin` / *(password set during `bootstrap.sh`)*.
+ApiGenie ships two UIs on the same TLS port. They share assets (sidebar, dashboard chrome, toast system, …) but differ in visibility, navigation and the API surface they can drive. See [Multi-user & RBAC](#multi-user--rbac) above for the model; this section covers the surfaces and where to find things.
 
-Passwords are stored as PBKDF2-HMAC-SHA256 hashes (600k iterations) in either the `ADMIN_PASSWORD_HASH` env var or, after the first in-app change, the override file at `./data/admin_pass`. The plaintext `ADMIN_PASSWORD` env var only acts as a first-boot fallback when no hash is present.
+### Admin portal — `/admin`
 
-The **Settings** tab (under *System*) exposes:
-- the resolved domain, Kafka advertised host, TLS mode, and where the active password is coming from;
-- the live TLS cert: subject, issuer, SAN list, validity window, days remaining, self-signed flag;
-- a one-click **Renew certificate** button that prints the exact host-side command for your TLS mode;
-- a **Change password** form (verifies current password, writes new hash atomically, persists across restarts).
+Login: `admin` / *(password set during `bootstrap.sh`)*. The admin password is stored as a PBKDF2-HMAC-SHA256 hash (600k iterations) in either the `ADMIN_PASSWORD_HASH` env var or, after the first in-app change, the override file at `./data/admin_pass`. The plaintext `ADMIN_PASSWORD` env var only acts as a first-boot fallback when no hash is present.
 
-### Sidebar structure
+The admin sidebar is grouped into four sections:
 
-The admin sidebar is organized into three sections:
+| Section | Items |
+|---------|-------|
+| **Monitor** | Observability *(admin)* · Requests *(both portals)* |
+| **Troubleshooting** | Intrusions · Investigations · Container Logs *(all admin-only)* |
+| **Configuration & Reference** | Listeners · Log Profiles & Detection Rules · Log Push · Source Identifiers · Source Details · **My Account** *(Phase 3.5; both portals)* |
+| **System** | System Settings *(admin-only)* |
 
-**Monitor**
-- Request Inspector, Observability, Intrusions
+The **System Settings** tab exposes the resolved domain, Kafka advertised host, TLS mode, where the active admin password is coming from, the live TLS cert metadata, a one-click **Renew certificate** button that prints the exact host-side command for your TLS mode, a **Change admin password** form, a **Change user-portal password** form (for the legacy shared user-portal password, kept as a back-door), and the global **SentinelOne console** settings.
 
-**Troubleshooting**
-- Listeners, Container Logs, Investigations
-
-**Configuration & Reference**
-- Log Profiles, Source Details, System Settings
-
-### Dashboard tabs
+Beyond System Settings, the admin tabs cover:
 
 | Tab | What it shows |
 |-----|---------------|
-| **Request Inspector** | Live trace of every inbound HTTP request, grouped by source. Shows request headers, body, **response size and preview**. Includes Pub/Sub and Kafka heartbeats, plus a **Bus Subscribers** panel showing Kafka consumer groups and Pub/Sub subscription status with lag and member counts |
+| **Requests** | Live trace of every inbound HTTP request, grouped by source. Shows request headers, body, **response size and preview**. Includes Pub/Sub and Kafka heartbeats, plus a **Bus Subscribers** panel showing Kafka consumer groups and Pub/Sub subscription status with lag and member counts |
 | **Observability** | Four sub-tabs: **Flows** (Sankey: source IPs → log sources), **GeoMap** (world map with IP bubbles), **Usage** (stacked area chart, 1h–1y range, SQLite-backed), and **System** (real-time host CPU/RAM/disk + per-container resource monitoring via Docker API) |
 | **Intrusions** | Threat detection for unrecognised paths (scanners, bots, attackers). Categorizes attempts (credential_theft, wordpress_scan, rce_attempt, php_scan, etc.), shows top offenders with one-click banning, and supports **acknowledgement** of known-good paths with multi-condition suppression (path, IP, category, prefix — AND logic). Acknowledged paths are persisted and silently counted |
 | **Listeners** | Custom HTTP endpoints for SCol Lua source testing — synthetic data (endpoint / identity / cloud / network) or replay uploaded log files (json / jsonl / csv / syslog / cef). Design: [`docs/CUSTOM_LISTENERS.md`](docs/CUSTOM_LISTENERS.md) |
 | **Container Logs** | Tail logs of any container via `docker logs --follow` |
-| **Investigations** | IP lookup (WHOIS, rDNS, GeoIP), request history, anomaly detection, and IP banning. Protected by a **separate investigation password**. Request log files downloadable as JSONL |
-| **Log Profiles** | Entity pools (users, machines, C2 servers, malware, mail senders) bound to sources with signal-to-noise ratio. **Per-source log volume control** (1–100%) scales how many logs each API response contains. **Detection Rules** inject SIEM-triggering log patterns at configurable periodicity. See [Log Profiles](#log-profiles) and [Detection Rules](#detection-rules) below |
-| **Log Push** | Actively send generated logs to external destinations. 10 source types (Palo Alto, FortiGate, Check Point, Cisco ASA, CrowdStrike, Carbon Black, Zscaler, Imperva, Barracuda, Infoblox), 3 formats (JSON/Syslog RFC5424/CEF), 3 transports (HTTP/HEC/Syslog). Start/stop control, event log with delivery confirmation, TLS cert management. See [Log Push](#log-push) below |
-| **Source Details** | Reference cards per platform with copy-pasteable endpoints, auth values, and `curl` / `kcat` examples |
-| **System Settings** | Domain, TLS info, password management, cert renewal |
+| **Investigations** | IP lookup (WHOIS, rDNS, GeoIP), request history, anomaly detection, and IP banning. Request log files downloadable as JSONL. *(The earlier investigation-password gate was removed in Phase 1 — Investigations is now plain admin-only.)* |
+| **Log Profiles & Detection Rules** | Entity pools (users, machines, C2 servers, malware, mail senders) bound to sources with signal-to-noise ratio. **Per-source log volume control** (1–100%) scales how many logs each API response contains. **Detection Rules** inject SIEM-triggering log patterns at configurable periodicity. Owner-scoped — admin sees everything, can publish public; users only see their own + public. See [Log Profiles](#log-profiles) and [Detection Rules](#detection-rules) below |
+| **Log Push** | Actively send generated logs to external destinations. Push profiles also inherit owner-scoped detection-rule injection (Phase 3). 10 source types, 3 formats, 3 transports. See [Log Push](#log-push) below |
+| **Source Identifiers** | Register the credential value a collector presents (Bearer token, tenant id, API key, …) and bind it to a source. ApiGenie uses identifier matching to resolve per-user log shaping on every pull request. Built-in demo tokens are reserved and rejected here |
+| **Source Details** | Reference cards per platform with copy-pasteable endpoints, auth values, and `curl` / `kcat` examples. **User portal sees placeholders** instead of the shared demo tokens (Phase 2 substitution layer) |
+| **My Account** *(Phase 3.5)* | Self-service email, password change (verifies current), and **personal SentinelOne console URL + API token**. When set, every `/admin/api/s1/*` call from this session uses *your* console. Disabled and inert for the built-in admin |
+
+### User portal — `/portal`
+
+Login: any registered user (`POST /portal/login`) or — for back-door admin access without the admin portal's broader surface — the built-in admin credentials (creates an `is_admin=true` session marked `role=user`, which is what powers the "Viewing as" switcher).
+
+The user portal shows the **Configuration & Reference** section only: **Listeners · Log Profiles & Detection Rules · Log Push · Source Identifiers · Source Details · My Account**. Plus the **Requests** tab. Everything else (Observability, Intrusions, Investigations, Container Logs, System Settings, Entitlements, User CRUD) is hidden client-side and blocked server-side via `_portal_role_guard`.
+
+Admin signed into `/portal` gets the **"Viewing as" user-switcher** in the topbar: pick a target user, and every owner-scoped read & write happens in that user's namespace (their bindings, identifiers, profiles, rules, S1 console). Useful for support and reproduction without password sharing. The acting-as state lives on the in-memory session record and clears on logout.
 
 ### GeoMap data source
 
@@ -273,47 +392,73 @@ docker compose restart apigenie
 
 MaxMind ships weekly updates; re-running the script (or scheduling it via cron) keeps the DB current.
 
-### Useful endpoints under `/admin`
+### Useful control-plane endpoints
+
+Both `/admin/api/*` and `/portal/api/*` are gated by the `ag_session` cookie (see [Authentication: source-data vs control-plane](#authentication-source-data-vs-control-plane)). Path **prefixes** marked admin-only return 403 for user-role sessions (`ADMIN_ONLY_API_PREFIXES` in [`admin.py`](admin.py)); everything else is shared and owner-scoped.
+
+**Identity, auth & RBAC**
+
+| Path | Purpose | Admin-only |
+|------|---------|------------|
+| `/admin/login` · `/admin/logout` | Admin portal login form / session destroy | — |
+| `/portal/login` · `/portal/logout` | User portal login form / session destroy | — |
+| `/portal/set-password?token=…` | One-shot handoff page where new users / password-recovery flows land | — |
+| `/admin/api/me` | Current session identity + effective permissions + has_avatar flag | no |
+| `/admin/api/me/account` | Self-service profile snapshot (email, console_url, has_console_token, is_builtin_admin) — **Phase 3.5** | no |
+| `/admin/api/me/email` | `PUT` to change your own email — **Phase 3.5** | no |
+| `/admin/api/me/password` | `PUT` to change your own password (verifies current) — **Phase 3.5** | no |
+| `/admin/api/me/s1-console` | `GET`/`PUT`/`DELETE` your personal SentinelOne console URL + API token — **Phase 3.5** | no |
+| `/admin/api/act-as` | `GET`/`POST`/`DELETE` the admin "Viewing as" switcher | implicit (is_admin) |
+| `/admin/api/users/me/avatar` | `POST` (multipart) / `DELETE` your own avatar — **Phase 3** | no |
+| `/admin/api/users/{uid}/avatar` | `GET` any user's avatar (PNG) | no |
+| `/admin/api/rbac/meta` | Category / permission / identifier-kind vocabulary | yes |
+| `/admin/api/rbac/entitlements` | `GET`/`POST` entitlements; `PUT`/`DELETE` on `/{eid}` | yes |
+| `/admin/api/rbac/users` | `GET`/`POST` users; `PUT`/`DELETE` on `/{uid}` | yes |
+| `/admin/api/rbac/users/{uid}/password` | `POST` to admin-reset a user's password (no current-pw challenge) | yes |
+| `/admin/api/rbac/users/{uid}/reset-link` | `POST` to mint a one-shot `/portal/set-password?token=…` link | yes |
+| `/admin/api/identifiers` | List / register per-user source identifiers | no (owner-scoped) |
+| `/admin/api/change-password` | Legacy form-encoded admin password change | yes |
+| `/admin/api/change-user-password` | Set the legacy shared user-portal password | yes |
+
+**Telemetry config (owner-scoped — admin sees everything, users see their own + public)**
+
+| Path | Purpose | Admin-only |
+|------|---------|------------|
+| `/admin/api/profiles` · `/admin/api/profiles/{id}` · `/admin/api/profiles/{id}/preview` | Log Profiles CRUD + entity-pool preview | no |
+| `/admin/api/source-profiles[/{source}]` | Bind/unbind a profile to a source with blend ratio | no |
+| `/admin/api/source-intensity[/{source}]` | Per-source log volume (1–100%) | no |
+| `/admin/api/detection-rules[/{id}]` | Detection Rules CRUD | no |
+| `/admin/api/listeners[/{id}]` | Custom HTTP listeners CRUD | no |
+| `/admin/api/push/source-types` | Catalogue of Log-Push source types | no |
+| `/admin/api/push/profiles[/{id}]` | Log-Push profiles CRUD | no |
+| `/admin/api/push/profiles/{id}/start` · `/stop` · `/status` · `/events` · `/tls` | Runtime control + observability | no |
+
+**S1 Detection Library**
+
+| Path | Purpose | Notes |
+|------|---------|-------|
+| `/admin/api/s1/settings` | `GET`/`POST` the **global** console settings | per-user override in `/admin/api/me/s1-console` (Phase 3.5) |
+| `/admin/api/s1/test` | Connection check (uses *resolved* settings — global or per-user) | — |
+| `/admin/api/s1/data-sources` | Discoverable data-source list | — |
+| `/admin/api/s1/rules[/for-phase]` · `/admin/api/s1/custom-rules` | Query the catalog & custom rules | — |
+| `/admin/api/s1/rules/{id}/{enable,disable,import-preview}` · `/admin/api/s1/rules/import` | Enable/disable on S1; preview + import to local detection rules | — |
+
+**Admin-only diagnostic / observability surfaces**
 
 | Path | Purpose |
 |------|---------|
-| `/admin/login` | Login form |
-| `/admin/` | Dashboard |
-| `/admin/gcp-sa.json` | Generates a fresh, parseable RSA-2048 GCP service-account JSON for collectors that need a credentials file. Generated per process and held only in memory — never persisted. The `token_uri` field points back at our fake OAuth endpoint so the collector never reaches real Google. |
-| `/admin/api/requests/{source}` | JSON request trace for a source (used by the dashboard) |
-| `/admin/api/flows[?ip=…]` | Sankey feed: nodes (IPs + sources) and weighted links |
-| `/admin/api/geo` | GeoMap feed: per-IP totals + lat/lon + per-source breakdown |
-| `/admin/api/usage?range=…` | Usage-over-Time feed (ranges: `1h 6h 24h 7d 30d 90d 1y`) |
+| `/admin/gcp-sa.json` | Fresh in-memory RSA-2048 GCP service-account JSON for collectors that need a credentials file. `token_uri` points back at our fake OAuth endpoint so the collector never reaches real Google. |
+| `/admin/api/requests/{source}` | JSON request trace for a source (drives the dashboard) |
+| `/admin/api/flows[?ip=…]` | Sankey feed (IP × source) |
+| `/admin/api/geo` | GeoMap feed (per-IP totals + lat/lon) |
+| `/admin/api/usage?range=…` | Usage-over-Time (`1h 6h 24h 7d 30d 90d 1y`) |
 | `/admin/api/logs/{container}` | SSE stream of container logs |
-| `/admin/api/investigate-gate` | Check whether investigation password is configured |
-| `/admin/api/investigate-auth` | Validate investigation password |
 | `/admin/api/investigate/{ip}` | IP investigation context (WHOIS, GeoIP, request history) |
 | `/admin/api/bans` | List / create IP bans |
-| `/admin/api/request-logs/stats` | Request log file metadata |
-| `/admin/api/request-logs/{file}` | Download a daily request log (JSONL) |
-| `/admin/api/profiles` | List / create log profiles |
-| `/admin/api/profiles/{id}` | Read / update / delete a profile |
-| `/admin/api/profiles/{id}/preview` | Preview padded entity pools |
-| `/admin/api/source-profiles` | List source↔profile bindings |
-| `/admin/api/source-profiles/{source}` | Bind / unbind a profile to a source |
-| `/admin/api/source-intensity` | List all per-source intensity settings |
-| `/admin/api/source-intensity/{source}` | Get / set log volume intensity (1–100) |
-| `/admin/api/intrusions` | Intrusion stats, top offenders, log, acknowledged paths |
-| `/admin/api/intrusions/log` | Recent intrusion attempt log |
-| `/admin/api/intrusions/acknowledge` | Acknowledge (suppress) a path/IP/category |
-| `/admin/api/sysmon` | System resource time-series samples |
-| `/admin/api/sysmon/latest` | Latest CPU, memory, disk, container stats |
+| `/admin/api/request-logs/stats` · `/admin/api/request-logs/{file}` | Request-log metadata + JSONL download |
+| `/admin/api/intrusions[/log\|/acknowledge]` | Intrusion stats, log, suppress |
+| `/admin/api/sysmon[/latest]` | Host CPU/memory/disk + container stats |
 | `/admin/api/bus-status` | Kafka consumer groups + Pub/Sub subscription status |
-| `/admin/api/detection-rules` | List / create detection rules |
-| `/admin/api/detection-rules/{id}` | Read / update / delete a detection rule |
-| `/admin/api/push/source-types` | List available push source types |
-| `/admin/api/push/profiles` | List / create push profiles |
-| `/admin/api/push/profiles/{id}` | Read / update / delete a push profile |
-| `/admin/api/push/profiles/{id}/start` | Start pushing logs |
-| `/admin/api/push/profiles/{id}/stop` | Stop pushing logs |
-| `/admin/api/push/profiles/{id}/status` | Runtime status + event count |
-| `/admin/api/push/profiles/{id}/events` | Last 100 sent events with delivery confirmation |
-| `/admin/api/push/profiles/{id}/tls` | TLS certificate details for a profile |
 
 ---
 
@@ -404,12 +549,16 @@ kcat -b apigenie.roarinpenguin.com:9094 -t azure-platform-logs -C \
 
 ```
 apigenie/
-├── app.py                    # FastAPI app: 14 source routes, OAuth2, fake Google token endpoint
-├── admin.py                  # Admin UI router (/admin/*) + source reference cards + SA JSON generator
-├── auth.py                   # Bearer / Basic / X-ApiKeys / Duo HMAC dependency injectors
-├── profiles.py               # Log Profiles: CRUD, Star Wars padding, ProfileContext, per-source intensity
-├── detection_rules.py        # Detection Rules: CRUD, field override injection, count/time-based periodicity
-├── log_pusher.py             # Log Push framework: transports, formatters, scheduling, CRUD, observability
+├── app.py                    # FastAPI app + role-guard middleware + per-request caller-context binding
+├── admin.py                  # Both portals (/admin & /portal), dashboard HTML, all control-plane APIs
+├── accounts.py               # RBAC: users, entitlements, identifiers, recovery tokens — SQLite (apigenie.db)
+├── avatars.py                # Per-user 250×250 circular PNG store (Pillow) — Phase 3
+├── s1_detection_library.py   # S1 console settings + _resolved_settings (per-user override) — Phase 3.5
+├── auth.py                   # Bearer / Basic / X-ApiKeys / Duo HMAC dependency injectors + identifier matching
+├── profiles.py               # Log Profiles: CRUD, Star Wars padding, ProfileContext, per-source intensity, caller ContextVar
+├── detection_rules.py        # Detection Rules: CRUD, field override injection, count/time-based periodicity, owner scoping
+├── log_pusher.py             # Log Push framework: transports, formatters, scheduling, CRUD, observability, caller-aware injection
+├── listeners.py              # Custom HTTP listeners (Phase 2 owner-scoped)
 ├── intrusions.py             # Intrusion tracking: path classification, per-IP aggregation, acknowledgement
 ├── sysmon.py                 # System resource monitor: CPU, memory, disk, Docker container stats
 ├── bus_monitor.py            # Kafka consumer-group + Pub/Sub subscription status poller
@@ -419,23 +568,36 @@ apigenie/
 ├── geoip.py                  # Hybrid GeoIP resolver: MaxMind .mmdb if present, else ip-api.com
 ├── state.py                  # Thread-safe Tenable export cache (TTL eviction)
 ├── generators.py             # Random-data helpers (UUID, IP, hostname, weighted choice)
+├── tests/                    # 91 pytest tests (RBAC Phases 1–3.5) with isolated tmp storage
+│   ├── conftest.py           # Redirects all storage paths to tmp BEFORE any project import
+│   ├── test_rbac_phase2.py · test_rbac_phase2_5_detection.py
+│   ├── test_rbac_phase3_{avatars,recovery,log_push}.py
+│   └── test_rbac_phase35_{self_service,endpoints}.py
 ├── nginx/
 │   └── nginx.conf            # 443 HTTPS + 8443 gRPC TLS proxy
 ├── html/
 │   └── index.html            # Public landing page
-├── sources/                  # One module per platform (data generators, profile-aware)
+├── sources/                  # One module per pull platform (data generators, profile-aware)
 │   ├── okta.py · netskope.py · azure_ad.py · m365.py · microsoft_defender.py · cisco_duo.py
 │   ├── gcp_audit.py · tenable.py · proofpoint.py
-│   ├── wiz.py · snyk.py · darktrace.py
+│   ├── wiz.py · snyk.py · darktrace.py · sentinelone.py · mimecast.py
+│   ├── cato.py · cloudflare.py · zscaler_zpa.py
 │   ├── aws_cloudtrail.py · aws_waf.py · aws_guardduty.py    # generators only (no HTTP routes — see LocalStack plan)
 │   └── synthetic/            # Synthetic topics for custom listeners (also profile-aware)
 ├── push_sources/             # Push log generators (one module per vendor)
 │   ├── paloalto.py · fortigate.py · checkpoint.py · cisco_asa.py
 │   ├── crowdstrike.py · carbonblack.py · zscaler.py
-│   └── imperva.py · barracuda.py · infoblox.py
+│   ├── imperva.py · barracuda.py · infoblox.py
+│   ├── cisco_switch.py · aruba_switch.py · corelight.py · cyberark.py · stamus.py · sentinelone.py
 ├── publishers/
 │   ├── kafka_publisher.py    # Background thread → Kafka topic azure-platform-logs
 │   └── pubsub_publisher.py   # Background thread → Pub/Sub topic audit-logs
+├── docs/
+│   ├── USER_GUIDE.md         # Hands-on lab (single-user + RBAC exercises)
+│   ├── ADMIN_GUIDE.md        # Admin lab (entitlements, viewing-as, audit, …) + API reference
+│   ├── MULTI_USER_LOG_PROFILING.md   # RBAC design rationale (Phases 1–3.5)
+│   ├── AWS_DEPLOYMENT.md     # Zero-to-hero AWS deployment guide
+│   ├── CUSTOM_LISTENERS.md · LOCALSTACK_PLAN.md · …
 ├── scripts/
 │   ├── bootstrap.sh          # Interactive first-run: domain, admin pwd, TLS mode, optional MaxMind key
 │   ├── gen-self-signed.sh    # Generate a self-signed cert for ./certs/<domain>/
@@ -443,10 +605,12 @@ apigenie/
 │   ├── refresh-geoip.sh      # Download/update GeoLite2-City.mmdb (cron-safe, atomic)
 │   ├── hash_password.py      # PBKDF2-SHA256 hasher used by bootstrap to set ADMIN_PASSWORD_HASH
 │   ├── seed-fake-traffic.sh  # Generate X-Forwarded-For-spoofed traffic for Flows/GeoMap demos
-│   ├── smoke-test.sh         # 28-check regression suite (functional + admin endpoints)
+│   ├── smoke-test.sh         # Regression suite (functional + admin endpoints)
+│   ├── check_dashboard_js.py # Parse-check the rendered dashboard JS (catch admin.py JS bugs early)
 │   └── admin-screenshot.py   # Headless-Chrome driver: screenshot /admin tabs + dump console
+├── terraform/                # Parametrised AWS deployment (EC2 + EIP + SG + IAM + cert-bot bootstrap)
 ├── docker-compose.yaml       # nginx, apigenie, zookeeper, kafka-cert-init, kafka, pubsub-emulator, pubsub-emulator-seed, certbot
-├── Dockerfile                # python:3.13-slim + uv + docker-cli (for admin log streaming)
+├── Dockerfile                # python:3.13-slim + uv + docker-cli + Pillow + pytest (for admin log streaming + avatar processing + in-container tests)
 ├── pyproject.toml
 └── assets/
     └── logo.png
@@ -464,9 +628,18 @@ apigenie/
 | `APIGENIE_TLS_MODE` | `self-signed` | One of `self-signed`, `letsencrypt`, `existing` (set by bootstrap) |
 | `APIGENIE_TLS_EMAIL` |  | Contact email for Let's Encrypt registration (only when `APIGENIE_TLS_MODE=letsencrypt`) |
 | `APIGENIE_KAFKA_ADVERTISED_HOST` | = `APIGENIE_DOMAIN` | Override the Kafka SASL_SSL advertised host if it differs from the API hostname |
-| `ADMIN_USERNAME` | `admin` | Admin UI login |
+| `ADMIN_USERNAME` | `admin` | Admin portal login |
 | `ADMIN_PASSWORD` | `apigenie` | First-boot fallback admin password (only used if no hash is set) |
 | `ADMIN_PASSWORD_HASH` |  | PBKDF2-HMAC-SHA256 hash (600k iterations); takes precedence over `ADMIN_PASSWORD` |
+| `ADMIN_PASSWORD_FILE` | `/var/lib/apigenie/admin_pass` | On-disk override location for the admin hash (written by `POST /admin/api/change-password`). Wins over the env var when present. |
+| `USER_PORTAL_USERNAME` | `user` | Legacy shared user-portal username (back-door — kept for upgrade paths; real users live in the SQLite accounts table) |
+| `USER_PORTAL_PASSWORD` |  | Legacy shared user-portal password — defaults to the admin password when empty |
+| `USER_PORTAL_PASSWORD_HASH` |  | Hash equivalent for `USER_PORTAL_PASSWORD` |
+| `USER_PASSWORD_FILE` | `/var/lib/apigenie/user_pass` | On-disk override for the legacy shared user-portal hash |
+| `APIGENIE_DATA_ROOT` | `/var/lib/apigenie` | Root of JSON state for `profiles`, `detection_rules`, `log_pusher`, `s1_detection_library`, `attack_scenarios` |
+| `APIGENIE_DATA_DIR` | `/var/lib/apigenie` | Root of the SQLite accounts DB, avatar store, custom listeners and replay uploads (`accounts`, `avatars`, `listeners`, `replay`) |
+| `APIGENIE_DATA` | `/var/lib/apigenie` | Root of `bans.json`, `acknowledged_paths.json`, `request-logs/`, and (as fallback) `telemetry.db` |
+| `APIGENIE_DB` | `${APIGENIE_DATA_DIR}/apigenie.db` | SQLite file backing accounts, entitlements, identifiers, recovery tokens |
 | `MAXMIND_LICENSE_KEY` |  | Free MaxMind key — when set, bootstrap downloads `GeoLite2-City.mmdb` for offline GeoMap lookups |
 | `APIGENIE_AGG_CAP` | `5000` | Max distinct (client_ip, source) pairs the Flows/GeoMap aggregator retains (LRU eviction) |
 | `APIGENIE_LISTENER_HITS_CAP` | `200` | Per-listener in-memory ring buffer for the live trace pane *(custom Listeners feature)* |
@@ -610,19 +783,28 @@ Log Push actively **sends** generated logs from ApiGenie to external destination
 
 ### Storage
 
-| Item | Path |
-|------|------|
-| Profile JSON files | `./data/profiles/<uuid>.json` |
-| Source↔profile bindings | `./data/source_profiles.json` |
-| Per-source intensity | `./data/source_intensity.json` |
-| Detection rules | `./data/detection_rules.json` |
-| Push profiles | `./data/push_profiles.json` |
-| Push TLS certificates | `./data/push_certs/*.pem` |
-| Acknowledged intrusion paths | `./data/acknowledged_paths.json` |
-| IP ban list | `./data/bans.json` |
-| Usage telemetry (SQLite) | `./data/telemetry.db` |
-| Investigation password hash | `./data/investigate_pass` |
-| Daily request logs | `./data/request-logs/YYYY-MM-DD.jsonl` |
+Everything ApiGenie persists lives under one Docker volume (`./data` on host, `/var/lib/apigenie` in the container). Mount it as a named volume for production so container recreation keeps state.
+
+| Item | Path | Owner |
+|------|------|-------|
+| **Accounts, entitlements, identifiers, recovery tokens** *(RBAC core)* | `./data/apigenie.db` (SQLite, WAL) | `accounts.py` |
+| **Per-user avatars** *(Phase 3)* | `./data/avatars/<uid>.png` (250×250 RGBA) | `avatars.py` |
+| **Admin / legacy user-portal password hashes** | `./data/admin_pass` · `./data/user_pass` | `admin.py` |
+| **Global S1 console settings** | `./data/s1_settings.json` | `s1_detection_library.py` (per-user override lives inside `apigenie.db` users row) |
+| Log Profiles | `./data/profiles/<uuid>.json` | `profiles.py` |
+| Source↔profile bindings | `./data/source_profiles.json` | `profiles.py` |
+| Per-source intensity | `./data/source_intensity.json` | `profiles.py` |
+| Detection rules | `./data/detection_rules.json` | `detection_rules.py` |
+| Custom listeners | `./data/listeners/<id>.json` | `listeners.py` |
+| Replay uploads (listener replay mode) | `./data/replays/<uuid>.{json,jsonl,csv,…}` | `replay.py` |
+| Log-Push profiles | `./data/push_profiles.json` | `log_pusher.py` |
+| Log-Push TLS certificates | `./data/push_certs/*.pem` | `log_pusher.py` |
+| Acknowledged intrusion paths | `./data/acknowledged_paths.json` | `intrusions.py` |
+| IP ban list | `./data/bans.json` | `bans.py` |
+| Usage telemetry | `./data/telemetry.db` (SQLite) | `telemetry.py` |
+| Daily request logs | `./data/request-logs/YYYY-MM-DD.jsonl` | `request_log.py` |
+
+Backups: a `tar` of the whole `./data/` directory captures everything above. The volume is fully portable across hosts — no host-side state lives outside it.
 
 ---
 
@@ -721,14 +903,11 @@ curl -s -H "Authorization: Bearer $TOKEN" \\
 
 ---
 
-## Investigation password
+## Investigations (admin-only)
 
-The 🔍 **Investigations** tab (IP lookup, WHOIS, banning) is protected by a separate password, independent of the admin login.
+The 🔍 **Investigations** tab (IP lookup, WHOIS, banning) used to be guarded by a *second* password independent of the admin login. **That gate was retired in Phase 1** — Investigations is now plain admin-only, enforced server-side by `ADMIN_ONLY_API_PREFIXES` in [`admin.py`](admin.py).
 
-- **First login after install/upgrade**: if no investigation password is configured, a mandatory setup modal prompts the admin to set one. The hash is persisted to `./data/investigate_pass`.
-- **Bootstrap**: `./scripts/bootstrap.sh` prompts for the investigation password and writes it (hashed) to `.env` as `APIGENIE_INVESTIGATE_PASSWORD`.
-- **Settings tab**: can be changed at any time from the Settings card "Change investigation password".
-- **Env var override**: set `APIGENIE_INVESTIGATE_PASSWORD` in `.env` or as a Docker env var.
+The `APIGENIE_INVESTIGATE_PASSWORD` env var and `./data/investigate_pass` file are still tolerated for forward-compatibility, but they no longer control access. If you are upgrading from a pre-RBAC build, you can delete both safely.
 
 ---
 
