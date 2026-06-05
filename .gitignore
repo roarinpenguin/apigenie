@@ -18,4 +18,13 @@ terraform/.terraform/
 terraform/terraform.tfstate
 terraform/terraform.tfstate.backup
 terraform/*.tfvars
+
+# POC environment (v4.0 validation) — same pattern, sibling directory
+terraform-poc/.terraform/
+terraform-poc/terraform.tfstate
+terraform-poc/terraform.tfstate.backup
+# Note: terraform-poc/terraform.tfvars is intentionally NOT gitignored — it
+# contains no secrets, only env-shaping values that document how the POC was
+# deployed. If you ever put secrets in it, change this line.
+
 .claude/

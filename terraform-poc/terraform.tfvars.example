@@ -1,0 +1,33 @@
+# Copy this file to terraform.tfvars and edit for your environment.
+#
+#   cp terraform.tfvars.example terraform.tfvars
+#   $EDITOR terraform.tfvars
+#
+# terraform.tfvars is gitignored — keep secrets and per-environment values here.
+# Everything in this file is optional: the defaults in variables.tf will be used
+# for anything you leave commented.
+
+# AWS region. Pick something close to your testers.
+# region = "eu-central-1"
+
+# Tag prefix applied to every resource. Useful when you stack several apigenie
+# environments in the same account (dev / staging / demo).
+# project_name = "apigenie"
+
+# EC2 instance type. t3.large is the documented minimum. Kafka + Zookeeper are
+# the limiting factors — anything smaller will swap heavily.
+# instance_type = "t3.large"
+
+# Path to your local SSH **public** key — the .pub file. The matching private
+# key is what you will use to ssh in (or rely on SSM Session Manager instead).
+# ssh_public_key_path = "~/.ssh/id_ed25519.pub"
+
+# CIDR blocks allowed to reach port 22. Find your current public IP with:
+#   curl -4s https://api.ipify.org
+# and lock it down to /32. If you only use SSM you can set this to a non-public
+# CIDR like ["127.0.0.1/32"] to effectively close port 22.
+# ssh_allowed_cidrs = ["1.2.3.4/32"]
+
+# Public DNS name you intend to serve. Used only to print the recommended
+# A-record line in the Terraform outputs. Required for Let's Encrypt to work.
+# domain = "apigenie.example.com"
