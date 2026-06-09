@@ -28,3 +28,10 @@ terraform-poc/terraform.tfstate.backup
 # deployed. If you ever put secrets in it, change this line.
 
 .claude/
+
+# Python local dev artefacts
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
