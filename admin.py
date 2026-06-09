@@ -317,6 +317,26 @@ def _perm_requirement(path: str, method: str) -> tuple[str, tuple[str, ...]] | N
             return (C.LOG_PUSH, (P.MODIFY,))
         if m == "DELETE":
             return (C.LOG_PUSH, (P.DELETE,))
+    # Alert Push (mirrors Log Push: send/start/stop are MANAGE/MODIFY)
+    if path == "/admin/api/alerts/profiles":
+        if m == "POST":
+            return (C.ALERT_PUSH, (P.CREATE,))
+    elif path.startswith("/admin/api/alerts/profiles/"):
+        if path.endswith("/clone"):
+            return (C.ALERT_PUSH, (P.CREATE,))
+        if path.endswith("/send") or path.endswith("/start") or path.endswith("/stop"):
+            return (C.ALERT_PUSH, (P.MANAGE, P.MODIFY))
+        if m in ("PUT", "PATCH"):
+            return (C.ALERT_PUSH, (P.MODIFY,))
+        if m == "DELETE":
+            return (C.ALERT_PUSH, (P.DELETE,))
+    # Alert Push ad-hoc send (no saved profile). Kept as its own if-block
+    # AFTER the profiles chain so we don't break the elif-anchor above.
+    if path == "/admin/api/alerts/send-custom":
+        if m == "POST":
+            # Ad-hoc send doesn't operate on an existing profile, so the
+            # right gate is CREATE — "create an alert in S1 from scratch".
+            return (C.ALERT_PUSH, (P.CREATE,))
     # Custom Listeners
     if path == "/admin/api/listeners":
         if m == "POST":
@@ -1106,6 +1126,7 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
   <a class="nav-item" data-portal="user" onclick="showTab('listeners', this); loadListeners()"><span class="nav-icon">🎯</span> Listeners</a>
   <a class="nav-item" data-portal="user" onclick="showTab('profiles', this); loadProfiles()"><span class="nav-icon">🎭</span> Log Profiles &amp;<br/><span style="padding-left:1.65rem">Detection Rules</span></a>
   <a class="nav-item" data-portal="user" onclick="showTab('push', this); loadPushProfiles()"><span class="nav-icon">🚀</span> Log Push</a>
+  <a class="nav-item" data-portal="user" onclick="showTab('alert-push', this); loadAlertProfiles()"><span class="nav-icon">🚨</span> Alert Push</a>
   <a class="nav-item" data-portal="user" onclick="showTab('identifiers', this); loadIdentifiers()"><span class="nav-icon">🔑</span> Source Identifiers</a>
   <a class="nav-item" data-portal="user" style="display:none" onclick="showTab('scenarios', this); loadScenarios()"><span class="nav-icon">⚔</span> Attack Scenarios</a>
   <a class="nav-item" data-portal="user" onclick="showTab('config', this)"><span class="nav-icon">🔧</span> Source Details</a>
@@ -1381,6 +1402,203 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
           <button class="btn-sm" id="push-delete-btn" style="background:rgba(120,30,40,.4);color:#ff8080;display:none" onclick="deletePushProfile()">Delete</button>
           <button class="btn-sm" id="push-clone-btn" style="display:none;background:rgba(128,200,255,.2);border:1px solid rgba(128,200,255,.4)" onclick="clonePushProfile()">⧉ Clone</button>
           <button class="btn-sm" id="push-save-btn" onclick="savePushProfile()">Save</button>
+        </div></div>
+      </div>
+    </div>
+
+    <!-- ALERT PUSH TAB -->
+    <div class="pane" id="pane-alert-push">
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span>Alert Push Profiles</span>
+          <div style="display:flex;gap:6px">
+            <button class="btn-sm" onclick="openCustomAlertModal()">⚡ Send Custom Alert</button>
+            <button class="btn-sm" onclick="openAlertEditor()">+ New Alert Profile</button>
+          </div>
+        </div>
+        <p style="font-size:.78rem;color:rgba(224,170,255,.45);margin-bottom:10px">
+          Inject OCSF-shaped finding alerts directly into S1 UAM via the
+          <code>/v1/alerts</code> ingest endpoint. Pick a template (Office 365, Proofpoint, Windows EVTX, …),
+          override identity / resources / severity as needed, then fire one alert or a small batch.
+          Profiles save the template + overrides + UAM credentials so a repeat send is one click away.
+        </p>
+        <div id="alert-profiles-list"><p class="empty">Loading…</p></div>
+      </div>
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span>Recent activity</span>
+          <button class="btn-sm" style="padding:3px 10px;font-size:.68rem" onclick="loadAlertGlobalHistory()">↻ Refresh</button>
+        </div>
+        <div id="alert-global-history"><p class="empty">No recent sends yet.</p></div>
+      </div>
+    </div>
+
+    <!-- Alert Profile Editor Modal -->
+    <div class="modal-overlay hidden" id="alert-modal">
+      <div class="modal" style="width:min(720px,94%)">
+        <div class="modal-head"><h3 id="alert-modal-title">New Alert Profile</h3></div>
+        <div class="modal-body" style="display:flex;flex-direction:column;gap:10px;max-height:74vh;overflow-y:auto">
+          <!-- Section 1: Identity & Template -->
+          <div style="font-size:.72rem;color:#c77dff;margin-top:4px;font-weight:600">① Identity &amp; Template</div>
+          <div style="display:flex;gap:10px">
+            <div style="flex:1">
+              <label style="font-size:.72rem;color:rgba(224,170,255,.5)">Profile name</label>
+              <input id="alert-name" type="text" placeholder="e.g. BEC inbox-rule simulation" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/>
+            </div>
+            <div style="flex:1">
+              <label style="font-size:.72rem;color:rgba(224,170,255,.5)">Visibility</label>
+              <select id="alert-visibility" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
+                <option value="private">Private</option><option value="public">Public</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label style="font-size:.72rem;color:rgba(224,170,255,.5);display:flex;justify-content:space-between;align-items:center">
+              <span>Template</span>
+              <a id="alert-template-preview" style="cursor:pointer;color:#c77dff;font-size:.68rem" onclick="previewAlertTemplate()">View template JSON</a>
+            </label>
+            <select id="alert-template-id" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
+              <option value="">Loading…</option>
+            </select>
+          </div>
+          <!-- Section 2: UAM Credentials -->
+          <div style="font-size:.72rem;color:#c77dff;margin-top:8px;font-weight:600">② UAM Ingest Credentials</div>
+          <div style="display:flex;gap:10px">
+            <div style="flex:2">
+              <label style="font-size:.72rem;color:rgba(224,170,255,.5)">Ingest URL</label>
+              <input id="alert-uam-ingest-url" type="text" placeholder="https://ingest.us1.sentinelone.net" value="https://ingest.us1.sentinelone.net" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/>
+            </div>
+            <div style="flex:1">
+              <label style="font-size:.72rem;color:rgba(224,170,255,.5)">Account ID</label>
+              <input id="alert-uam-account-id" type="text" placeholder="123456789012" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/>
+            </div>
+            <div style="flex:1">
+              <label style="font-size:.72rem;color:rgba(224,170,255,.5)">Site ID <span style="color:rgba(224,170,255,.3)">(opt.)</span></label>
+              <input id="alert-uam-site-id" type="text" placeholder="leave blank for account-scope" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/>
+            </div>
+          </div>
+          <div>
+            <label style="font-size:.72rem;color:rgba(224,170,255,.5)">Service token <span id="alert-token-hint" style="color:rgba(224,170,255,.3)"></span></label>
+            <input id="alert-uam-service-token" type="password" placeholder="UAM Service Account API token" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem;font-family:monospace"/>
+          </div>
+          <!-- Section 3: Overrides (3 sub-sections) -->
+          <div style="font-size:.72rem;color:#c77dff;margin-top:8px;font-weight:600;display:flex;justify-content:space-between;align-items:center">
+            <span>③ Overrides <span style="color:rgba(224,170,255,.4);font-weight:400">(applied to every alert)</span></span>
+            <div style="display:flex;gap:4px;font-size:.66rem">
+              <a class="alert-ovr-tab active" data-ovr="identity" onclick="switchOvrTab(event,'identity')" style="cursor:pointer;padding:3px 8px;border-radius:6px;background:rgba(199,125,255,.18);color:#e0aaff">Identity</a>
+              <a class="alert-ovr-tab" data-ovr="resources" onclick="switchOvrTab(event,'resources')" style="cursor:pointer;padding:3px 8px;border-radius:6px;color:rgba(224,170,255,.5)">Resources</a>
+              <a class="alert-ovr-tab" data-ovr="custom" onclick="switchOvrTab(event,'custom')" style="cursor:pointer;padding:3px 8px;border-radius:6px;color:rgba(224,170,255,.5)">Custom</a>
+            </div>
+          </div>
+          <!-- Identity sub-section -->
+          <div class="alert-ovr-pane" data-ovr-pane="identity" style="display:flex;flex-direction:column;gap:8px;padding:8px 10px;background:rgba(36,0,70,.3);border-radius:8px">
+            <div style="display:flex;gap:10px">
+              <div style="flex:2">
+                <label style="font-size:.68rem;color:rgba(224,170,255,.5)">finding_info.title</label>
+                <input data-ovr-key="finding_info.title" type="text" placeholder="(leave blank to keep template default)" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:6px;padding:6px 8px;color:var(--mist);font-size:.78rem"/>
+              </div>
+              <div style="flex:1">
+                <label style="font-size:.68rem;color:rgba(224,170,255,.5)">severity_id (1–6)</label>
+                <input data-ovr-key="severity_id" data-ovr-numeric="true" type="number" min="1" max="6" placeholder="" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:6px;padding:6px 8px;color:var(--mist);font-size:.78rem"/>
+              </div>
+              <div style="flex:1">
+                <label style="font-size:.68rem;color:rgba(224,170,255,.5)">status_id</label>
+                <input data-ovr-key="status_id" data-ovr-numeric="true" type="number" placeholder="" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:6px;padding:6px 8px;color:var(--mist);font-size:.78rem"/>
+              </div>
+            </div>
+            <div>
+              <label style="font-size:.68rem;color:rgba(224,170,255,.5)">message</label>
+              <input data-ovr-key="message" type="text" placeholder="Free-text message override" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:6px;padding:6px 8px;color:var(--mist);font-size:.78rem"/>
+            </div>
+          </div>
+          <!-- Resources sub-section -->
+          <div class="alert-ovr-pane" data-ovr-pane="resources" style="display:none;flex-direction:column;gap:8px;padding:8px 10px;background:rgba(36,0,70,.3);border-radius:8px">
+            <div style="font-size:.62rem;color:rgba(224,170,255,.4)">Override the first <code>resources[0]</code> entry. Use Custom tab for resources[1], etc.</div>
+            <div style="display:flex;gap:10px">
+              <div style="flex:1">
+                <label style="font-size:.68rem;color:rgba(224,170,255,.5)">resources[0].name</label>
+                <input data-ovr-key="resources[0].name" type="text" placeholder="user@example.com or hostname" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:6px;padding:6px 8px;color:var(--mist);font-size:.78rem"/>
+              </div>
+              <div style="flex:1">
+                <label style="font-size:.68rem;color:rgba(224,170,255,.5)">resources[0].type</label>
+                <input data-ovr-key="resources[0].type" type="text" placeholder="user / host / file / ip" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:6px;padding:6px 8px;color:var(--mist);font-size:.78rem"/>
+              </div>
+            </div>
+            <div style="display:flex;gap:10px">
+              <div style="flex:1">
+                <label style="font-size:.68rem;color:rgba(224,170,255,.5)">resources[0].uid <span style="color:rgba(224,170,255,.3)">(leave blank for auto)</span></label>
+                <input data-ovr-key="resources[0].uid" type="text" placeholder="" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:6px;padding:6px 8px;color:var(--mist);font-size:.78rem;font-family:monospace"/>
+              </div>
+              <div style="flex:1">
+                <label style="font-size:.68rem;color:rgba(224,170,255,.5)">resources[0].cloud_partition</label>
+                <input data-ovr-key="resources[0].cloud_partition" type="text" placeholder="aws / azure / gcp / on-prem" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:6px;padding:6px 8px;color:var(--mist);font-size:.78rem"/>
+              </div>
+            </div>
+          </div>
+          <!-- Custom sub-section -->
+          <div class="alert-ovr-pane" data-ovr-pane="custom" style="display:none;flex-direction:column;gap:6px;padding:8px 10px;background:rgba(36,0,70,.3);border-radius:8px">
+            <div style="font-size:.62rem;color:rgba(224,170,255,.4)">One dot-path per line, format <code>key.path=value</code>. Examples: <code>activity_id=3</code>, <code>cloud.provider=AWS</code>, <code>resources[1].name=mailbox-svc</code>.</div>
+            <textarea id="alert-ovr-custom" rows="6" placeholder="finding_info.analytic.name=Custom rule&#10;activity_id=3&#10;resources[1].name=mailbox-svc" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:6px;padding:8px 10px;color:var(--mist);font-size:.78rem;font-family:monospace;resize:vertical"></textarea>
+          </div>
+        </div>
+        <div id="alert-readonly-banner" style="display:none;margin:0 16px 4px;padding:8px 12px;border-radius:8px;background:rgba(128,200,255,.1);border:1px solid rgba(128,200,255,.3);color:#9cd3ff;font-size:.78rem"></div>
+        <div class="modal-foot"><div></div><div class="right">
+          <button class="btn-sm" style="background:rgba(90,24,154,.3)" onclick="closeAlertModal()">Cancel</button>
+          <button class="btn-sm" id="alert-delete-btn" style="background:rgba(120,30,40,.4);color:#ff8080;display:none" onclick="deleteAlertProfile()">Delete</button>
+          <button class="btn-sm" id="alert-clone-btn" style="display:none;background:rgba(128,200,255,.2);border:1px solid rgba(128,200,255,.4)" onclick="cloneAlertProfile()">⧉ Clone</button>
+          <button class="btn-sm" id="alert-save-btn" onclick="saveAlertProfile()">Save</button>
+        </div></div>
+      </div>
+    </div>
+
+    <!-- Custom-Alert Send Modal (ad-hoc, no profile) -->
+    <div class="modal-overlay hidden" id="alert-custom-modal">
+      <div class="modal" style="width:min(680px,94%)">
+        <div class="modal-head"><h3>Send Custom Alert</h3></div>
+        <div class="modal-body" style="display:flex;flex-direction:column;gap:10px;max-height:74vh;overflow-y:auto">
+          <div style="font-size:.72rem;color:rgba(224,170,255,.45)">Paste a complete OCSF Finding JSON and provide UAM credentials. The alert is sent verbatim (a fresh <code>finding_info.uid</code> is injected unless you uncheck below). No profile is created.</div>
+          <div style="display:flex;gap:10px">
+            <div style="flex:2">
+              <label style="font-size:.72rem;color:rgba(224,170,255,.5)">Ingest URL</label>
+              <input id="alert-cust-url" type="text" value="https://ingest.us1.sentinelone.net" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/>
+            </div>
+            <div style="flex:1">
+              <label style="font-size:.72rem;color:rgba(224,170,255,.5)">Account ID</label>
+              <input id="alert-cust-account" type="text" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/>
+            </div>
+            <div style="flex:1">
+              <label style="font-size:.72rem;color:rgba(224,170,255,.5)">Site ID (opt.)</label>
+              <input id="alert-cust-site" type="text" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/>
+            </div>
+          </div>
+          <div>
+            <label style="font-size:.72rem;color:rgba(224,170,255,.5)">Service token</label>
+            <input id="alert-cust-token" type="password" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem;font-family:monospace"/>
+          </div>
+          <div>
+            <label style="font-size:.72rem;color:rgba(224,170,255,.5);display:flex;justify-content:space-between;align-items:center">
+              <span>Alert JSON (OCSF Finding)</span>
+              <label style="font-size:.66rem;color:rgba(224,170,255,.5);display:flex;align-items:center;gap:4px"><input id="alert-cust-autouid" type="checkbox" checked style="accent-color:#c77dff"/> auto-generate fresh UID</label>
+            </label>
+            <textarea id="alert-cust-json" rows="14" placeholder='{"finding_info":{"title":"My alert", ...}, "severity_id":3, ...}' style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.78rem;font-family:monospace;resize:vertical"></textarea>
+          </div>
+        </div>
+        <div class="modal-foot"><div></div><div class="right">
+          <button class="btn-sm" style="background:rgba(90,24,154,.3)" onclick="closeCustomAlertModal()">Cancel</button>
+          <button class="btn-sm" onclick="sendCustomAlert()">⚡ Send</button>
+        </div></div>
+      </div>
+    </div>
+
+    <!-- Template Preview Modal (read-only JSON viewer) -->
+    <div class="modal-overlay hidden" id="alert-tpl-modal">
+      <div class="modal" style="width:min(720px,94%)">
+        <div class="modal-head"><h3 id="alert-tpl-title">Template</h3></div>
+        <div class="modal-body" style="max-height:72vh;overflow-y:auto">
+          <pre id="alert-tpl-body" style="font-size:.72rem;color:#e0aaff;background:rgba(36,0,70,.5);padding:12px;border-radius:8px;white-space:pre-wrap;word-break:break-word"></pre>
+        </div>
+        <div class="modal-foot"><div></div><div class="right">
+          <button class="btn-sm" onclick="document.getElementById('alert-tpl-modal').classList.add('hidden')">Close</button>
         </div></div>
       </div>
     </div>
@@ -1825,7 +2043,7 @@ function showTab(tab, el) {
   document.getElementById('pane-' + tab).classList.add('active');
   if (el) el.classList.add('active');
   activeTab = tab;
-  const titles = {requests:'Request Inspector', observability:'Observability', intrusions:'Intrusions', listeners:'Listeners', profiles:'Log Profiles & Detection Rules', push:'Log Push', scenarios:'Attack Scenarios', investigate:'Investigations', logs:'Container Logs', config:'Source Details', identifiers:'Source Identifiers', settings:'System Settings'};
+  const titles = {requests:'Request Inspector', observability:'Observability', intrusions:'Intrusions', listeners:'Listeners', profiles:'Log Profiles & Detection Rules', push:'Log Push', 'alert-push':'Alert Push', scenarios:'Attack Scenarios', investigate:'Investigations', logs:'Container Logs', config:'Source Details', identifiers:'Source Identifiers', settings:'System Settings'};
   // Resize viz canvases when the Observability tab becomes active.
   if (tab === 'observability') {
     if (window._sankey) window._sankey.resize();
@@ -4999,6 +5217,398 @@ async function stopPush(profileId) {
   } catch(e) { alert('Failed: ' + e); }
 }
 
+// ── Alert Push ────────────────────────────────────────────────────────────
+var _editingAlertId = null;
+var _alertTemplatesCache = null;     // [{id, title, source}, ...]
+var _alertOpenHistory = {};          // {profileId: true} for inline history toggle
+
+async function _ensureAlertTemplates() {
+  if (_alertTemplatesCache) return _alertTemplatesCache;
+  try {
+    var r = await fetch('/admin/api/alerts/templates', {credentials:'same-origin'});
+    var d = await r.json();
+    _alertTemplatesCache = (d.templates || []).slice().sort(function(a,b){
+      var pa = (a.product_name || '').toLowerCase();
+      var pb = (b.product_name || '').toLowerCase();
+      if (pa !== pb) return pa < pb ? -1 : 1;
+      return (a.title || a.id).localeCompare(b.title || b.id);
+    });
+  } catch(e) { _alertTemplatesCache = []; }
+  return _alertTemplatesCache;
+}
+
+function _alertSeverityLabel(s) {
+  return {1:'Info',2:'Low',3:'Medium',4:'High',5:'Critical',6:'Fatal'}[s] || ('?' + s);
+}
+
+function _alertHistoryEntryHtml(e) {
+  var ok = (e.success_count || 0) > 0 && (e.failure_count || 0) === 0;
+  var clr = ok ? '#2ecc71' : (e.failure_count ? '#ff5050' : 'rgba(224,170,255,.4)');
+  var dot = ok ? '✓' : '✗';
+  var status = e.status ? ('HTTP ' + e.status) : '';
+  var errBit = e.error ? (' <span style="color:#ff8080">' + escHtml(e.error) + '</span>') : '';
+  var tpl = e.template_id ? ('<code style="font-size:.66rem;color:#c77dff">' + escHtml(e.template_id) + '</code>') : '';
+  return '<div style="display:flex;gap:8px;align-items:center;padding:5px 8px;border-bottom:1px solid rgba(199,125,255,.08);font-size:.7rem">' +
+         '<span style="color:' + clr + ';width:16px">' + dot + '</span>' +
+         '<span style="color:rgba(224,170,255,.5);min-width:140px">' + escHtml(e.ts || '') + '</span>' +
+         tpl +
+         '<span style="color:rgba(224,170,255,.4)">' + (e.success_count||0) + '/' + (e.count||0) + ' ok</span>' +
+         '<span style="color:rgba(224,170,255,.4)">' + escHtml(status) + '</span>' +
+         errBit +
+         '</div>';
+}
+
+async function loadAlertProfiles() {
+  var box = document.getElementById('alert-profiles-list');
+  if (!box) return;
+  try {
+    var r = await fetch('/admin/api/alerts/profiles', {credentials:'same-origin'});
+    var d = await r.json();
+    var profiles = d.profiles || [];
+    if (!profiles.length) {
+      box.innerHTML = '<p class="empty">No alert profiles yet. Click "+ New Alert Profile" to create one.</p>';
+    } else {
+      var h = '';
+      profiles.forEach(function(p) {
+        var ownedByMe = canWriteObj(p);
+        var sevColor = 'rgba(224,170,255,.4)';
+        h += '<div data-alert-card="' + escHtml(p.id) + '" style="background:rgba(36,0,70,.4);border:1px solid rgba(199,125,255,.15);border-radius:10px;padding:12px;margin-bottom:10px">';
+        h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">';
+        h += '<div style="display:flex;align-items:center;gap:8px">';
+        h += '<span style="color:' + sevColor + ';font-size:.8rem">🚨</span>';
+        h += '<span style="font-weight:600;color:var(--mist);font-size:.88rem">' + escHtml(p.name) + '</span>';
+        h += '<span class="pill" style="color:#c77dff">' + escHtml(p.template_id || '') + '</span>';
+        if (p.visibility === 'public') h += '<span class="pill" style="color:#9cd3ff">public</span>';
+        if (!ownedByMe) h += '<span class="pill" style="color:rgba(224,170,255,.3)">read-only</span>';
+        h += '</div>';
+        h += '<div style="display:flex;gap:4px">';
+        if (ownedByMe && canDo('alert_push','manage')) {
+          h += '<button class="btn-sm" style="background:rgba(30,120,40,.4);color:#80ff80;padding:3px 10px;font-size:.68rem" onclick="sendAlertProfileQuick(&apos;' + escHtml(p.id) + '&apos;,1)">⚡ Send 1</button>';
+          h += '<button class="btn-sm" style="background:rgba(30,120,40,.3);color:#80ff80;padding:3px 10px;font-size:.68rem" onclick="sendAlertProfileQuick(&apos;' + escHtml(p.id) + '&apos;,5)">⚡ Send 5</button>';
+        }
+        h += '<button class="btn-sm" style="padding:3px 10px;font-size:.68rem" onclick="viewAlertHistory(&apos;' + escHtml(p.id) + '&apos;)">History</button>';
+        h += '<button class="btn-sm" style="padding:3px 10px;font-size:.68rem" onclick="openAlertEditor(&apos;' + escHtml(p.id) + '&apos;)">' + (ownedByMe ? 'Edit' : 'View') + '</button>';
+        h += '</div></div>';
+        h += '<div style="display:flex;gap:16px;font-size:.7rem;color:rgba(224,170,255,.4);flex-wrap:wrap">';
+        h += '<span>' + escHtml(p.uam_ingest_url || '?') + '</span>';
+        h += '<span>acct ' + escHtml(p.uam_account_id || '—') + (p.uam_site_id ? ('/' + escHtml(p.uam_site_id)) : '') + '</span>';
+        h += '<span>' + (p.has_uam_service_token ? '🔑 token saved' : '<span style="color:#ff8080">⚠ no token</span>') + '</span>';
+        if (p.alerts_sent) h += '<span style="color:#c77dff">' + p.alerts_sent + ' sent (lifetime)</span>';
+        h += '</div>';
+        h += '<div id="alert-hist-' + escHtml(p.id) + '" style="display:none;margin-top:8px;background:rgba(20,0,50,.4);border-radius:6px;overflow:hidden"></div>';
+        h += '</div>';
+      });
+      box.innerHTML = h;
+    }
+  } catch(e) { box.innerHTML = '<p class="empty">Failed: ' + escHtml(String(e)) + '</p>'; }
+  loadAlertGlobalHistory();
+}
+
+async function loadAlertGlobalHistory() {
+  var box = document.getElementById('alert-global-history');
+  if (!box) return;
+  try {
+    var r = await fetch('/admin/api/alerts/history?limit=20', {credentials:'same-origin'});
+    var d = await r.json();
+    var entries = d.history || [];
+    if (!entries.length) { box.innerHTML = '<p class="empty">No recent sends yet.</p>'; return; }
+    var h = '';
+    entries.forEach(function(e) { h += _alertHistoryEntryHtml(e); });
+    box.innerHTML = h;
+  } catch(e) { /* silent */ }
+}
+
+function switchOvrTab(ev, name) {
+  if (ev) ev.preventDefault();
+  document.querySelectorAll('.alert-ovr-tab').forEach(function(el){
+    var active = el.getAttribute('data-ovr') === name;
+    el.style.background = active ? 'rgba(199,125,255,.18)' : 'transparent';
+    el.style.color = active ? '#e0aaff' : 'rgba(224,170,255,.5)';
+  });
+  document.querySelectorAll('.alert-ovr-pane').forEach(function(el){
+    el.style.display = (el.getAttribute('data-ovr-pane') === name) ? 'flex' : 'none';
+  });
+}
+
+async function openAlertEditor(profileId) {
+  _editingAlertId = profileId || null;
+  var modal = document.getElementById('alert-modal');
+  modal.classList.remove('hidden');
+  // Populate templates dropdown
+  var templates = await _ensureAlertTemplates();
+  var tSel = document.getElementById('alert-template-id');
+  tSel.innerHTML = '';
+  templates.forEach(function(t) {
+    var product = t.product_name || t.vendor_name || '';
+    var suffix = product ? (' — ' + product) : '';
+    tSel.innerHTML += '<option value="' + escHtml(t.id) + '">' + escHtml(t.title || t.id) + escHtml(suffix) + '</option>';
+  });
+  // Reset Identity & Resources inputs
+  modal.querySelectorAll('[data-ovr-key]').forEach(function(el){ el.value = ''; });
+  document.getElementById('alert-ovr-custom').value = '';
+  switchOvrTab(null, 'identity');
+  document.getElementById('alert-token-hint').textContent = '';
+  if (_editingAlertId) {
+    document.getElementById('alert-modal-title').textContent = 'Edit Alert Profile';
+    try {
+      var r = await fetch('/admin/api/alerts/profiles/' + _editingAlertId, {credentials:'same-origin'});
+      var p = await r.json();
+      document.getElementById('alert-name').value = p.name || '';
+      document.getElementById('alert-visibility').value = p.visibility || 'private';
+      document.getElementById('alert-template-id').value = p.template_id || '';
+      document.getElementById('alert-uam-ingest-url').value = p.uam_ingest_url || '';
+      document.getElementById('alert-uam-account-id').value = p.uam_account_id || '';
+      document.getElementById('alert-uam-site-id').value = p.uam_site_id || '';
+      document.getElementById('alert-uam-service-token').value = '';
+      document.getElementById('alert-token-hint').textContent = p.has_uam_service_token ? '(saved — leave blank to keep, or type to replace)' : '';
+      // Spread saved overrides across the known inputs + the Custom textarea.
+      var saved = p.overrides || {};
+      var knownInputs = modal.querySelectorAll('[data-ovr-key]');
+      var knownKeys = {};
+      knownInputs.forEach(function(el){ knownKeys[el.getAttribute('data-ovr-key')] = el; });
+      var customLines = [];
+      Object.keys(saved).forEach(function(k){
+        var v = saved[k];
+        if (knownKeys[k]) { knownKeys[k].value = (v === null || v === undefined) ? '' : String(v); }
+        else { customLines.push(k + '=' + (v === null || v === undefined ? '' : String(v))); }
+      });
+      document.getElementById('alert-ovr-custom').value = customLines.join('\\n');
+      _applyAlertMode(p);
+    } catch(e) { toast('Load failed: ' + e, true); }
+  } else {
+    document.getElementById('alert-modal-title').textContent = 'New Alert Profile';
+    document.getElementById('alert-name').value = '';
+    document.getElementById('alert-visibility').value = 'private';
+    document.getElementById('alert-template-id').value = (templates[0] && templates[0].id) || '';
+    document.getElementById('alert-uam-ingest-url').value = 'https://ingest.us1.sentinelone.net';
+    document.getElementById('alert-uam-account-id').value = '';
+    document.getElementById('alert-uam-site-id').value = '';
+    document.getElementById('alert-uam-service-token').value = '';
+    _applyAlertMode(null);
+  }
+}
+
+function _applyAlertMode(p) {
+  var isNew = !p;
+  var writable = isNew || canWriteObj(p);
+  var modal = document.getElementById('alert-modal');
+  modal.querySelectorAll('input, select, textarea').forEach(function(el){ el.disabled = !writable; });
+  var banner = document.getElementById('alert-readonly-banner');
+  if (writable) {
+    banner.style.display = 'none';
+  } else {
+    banner.style.display = '';
+    banner.innerHTML = canDo('alert_push','create')
+      ? 'This is a shared alert profile you don&apos;t own — it&apos;s read-only. Use <b>Clone</b> to make your own editable copy.'
+      : 'This is a shared alert profile you don&apos;t own — it&apos;s read-only. You don&apos;t have <b>Create</b> rights on Alert Push, so it can&apos;t be cloned — ask an administrator.';
+  }
+  document.getElementById('alert-save-btn').style.display = writable ? '' : 'none';
+  document.getElementById('alert-delete-btn').style.display =
+    (!isNew && writable && canDo('alert_push','delete')) ? '' : 'none';
+  document.getElementById('alert-clone-btn').style.display =
+    (!isNew && canDo('alert_push','create')) ? '' : 'none';
+}
+
+function closeAlertModal() {
+  document.getElementById('alert-modal').classList.add('hidden');
+  _editingAlertId = null;
+}
+
+function _collectAlertOverrides() {
+  var out = {};
+  document.querySelectorAll('#alert-modal [data-ovr-key]').forEach(function(el){
+    var k = el.getAttribute('data-ovr-key');
+    var v = el.value;
+    if (v === '' || v === null) return;
+    if (el.getAttribute('data-ovr-numeric') === 'true') {
+      var n = parseInt(v, 10);
+      if (!isNaN(n)) out[k] = n;
+    } else {
+      out[k] = v;
+    }
+  });
+  // Parse the Custom textarea: key.path=value per line.
+  var txt = document.getElementById('alert-ovr-custom').value || '';
+  txt.split('\\n').forEach(function(line){
+    line = line.trim();
+    if (!line || line.indexOf('=') < 0) return;
+    var idx = line.indexOf('=');
+    var k = line.slice(0, idx).trim();
+    var v = line.slice(idx + 1).trim();
+    if (!k) return;
+    // Numeric coercion: if it looks like a pure int and isn't already overridden.
+    if (/^-?\\d+$/.test(v)) out[k] = parseInt(v, 10);
+    else out[k] = v;
+  });
+  return out;
+}
+
+async function saveAlertProfile() {
+  var body = {
+    name: document.getElementById('alert-name').value,
+    visibility: document.getElementById('alert-visibility').value,
+    template_id: document.getElementById('alert-template-id').value,
+    uam_ingest_url: document.getElementById('alert-uam-ingest-url').value,
+    uam_account_id: document.getElementById('alert-uam-account-id').value,
+    uam_site_id: document.getElementById('alert-uam-site-id').value,
+    overrides: _collectAlertOverrides(),
+  };
+  // Only send the token if the user typed one — preserves saved token otherwise.
+  var tok = document.getElementById('alert-uam-service-token').value;
+  if (tok && tok.length) body.uam_service_token = tok;
+  var url = '/admin/api/alerts/profiles' + (_editingAlertId ? ('/' + _editingAlertId) : '');
+  try {
+    var r = await fetch(url, {
+      method: _editingAlertId ? 'PUT' : 'POST',
+      credentials:'same-origin',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body),
+    });
+    var d = await r.json();
+    if (!r.ok) { toast('Save failed: ' + (d.error || r.status), true); return; }
+    toast(_editingAlertId ? 'Alert profile updated' : 'Alert profile created');
+    closeAlertModal();
+    loadAlertProfiles();
+  } catch(e) { toast('Save failed: ' + e, true); }
+}
+
+async function deleteAlertProfile() {
+  if (!_editingAlertId) return;
+  if (!confirm('Delete this alert profile?')) return;
+  try {
+    var r = await fetch('/admin/api/alerts/profiles/' + _editingAlertId,
+                       {method:'DELETE', credentials:'same-origin'});
+    if (!r.ok) { var d = await r.json(); toast('Delete failed: ' + (d.error || r.status), true); return; }
+    toast('Deleted');
+    closeAlertModal();
+    loadAlertProfiles();
+  } catch(e) { toast('Delete failed: ' + e, true); }
+}
+
+async function cloneAlertProfile() {
+  if (!_editingAlertId) return;
+  try {
+    var r = await fetch('/admin/api/alerts/profiles/' + _editingAlertId + '/clone',
+                       {method:'POST', credentials:'same-origin'});
+    var p = await r.json();
+    if (!r.ok) { toast('Clone failed: ' + (p.error || r.status), true); return; }
+    toast('Cloned to your alert profiles');
+    closeAlertModal();
+    loadAlertProfiles();
+    if (p && p.id) openAlertEditor(p.id);
+  } catch(e) { toast('Clone failed: ' + e, true); }
+}
+
+async function sendAlertProfileQuick(profileId, count) {
+  try {
+    var r = await fetch('/admin/api/alerts/profiles/' + profileId + '/send',
+                       {method:'POST', credentials:'same-origin',
+                        headers:{'Content-Type':'application/json'},
+                        body: JSON.stringify({count: count || 1})});
+    var d = await r.json();
+    if (!r.ok) { toast('Send failed: ' + (d.error || r.status), true); return; }
+    var s = d.summary || {};
+    if (s.failure_count) {
+      toast('Sent ' + s.success_count + '/' + s.count + ' (UAM: ' + (s.error || ('HTTP ' + s.status)) + ')', true);
+    } else {
+      toast('Sent ' + s.success_count + ' alert' + (s.success_count === 1 ? '' : 's') + ' (UAM accepted)');
+    }
+    // Refresh the profile row + history.
+    loadAlertProfiles();
+    if (_alertOpenHistory[profileId]) viewAlertHistory(profileId, true);
+  } catch(e) { toast('Send failed: ' + e, true); }
+}
+
+async function viewAlertHistory(profileId, forceReload) {
+  var panel = document.getElementById('alert-hist-' + profileId);
+  if (!panel) return;
+  if (panel.style.display === 'none' || forceReload) {
+    try {
+      var r = await fetch('/admin/api/alerts/profiles/' + profileId + '/history?limit=20',
+                         {credentials:'same-origin'});
+      var d = await r.json();
+      var entries = d.history || [];
+      var h = '<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 8px;background:rgba(199,125,255,.08)">';
+      h += '<span style="font-size:.66rem;color:rgba(224,170,255,.6)">Last ' + entries.length + ' send(s)</span>';
+      h += '<button class="btn-sm" style="padding:2px 8px;font-size:.62rem;background:rgba(120,30,40,.3);color:#ff8080" onclick="clearAlertHistory(&apos;' + escHtml(profileId) + '&apos;)">Clear</button>';
+      h += '</div>';
+      if (!entries.length) h += '<p class="empty" style="padding:8px;margin:0">No sends yet.</p>';
+      else entries.forEach(function(e){ h += _alertHistoryEntryHtml(e); });
+      panel.innerHTML = h;
+    } catch(e) { panel.innerHTML = '<p class="empty">Failed: ' + escHtml(String(e)) + '</p>'; }
+    panel.style.display = '';
+    _alertOpenHistory[profileId] = true;
+  } else {
+    panel.style.display = 'none';
+    _alertOpenHistory[profileId] = false;
+  }
+}
+
+async function clearAlertHistory(profileId) {
+  try {
+    var r = await fetch('/admin/api/alerts/profiles/' + profileId + '/history',
+                       {method:'DELETE', credentials:'same-origin'});
+    if (!r.ok) { var d = await r.json(); toast('Clear failed: ' + (d.error || r.status), true); return; }
+    toast('History cleared');
+    viewAlertHistory(profileId, true);
+    loadAlertGlobalHistory();
+  } catch(e) { toast('Clear failed: ' + e, true); }
+}
+
+async function previewAlertTemplate() {
+  var id = document.getElementById('alert-template-id').value;
+  if (!id) { toast('Pick a template first', true); return; }
+  try {
+    var r = await fetch('/admin/api/alerts/templates/' + encodeURIComponent(id),
+                       {credentials:'same-origin'});
+    var d = await r.json();
+    if (!r.ok) { toast('Load failed: ' + (d.error || r.status), true); return; }
+    document.getElementById('alert-tpl-title').textContent = 'Template: ' + id;
+    document.getElementById('alert-tpl-body').textContent = JSON.stringify(d.template, null, 2);
+    document.getElementById('alert-tpl-modal').classList.remove('hidden');
+  } catch(e) { toast('Load failed: ' + e, true); }
+}
+
+function openCustomAlertModal() {
+  document.getElementById('alert-custom-modal').classList.remove('hidden');
+}
+function closeCustomAlertModal() {
+  document.getElementById('alert-custom-modal').classList.add('hidden');
+}
+
+async function sendCustomAlert() {
+  var raw = document.getElementById('alert-cust-json').value.trim();
+  if (!raw) { toast('Paste an alert JSON first', true); return; }
+  var parsed;
+  try { parsed = JSON.parse(raw); }
+  catch(e) { toast('Invalid JSON: ' + e.message, true); return; }
+  var body = {
+    alert_json: parsed,
+    uam_ingest_url: document.getElementById('alert-cust-url').value,
+    uam_account_id: document.getElementById('alert-cust-account').value,
+    uam_site_id: document.getElementById('alert-cust-site').value,
+    uam_service_token: document.getElementById('alert-cust-token').value,
+    auto_generate_uid: document.getElementById('alert-cust-autouid').checked,
+  };
+  try {
+    var r = await fetch('/admin/api/alerts/send-custom', {
+      method:'POST', credentials:'same-origin',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body),
+    });
+    var d = await r.json();
+    if (!r.ok) { toast('Send failed: ' + (d.error || r.status), true); return; }
+    var s = d.summary || {};
+    if (s.failure_count) {
+      toast('UAM rejected: ' + (s.error || ('HTTP ' + s.status)), true);
+    } else {
+      toast('Custom alert accepted by UAM');
+      closeCustomAlertModal();
+    }
+    loadAlertGlobalHistory();
+  } catch(e) { toast('Send failed: ' + e, true); }
+}
+
 // ── Attack Scenarios ──────────────────────────────────────────────────────
 var _scenarioTemplates = [];
 var _scenarioRefreshTimer = null;
@@ -8000,6 +8610,283 @@ async def api_push_tls(profile_id: str, ag_session: str | None = Cookie(None)):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     import log_pusher
     return JSONResponse(log_pusher.get_tls_info(profile_id))
+
+
+# ── Alert Push API ───────────────────────────────────────────────────────────
+# P4.2: templates listing + profile CRUD + clone. Send/start/stop endpoints
+# land in P4.3 / P4.4.
+
+@router.get("/api/alerts/templates")
+async def api_alerts_templates(ag_session: str | None = Cookie(None)):
+    """List every OCSF alert template (lightweight metadata for the modal)."""
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import alerts
+    return JSONResponse({"templates": alerts.list_templates()})
+
+
+@router.get("/api/alerts/templates/{template_id}")
+async def api_alerts_template_get(template_id: str, ag_session: str | None = Cookie(None)):
+    """Return the full JSON of one template — used by the modal's
+    'Show template JSON' viewer."""
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import alerts
+    tmpl = alerts.get_template(template_id)
+    if tmpl is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return JSONResponse({"template_id": template_id, "template": tmpl})
+
+
+@router.get("/api/alerts/profiles")
+async def api_alerts_profiles_list(ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import alert_push
+    visible = [alert_push.to_public_dict(p)
+               for p in alert_push.list_profiles()
+               if _can_see_obj(p, ag_session)]
+    return JSONResponse({"profiles": visible})
+
+
+@router.post("/api/alerts/profiles")
+async def api_alerts_profiles_create(request: Request, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import alert_push
+    import alerts
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    if not (body.get("name") or "").strip():
+        return JSONResponse({"error": "name is required"}, status_code=400)
+    template_id = (body.get("template_id") or "").strip()
+    if not template_id:
+        return JSONResponse({"error": "template_id is required"}, status_code=400)
+    if alerts.get_template(template_id) is None:
+        return JSONResponse({"error": f"unknown template_id: {template_id}"},
+                            status_code=400)
+    profile = alert_push.create_profile(_owner_stamp(ag_session, body))
+    return JSONResponse(alert_push.to_public_dict(profile), status_code=201)
+
+
+@router.get("/api/alerts/profiles/{profile_id}")
+async def api_alerts_profiles_get(profile_id: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import alert_push
+    p = alert_push.get_profile(profile_id)
+    if not p:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_see_obj(p, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    return JSONResponse(alert_push.to_public_dict(p))
+
+
+@router.put("/api/alerts/profiles/{profile_id}")
+async def api_alerts_profiles_update(profile_id: str, request: Request,
+                                     ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import alert_push
+    existing = alert_push.get_profile(profile_id)
+    if not existing:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_write_obj(existing, ag_session):
+        return JSONResponse({"error": "forbidden",
+                             "note": "you can only modify your own objects"},
+                            status_code=403)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    body.pop("owner_id", None)
+    p = alert_push.update_profile(profile_id, body)
+    if not p:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return JSONResponse(alert_push.to_public_dict(p))
+
+
+@router.delete("/api/alerts/profiles/{profile_id}")
+async def api_alerts_profiles_delete(profile_id: str,
+                                     ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import alert_push
+    existing = alert_push.get_profile(profile_id)
+    if not existing:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_write_obj(existing, ag_session):
+        return JSONResponse({"error": "forbidden",
+                             "note": "you can only delete your own objects"},
+                            status_code=403)
+    if alert_push.delete_profile(profile_id):
+        return JSONResponse({"ok": True})
+    return JSONResponse({"error": "not_found"}, status_code=404)
+
+
+@router.post("/api/alerts/profiles/{profile_id}/clone")
+async def api_alerts_profiles_clone(profile_id: str,
+                                    ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import alert_push
+    src = alert_push.get_profile(profile_id)
+    if not src:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_see_obj(src, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    uid, _is_admin = _session_identity(ag_session)
+    clone = alert_push.clone_profile(
+        src, owner_id=uid, new_name=_clone_name(src.get("name", "Alert profile")),
+    )
+    return JSONResponse(alert_push.to_public_dict(clone), status_code=201)
+
+
+def _validate_uam_profile_for_send(p: dict[str, Any]) -> str | None:
+    """Return an error message if the profile is missing required UAM fields,
+    else None. Centralised so /send and /start (P4.4) share the same checks."""
+    if not (p.get("uam_service_token") or "").strip():
+        return "no UAM service token configured for this profile"
+    if not (p.get("uam_account_id") or "").strip():
+        return "no UAM account_id configured for this profile"
+    if not (p.get("uam_ingest_url") or "").strip():
+        return "no UAM ingest URL configured for this profile"
+    return None
+
+
+@router.post("/api/alerts/profiles/{profile_id}/send")
+async def api_alerts_profiles_send(profile_id: str, request: Request,
+                                   ag_session: str | None = Cookie(None)):
+    """Oneshot send: dispatch N alerts using the saved profile's template,
+    overrides, and UAM credentials. Records a history entry, bumps the
+    profile's lifetime ``alerts_sent`` counter on success."""
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import alert_push
+    import alerts
+    existing = alert_push.get_profile(profile_id)
+    if not existing:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_write_obj(existing, ag_session):
+        return JSONResponse({"error": "forbidden",
+                             "note": "you can only send via your own profiles"},
+                            status_code=403)
+    err = _validate_uam_profile_for_send(existing)
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    # Optional override of count for this single dispatch. Clamped to 1..100
+    # so a misclicked spinner can't DOS the ingest endpoint.
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    count = max(1, min(100, int(body.get("count") or 1)))
+    results = alerts.send_alert(
+        existing["template_id"],
+        uam_ingest_url=existing["uam_ingest_url"],
+        service_token=existing["uam_service_token"],
+        account_id=existing["uam_account_id"],
+        site_id=existing.get("uam_site_id") or None,
+        overrides=existing.get("overrides") or {},
+        count=count,
+    )
+    summary = alert_push.summarise_results(existing["template_id"], results)
+    alert_push.record_send(profile_id, summary)
+    return JSONResponse({"summary": summary, "results": results})
+
+
+@router.post("/api/alerts/send-custom")
+async def api_alerts_send_custom(request: Request, ag_session: str | None = Cookie(None)):
+    """Ad-hoc send: caller supplies the full alert JSON plus UAM credentials
+    inline. No history is recorded against a profile (there isn't one) but
+    the entry IS appended to the global ring buffer under the synthetic
+    profile_id ``_custom`` so the "Recent activity" view sees it."""
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import alert_push
+    import alerts
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    alert_json = body.get("alert_json")
+    if not isinstance(alert_json, dict) or not alert_json:
+        return JSONResponse({"error": "alert_json (object) is required"},
+                            status_code=400)
+    token = (body.get("uam_service_token") or "").strip()
+    account_id = (body.get("uam_account_id") or "").strip()
+    ingest_url = (body.get("uam_ingest_url") or "").strip()
+    if not (token and account_id and ingest_url):
+        return JSONResponse({"error": "uam_ingest_url, uam_account_id, "
+                             "uam_service_token are all required"},
+                            status_code=400)
+    result = alerts.send_custom_alert(
+        alert_json,
+        uam_ingest_url=ingest_url,
+        service_token=token,
+        account_id=account_id,
+        site_id=(body.get("uam_site_id") or None),
+        auto_generate_uid=bool(body.get("auto_generate_uid", True)),
+    )
+    result["alert_index"] = 0
+    summary = alert_push.summarise_results("_custom", [result])
+    alert_push.record_send("_custom", summary)
+    return JSONResponse({"summary": summary, "result": result})
+
+
+@router.get("/api/alerts/profiles/{profile_id}/history")
+async def api_alerts_profiles_history(profile_id: str, limit: int = 50,
+                                      ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import alert_push
+    p = alert_push.get_profile(profile_id)
+    if not p:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_see_obj(p, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    return JSONResponse({
+        "profile_id": profile_id,
+        "history": alert_push.get_history(profile_id, limit=limit),
+    })
+
+
+@router.delete("/api/alerts/profiles/{profile_id}/history")
+async def api_alerts_profiles_history_clear(profile_id: str,
+                                            ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import alert_push
+    p = alert_push.get_profile(profile_id)
+    if not p:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_write_obj(p, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    alert_push.clear_history(profile_id)
+    return JSONResponse({"ok": True})
+
+
+@router.get("/api/alerts/history")
+async def api_alerts_history_global(limit: int = 50,
+                                    ag_session: str | None = Cookie(None)):
+    """Cross-profile 'Recent activity' feed. Each entry carries its
+    profile_id; the UI is responsible for filtering out entries belonging
+    to profiles the caller can't see (cheap, since profile_ids are uuids
+    and the per-profile visible-set is short)."""
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import alert_push
+    visible_ids = {p["id"] for p in alert_push.list_profiles()
+                   if _can_see_obj(p, ag_session)}
+    # The synthetic "_custom" entries have no profile_id we can authorise
+    # against — surface them to every logged-in caller (any user who can
+    # see ALERT_PUSH already has ad-hoc send rights via _perm_requirement).
+    visible_ids.add("_custom")
+    entries = [e for e in alert_push.get_history("_global", limit=limit)
+               if e.get("profile_id") in visible_ids]
+    return JSONResponse({"history": entries})
 
 
 # ── Attack Scenarios API ─────────────────────────────────────────────────────

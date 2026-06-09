@@ -76,6 +76,7 @@ class Category:
     LOG_PROFILES = "log_profiles"
     DETECTION_RULES = "detection_rules"
     LOG_PUSH = "log_push"
+    ALERT_PUSH = "alert_push"
     LISTENERS = "listeners"
     SOURCE_BINDINGS = "source_bindings"
 
@@ -84,6 +85,7 @@ ALL_CATEGORIES: tuple[str, ...] = (
     Category.LOG_PROFILES,
     Category.DETECTION_RULES,
     Category.LOG_PUSH,
+    Category.ALERT_PUSH,
     Category.LISTENERS,
     Category.SOURCE_BINDINGS,
 )
@@ -92,6 +94,7 @@ CATEGORY_LABELS: dict[str, str] = {
     Category.LOG_PROFILES: "Log Profiles",
     Category.DETECTION_RULES: "Detection Rules",
     Category.LOG_PUSH: "Log Push Profiles",
+    Category.ALERT_PUSH: "Alert Push Profiles",
     Category.LISTENERS: "Custom Listeners",
     Category.SOURCE_BINDINGS: "Source Bindings",
 }

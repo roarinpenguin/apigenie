@@ -73,6 +73,17 @@ def _isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(log_pusher, "_CERTS_DIR", tmp_path / "push_certs")
     (tmp_path / "push_certs").mkdir(exist_ok=True)
 
+    # --- alert_push: per-test alert push profiles file + history ring buffer ---
+    try:
+        import alert_push
+        monkeypatch.setattr(alert_push, "_DATA_ROOT", tmp_path)
+        monkeypatch.setattr(alert_push, "_PROFILES_FILE", tmp_path / "alert_push_profiles.json")
+        # The history is in-memory; wipe it so tests start from a clean slate.
+        alert_push.clear_history()
+    except ImportError:
+        # P4.1 only — module appears in P4.2.
+        pass
+
     # --- avatars: per-test on-disk store ---
     try:
         import avatars
@@ -95,15 +106,21 @@ def _isolated_state(tmp_path, monkeypatch):
 
 @pytest.fixture
 def make_user():
-    """Factory: create a user and return its dict (with id)."""
+    """Factory: create a user and return its dict (with id).
+
+    Extra kwargs (entitlement_id, confirmed, ...) are forwarded to
+    accounts.create_user so tests can attach RBAC entitlements at
+    creation time.
+    """
     import accounts
 
-    def _make(username: str = "alice", *, is_admin: bool = False) -> dict:
+    def _make(username: str = "alice", *, is_admin: bool = False, **kwargs) -> dict:
         return accounts.create_user(
             username=username,
             email=f"{username}@test.local",
             password="testpassw0rd",
             is_admin=is_admin,
+            **kwargs,
         )
 
     return _make
