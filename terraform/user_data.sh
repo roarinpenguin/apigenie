@@ -28,10 +28,15 @@ chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
 # ---------------------------------------------------------------------------
 # Convenience: make docker compose available as ec2-user without sudo
+# Important: chown the whole .docker tree to ec2-user after creating it as
+# root, otherwise buildx (docker compose --build) fails with
+#   mkdir /home/ec2-user/.docker/buildx: permission denied
+# the first time the user invokes it.
 # ---------------------------------------------------------------------------
 mkdir -p /home/ec2-user/.docker/cli-plugins
 ln -sf /usr/local/lib/docker/cli-plugins/docker-compose \
        /home/ec2-user/.docker/cli-plugins/docker-compose
+chown -R ec2-user:ec2-user /home/ec2-user/.docker
 
 # ---------------------------------------------------------------------------
 # SSM Agent — ensure it's enabled and running after any dnf updates
