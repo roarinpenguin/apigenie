@@ -1,0 +1,170 @@
+{
+    "finding_info": {
+        "uid": "placeholder_uid",
+        "title": "Ramnit Command and Control Traffic Detection",
+        "desc": "Palo Alto Networks firewall detected Ramnit C2 traffic from an internal host transiting a VPN tunnel egress. Ramnit is a banking-trojan/worm family whose C2 channel typically uses raw TCP on non-standard ports against algorithmically-generated hostnames. The signature 'Ramnit Command and Control Traffic Detection' (PAN-OS App-ID/AppThreat content 8884-8922) matched 4 outbound packets in a single session.",
+        "analytic": {"category": "command-and-control", "type_id": 99},
+        "related_events": [
+            {
+                "uid": "placeholder_uid",
+                "type": "Outbound Connection Initiated",
+                "time": "DYNAMIC",
+                "severity_id": 4,
+                "message": "Internal host ferrix-ws (10.77.5.10) opened TCP session 236063 over VPN tunnel.10 to 44.221.84.105:799 \u2014 destination port is non-standard for web-browsing app, NAT translation 172.31.16.254:23410 -> 44.221.84.105:799",
+                "attacks": [
+                    {"tactic": {"uid": "TA0011", "name": "Command and Control"},
+                     "technique": {"uid": "T1071.001", "name": "Application Layer Protocol: Web Protocols"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "src_endpoint.ip", "type_id": 2, "value": "10.77.5.10"},
+                    {"name": "src_endpoint.hostname", "type_id": 1, "value": "ferrix-ws"},
+                    {"name": "src_endpoint.port", "type_id": 29, "value": "56435"},
+                    {"name": "dst_endpoint.ip", "type_id": 2, "value": "44.221.84.105"},
+                    {"name": "dst_endpoint.port", "type_id": 29, "value": "799"},
+                    {"name": "network.protocol", "type_id": 9, "value": "tcp"},
+                    {"name": "network.app", "type_id": 9, "value": "web-browsing"},
+                    {"name": "nat.src_ip", "type_id": 2, "value": "172.31.16.254"},
+                    {"name": "user.name", "type_id": 4, "value": "cassian"}
+                ]
+            },
+            {
+                "uid": "placeholder_uid",
+                "type": "Threat Signature Match",
+                "time": "DYNAMIC",
+                "severity_id": 4,
+                "message": "PAN-OS spyware engine matched signature 'Ramnit Command and Control Traffic Detection' (tid=21003, contentver=AppThreat-8884-8922) on URL ddos.dnsnb8.net:799/cj//k1.rar \u2014 4 repeat hits in 90s indicate active C2 beacon, not a one-shot probe",
+                "attacks": [
+                    {"tactic": {"uid": "TA0011", "name": "Command and Control"},
+                     "technique": {"uid": "T1568.002", "name": "Dynamic Resolution: Domain Generation Algorithms"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "url.url", "type_id": 6, "value": "http://ddos.dnsnb8.net:799/cj//k1.rar"},
+                    {"name": "url.hostname", "type_id": 1, "value": "ddos.dnsnb8.net"},
+                    {"name": "threat.name", "type_id": 9, "value": "Ramnit Command and Control Traffic Detection"},
+                    {"name": "threat.id", "type_id": 29, "value": "21003"},
+                    {"name": "threat.category", "type_id": 9, "value": "command-and-control"},
+                    {"name": "threat.contentver", "type_id": 9, "value": "AppThreat-8884-8922"},
+                    {"name": "session.repeat_count", "type_id": 29, "value": "4"}
+                ]
+            },
+            {
+                "uid": "placeholder_uid",
+                "type": "Ingress Tool Transfer",
+                "time": "DYNAMIC",
+                "severity_id": 5,
+                "message": "Payload retrieved from C2: /cj//k1.rar \u2014 a RAR archive name pattern consistent with Ramnit's secondary-stage module loader; PAN action was 'alert' (monitor mode), so the file landed on ferrix-ws",
+                "attacks": [
+                    {"tactic": {"uid": "TA0011", "name": "Command and Control"},
+                     "technique": {"uid": "T1105", "name": "Ingress Tool Transfer"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "file.name", "type_id": 7, "value": "k1.rar"},
+                    {"name": "file.path", "type_id": 7, "value": "/cj//k1.rar"},
+                    {"name": "malware.family", "type_id": 9, "value": "Ramnit"},
+                    {"name": "pan.action", "type_id": 9, "value": "alert"}
+                ]
+            }
+        ],
+        "actor": {
+            "user": {"name": "cassian", "email_addr": "cassian@rebel-int.net", "domain": "REBELLION", "type_id": 1}
+        }
+    },
+    "src_endpoint": {"hostname": "ferrix-ws", "ip": "10.77.5.10", "port": 56435},
+    "dst_endpoint": {"ip": "44.221.84.105", "port": 799, "location": {"country": "United States"}},
+    "observables": [
+        {"name": "src", "type": "IP Address", "type_id": 2, "value": "10.77.5.10"},
+        {"name": "dst", "type": "IP Address", "type_id": 2, "value": "44.221.84.105"},
+        {"name": "url.url", "type_id": 6, "value": "http://ddos.dnsnb8.net:799/cj//k1.rar"},
+        {"name": "user.name", "type_id": 4, "value": "cassian"}
+    ],
+    "evidences": [
+        {
+            "connection_info": {"direction_id": 0, "protocol_name": "tcp"},
+            "dst_endpoint": {"ip": "44.221.84.105", "location": {"country": "United States"}, "port": 799},
+            "src_endpoint": {"ip": "10.77.5.10", "location": {"country": "192.168.0.0-192.168.255.255"}, "port": 56435},
+            "process": {"session": {"uid": "236063"}, "tid": 21003}
+        }
+    ],
+    "process": {"session": {"uid": "236063"}, "tid": 21003},
+    "resources": [
+        {"uid": "DYNAMIC_RESOURCE_UID", "name": "ferrix-ws", "type": "Windows Workstation"}
+    ],
+    "analytic": {"category": "command-and-control", "type_id": 99},
+    "severity": "high",
+    "severity_id": 4,
+    "category_uid": 2,
+    "category_name": "Findings",
+    "class_uid": 99602001,
+    "class_name": "S1 Security Alert",
+    "type_uid": 9960200101,
+    "type_name": "S1 Security Alert: Create",
+    "activity_id": 1,
+    "state_id": 1,
+    "status_id": 1,
+    "s1_classification_id": 34,
+    "verdict_id": 2,
+    "verdict_detail_id": 1,
+    "verdict_fidelity_id": 1,
+    "attack_surface_ids": [1],
+    "count": 4,
+    "metadata": {
+        "version": "1.1.0",
+        "log_name": "THREAT",
+        "extension": {"name": "s1", "uid": "998", "version": "0.1.0"},
+        "product": {"name": "Palo Alto Networks Firewall", "vendor_name": "Palo Alto Networks"},
+        "logged_time": "DYNAMIC",
+        "modified_time": "DYNAMIC"
+    },
+    "dataSource": {
+        "category": "security",
+        "name": "Palo Alto Networks Firewall",
+        "vendor": "Palo Alto Networks"
+    },
+    "time": "DYNAMIC",
+    "unmapped": {
+        "to": "Untrust",
+        "from": "VPN",
+        "app": "web-browsing",
+        "rule": "VPN Outbound Traffic",
+        "rule_uuid": "1a98d210-9240-446a-84ef-3939ad0ba0ad",
+        "vsys": "vsys1",
+        "dport": "799",
+        "sport": "56435",
+        "natdport": "799",
+        "natsport": "23410",
+        "natsrc": "172.31.16.254",
+        "natdst": "44.221.84.105",
+        "proto": "tcp",
+        "action": "alert",
+        "direction": "client-to-server",
+        "srcuser": "cassian",
+        "inbound_if": "tunnel.10",
+        "outbound_if": "ethernet1/1",
+        "threatid": "Ramnit Command and Control Traffic Detection",
+        "thr_category": "command-and-control",
+        "tid": "21003",
+        "category": "malware",
+        "category_of_app": "general-internet",
+        "subcategory_of_app": "internet-utility",
+        "technology_of_app": "browser-based",
+        "characteristic_of_app": "used-by-malware,able-to-transfer-file,has-known-vulnerability,tunnel-other-application,pervasive-use",
+        "tunneled_app": "web-browsing",
+        "risk_of_app": "4",
+        "contentver": "AppThreat-8884-8922",
+        "device_name": "PA-VM",
+        "serial": "4D1E771A380D48E",
+        "misc": "ddos.dnsnb8.net:799/cj//k1.rar",
+        "repeatcnt": "4",
+        "sessionid": "236063",
+        "non-std-dport": "yes",
+        "flag-nat": "yes",
+        "temporary-match": "yes",
+        "is_saas_of_app": "no",
+        "sanctioned_state_of_app": "no",
+        "srcloc": {"@code": "10.0.0.0-10.255.255.255", "@cc": "10.0.0.0-10.255.255.255", "#text": "10.0.0.0-10.255.255.255"},
+        "dstloc": {"@code": "United States", "@cc": "US", "#text": "United States"}
+    }
+}

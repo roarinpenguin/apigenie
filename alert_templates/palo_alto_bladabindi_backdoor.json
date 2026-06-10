@@ -1,0 +1,169 @@
+{
+    "finding_info": {
+        "uid": "placeholder_uid",
+        "title": "Backdoor/MSIL.bladabindi.usze",
+        "desc": "Palo Alto Networks firewall detected an inbound PE download matching the Bladabindi (a.k.a. NJRat) .NET backdoor signature 'Backdoor/MSIL.bladabindi.usze'. Server-to-client direction over the VPN egress tunnel means the file already crossed the perimeter \u2014 PAN action was 'alert' (monitor only). The payload 'GPAgentInstaller.exe' uses lookalike branding to evade casual inspection.",
+        "analytic": {"category": "pe", "type_id": 99},
+        "related_events": [
+            {
+                "uid": "placeholder_uid",
+                "type": "Outbound Request",
+                "time": "DYNAMIC",
+                "severity_id": 3,
+                "message": "Internal host ferrix-ws (10.77.5.10) initiated TCP session 236045 over VPN tunnel.10 to 206.198.151.241:8081 \u2014 non-standard port for web-browsing, classified as health-and-medicine but technology is browser-based",
+                "attacks": [
+                    {"tactic": {"uid": "TA0011", "name": "Command and Control"},
+                     "technique": {"uid": "T1071.001", "name": "Application Layer Protocol: Web Protocols"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "src_endpoint.ip", "type_id": 2, "value": "10.77.5.10"},
+                    {"name": "src_endpoint.hostname", "type_id": 1, "value": "ferrix-ws"},
+                    {"name": "src_endpoint.port", "type_id": 29, "value": "56422"},
+                    {"name": "dst_endpoint.ip", "type_id": 2, "value": "206.198.151.241"},
+                    {"name": "dst_endpoint.port", "type_id": 29, "value": "8081"},
+                    {"name": "network.protocol", "type_id": 9, "value": "tcp"},
+                    {"name": "nat.src_ip", "type_id": 2, "value": "172.31.16.254"},
+                    {"name": "user.name", "type_id": 4, "value": "cassian"}
+                ]
+            },
+            {
+                "uid": "placeholder_uid",
+                "type": "Malicious PE Download",
+                "time": "DYNAMIC",
+                "severity_id": 4,
+                "message": "Inbound PE 'GPAgentInstaller.exe' returned server-to-client; PAN-OS virus engine matched 'Backdoor/MSIL.bladabindi.usze' (tid=651277809, contentver=Antivirus-4916-5434) \u2014 Bladabindi is a .NET RAT (NJRat family) that establishes a TCP reverse-shell to its operator",
+                "attacks": [
+                    {"tactic": {"uid": "TA0011", "name": "Command and Control"},
+                     "technique": {"uid": "T1105", "name": "Ingress Tool Transfer"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "file.name", "type_id": 7, "value": "GPAgentInstaller.exe"},
+                    {"name": "threat.name", "type_id": 9, "value": "Backdoor/MSIL.bladabindi.usze"},
+                    {"name": "threat.id", "type_id": 29, "value": "651277809"},
+                    {"name": "threat.category", "type_id": 9, "value": "pe"},
+                    {"name": "threat.contentver", "type_id": 9, "value": "Antivirus-4916-5434"},
+                    {"name": "malware.family", "type_id": 9, "value": "Bladabindi"},
+                    {"name": "malware.alias", "type_id": 9, "value": "NJRat"}
+                ]
+            },
+            {
+                "uid": "placeholder_uid",
+                "type": "RAT Implant Predicted",
+                "time": "DYNAMIC",
+                "severity_id": 5,
+                "message": "Bladabindi/NJRat post-infection behaviour expected within minutes: opens persistent TCP reverse-shell to operator C2 (port often 5552 or 1177), enables keylogging, and provides remote desktop relay. EDR alert anticipated on ferrix-ws \u2014 hunt for `GPAgentInstaller.exe` execution under cassian's session and outbound TCP to the same /24",
+                "attacks": [
+                    {"tactic": {"uid": "TA0011", "name": "Command and Control"},
+                     "technique": {"uid": "T1219", "name": "Remote Access Software"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "file.name", "type_id": 7, "value": "GPAgentInstaller.exe"},
+                    {"name": "malware.family", "type_id": 9, "value": "Bladabindi"},
+                    {"name": "dst_endpoint.ip", "type_id": 2, "value": "206.198.151.241"}
+                ]
+            }
+        ],
+        "actor": {
+            "user": {"name": "cassian", "email_addr": "cassian@rebel-int.net", "domain": "REBELLION", "type_id": 1}
+        }
+    },
+    "src_endpoint": {"hostname": "ferrix-ws", "ip": "10.77.5.10", "port": 56422},
+    "dst_endpoint": {"ip": "206.198.151.241", "port": 8081, "location": {"country": "United States"}},
+    "observables": [
+        {"name": "src", "type": "IP Address", "type_id": 2, "value": "10.77.5.10"},
+        {"name": "dst", "type": "IP Address", "type_id": 2, "value": "206.198.151.241"},
+        {"name": "file.name", "type_id": 7, "value": "GPAgentInstaller.exe"},
+        {"name": "user.name", "type_id": 4, "value": "cassian"}
+    ],
+    "evidences": [
+        {
+            "connection_info": {"direction_id": 0, "protocol_name": "tcp"},
+            "dst_endpoint": {"ip": "206.198.151.241", "location": {"country": "United States"}, "port": 8081},
+            "src_endpoint": {"ip": "10.77.5.10", "location": {"country": "192.168.0.0-192.168.255.255"}, "port": 56422},
+            "process": {"session": {"uid": "236045"}, "tid": 651277809},
+            "file": {"name": "GPAgentInstaller.exe", "type_id": 3}
+        }
+    ],
+    "process": {"session": {"uid": "236045"}, "tid": 651277809},
+    "resources": [
+        {"uid": "DYNAMIC_RESOURCE_UID", "name": "ferrix-ws", "type": "Windows Workstation"}
+    ],
+    "analytic": {"category": "pe", "type_id": 99},
+    "severity": "medium",
+    "severity_id": 3,
+    "category_uid": 2,
+    "category_name": "Findings",
+    "class_uid": 99602001,
+    "class_name": "S1 Security Alert",
+    "type_uid": 9960200101,
+    "type_name": "S1 Security Alert: Create",
+    "activity_id": 1,
+    "state_id": 1,
+    "status_id": 1,
+    "s1_classification_id": 37,
+    "verdict_id": 2,
+    "verdict_detail_id": 1,
+    "verdict_fidelity_id": 1,
+    "attack_surface_ids": [1],
+    "count": 1,
+    "metadata": {
+        "version": "1.1.0",
+        "log_name": "THREAT",
+        "extension": {"name": "s1", "uid": "998", "version": "0.1.0"},
+        "product": {"name": "Palo Alto Networks Firewall", "vendor_name": "Palo Alto Networks"},
+        "logged_time": "DYNAMIC",
+        "modified_time": "DYNAMIC"
+    },
+    "dataSource": {
+        "category": "security",
+        "name": "Palo Alto Networks Firewall",
+        "vendor": "Palo Alto Networks"
+    },
+    "time": "DYNAMIC",
+    "unmapped": {
+        "to": "Untrust",
+        "from": "VPN",
+        "app": "web-browsing",
+        "rule": "VPN Outbound Traffic",
+        "rule_uuid": "1a98d210-9240-446a-84ef-3939ad0ba0ad",
+        "vsys": "vsys1",
+        "dport": "8081",
+        "sport": "56422",
+        "natdport": "8081",
+        "natsport": "13392",
+        "natsrc": "172.31.16.254",
+        "natdst": "206.198.151.241",
+        "proto": "tcp",
+        "action": "alert",
+        "direction": "server-to-client",
+        "srcuser": "cassian",
+        "inbound_if": "tunnel.10",
+        "outbound_if": "ethernet1/1",
+        "threatid": "Backdoor/MSIL.bladabindi.usze",
+        "thr_category": "pe",
+        "tid": "651277809",
+        "category": "health-and-medicine",
+        "category_of_app": "general-internet",
+        "subcategory_of_app": "internet-utility",
+        "technology_of_app": "browser-based",
+        "characteristic_of_app": "used-by-malware,able-to-transfer-file,has-known-vulnerability,tunnel-other-application,pervasive-use",
+        "tunneled_app": "web-browsing",
+        "risk_of_app": "4",
+        "contentver": "Antivirus-4916-5434",
+        "device_name": "PA-VM",
+        "serial": "4D1E771A380D48E",
+        "misc": "GPAgentInstaller.exe",
+        "repeatcnt": "1",
+        "sessionid": "236045",
+        "non-std-dport": "yes",
+        "flag-nat": "yes",
+        "temporary-match": "yes",
+        "is_saas_of_app": "no",
+        "sanctioned_state_of_app": "no",
+        "srcloc": {"@code": "10.0.0.0-10.255.255.255", "@cc": "10.0.0.0-10.255.255.255", "#text": "10.0.0.0-10.255.255.255"},
+        "dstloc": {"@code": "United States", "@cc": "US", "#text": "United States"}
+    }
+}
