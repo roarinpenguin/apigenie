@@ -2,15 +2,56 @@
     "finding_info": {
         "uid": "placeholder_uid",
         "title": "Proofpoint Malicious Email Link Clicked",
-        "desc": "A user clicked a malicious URL in an email flagged by Proofpoint TAP. The link was classified as phishing and has been observed in active campaigns targeting enterprise credentials."
-    },
-    "resources": [
-        {
-            "uid": "DYNAMIC_RESOURCE_UID",
-            "name": "jeanluc@starfleet.com"
+        "desc": "A user clicked a malicious URL in an email flagged by Proofpoint TAP. The link was classified as phishing and has been observed delivering credential-harvesting pages. This generic alert covers click events without an associated late-reclassification path.",
+        "related_events": [
+            {
+                "uid": "placeholder_uid",
+                "type": "Email Delivery",
+                "time": "DYNAMIC",
+                "severity_id": 3,
+                "message": "Email from moff.gideon@remnant.mil delivered to cassian@rebel-int.net containing URL https://bit.ly/gideon-asset",
+                "attacks": [
+                    {"tactic": {"uid": "TA0001", "name": "Initial Access"},
+                     "technique": {"uid": "T1566", "name": "Phishing"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "email.from", "type_id": 5, "value": "moff.gideon@remnant.mil"},
+                    {"name": "email.to", "type_id": 5, "value": "cassian@rebel-int.net"},
+                    {"name": "email.subject", "type_id": 29, "value": "Asset Recovery Notice"},
+                    {"name": "url.url", "type_id": 6, "value": "https://bit.ly/gideon-asset"}
+                ]
+            },
+            {
+                "uid": "placeholder_uid",
+                "type": "User Click",
+                "time": "DYNAMIC",
+                "severity_id": 4,
+                "message": "User cassian@rebel-int.net clicked the URL from ferrix-ws \u2014 Proofpoint TAP intercepted the click and blocked the upstream credential-harvesting page",
+                "attacks": [
+                    {"tactic": {"uid": "TA0002", "name": "Execution"},
+                     "technique": {"uid": "T1204.001", "name": "User Execution: Malicious Link"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "user.email", "type_id": 5, "value": "cassian@rebel-int.net"},
+                    {"name": "url.url", "type_id": 6, "value": "https://bit.ly/gideon-asset"},
+                    {"name": "tap.action", "type_id": 9, "value": "blocked"},
+                    {"name": "src_endpoint.hostname", "type_id": 1, "value": "ferrix-ws"}
+                ]
+            }
+        ],
+        "actor": {
+            "user": {"name": "cassian", "email_addr": "cassian@rebel-int.net", "domain": "REBELLION", "type_id": 1}
         }
+    },
+    "email": {"from": "moff.gideon@remnant.mil", "to": ["cassian@rebel-int.net"], "subject": "Asset Recovery Notice"},
+    "url": {"url": "https://bit.ly/gideon-asset"},
+    "src_endpoint": {"hostname": "ferrix-ws", "ip": "10.77.5.10"},
+    "resources": [
+        {"uid": "DYNAMIC_RESOURCE_UID", "name": "cassian@rebel-int.net", "type": "User"}
     ],
-    "severity": "high",
+    "severity": "medium",
     "category_uid": 2,
     "class_uid": 99602001,
     "class_name": "S1 Security Alert",
@@ -20,15 +61,8 @@
     "activity_id": 1,
     "metadata": {
         "version": "1.1.0",
-        "extension": {
-            "name": "s1",
-            "uid": "998",
-            "version": "0.1.0"
-        },
-        "product": {
-            "name": "Proofpoint TAP",
-            "vendor_name": "Proofpoint"
-        },
+        "extension": {"name": "s1", "uid": "998", "version": "0.1.0"},
+        "product": {"name": "Proofpoint", "vendor_name": "Proofpoint"},
         "logged_time": "DYNAMIC",
         "modified_time": "DYNAMIC"
     },

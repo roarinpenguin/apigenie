@@ -2,13 +2,53 @@
     "finding_info": {
         "uid": "placeholder_uid",
         "title": "Proofpoint Impostor Email Unblocked",
-        "desc": "Email impersonating a trusted domain or individual was delivered after policy override. High risk of business email compromise or credential theft."
-    },
-    "resources": [
-        {
-            "uid": "DYNAMIC_RESOURCE_UID",
-            "name": "jeanluc@starfleet.com"
+        "desc": "Email impersonating a trusted internal sender was delivered after an administrative policy override (allowlist). High risk of business email compromise \u2014 the From: header was rebellion-look-alike but the envelope path traces to an attacker-controlled MTA outside the tenant.",
+        "related_events": [
+            {
+                "uid": "placeholder_uid",
+                "type": "Impostor Detection",
+                "time": "DYNAMIC",
+                "severity_id": 4,
+                "message": "Proofpoint flagged inbound email From: 'Cassian Andor <cassian@rebel-int.net>' as impostor \u2014 SPF soft-fail, DKIM no signature, envelope MAIL FROM <empire-spoof@galactic-empire.gov>",
+                "attacks": [
+                    {"tactic": {"uid": "TA0001", "name": "Initial Access"},
+                     "technique": {"uid": "T1566.003", "name": "Phishing: Spearphishing via Service"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "email.from_display", "type_id": 9, "value": "Cassian Andor <cassian@rebel-int.net>"},
+                    {"name": "email.envelope_from", "type_id": 5, "value": "empire-spoof@galactic-empire.gov"},
+                    {"name": "email.to", "type_id": 5, "value": "hera@phoenix-sqd.net"},
+                    {"name": "auth.spf", "type_id": 9, "value": "softfail"},
+                    {"name": "auth.dkim", "type_id": 9, "value": "none"}
+                ]
+            },
+            {
+                "uid": "placeholder_uid",
+                "type": "Policy Override",
+                "time": "DYNAMIC",
+                "severity_id": 5,
+                "message": "Administrative allowlist entry for cassian@rebel-int.net override the impostor verdict \u2014 email released to hera@phoenix-sqd.net inbox. The allowlist was added 4 minutes earlier by REBELLION\\cassian (likely a compromised admin session).",
+                "attacks": [
+                    {"tactic": {"uid": "TA0005", "name": "Defense Evasion"},
+                     "technique": {"uid": "T1562.006", "name": "Impair Defenses: Indicator Blocking"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "user.email", "type_id": 5, "value": "hera@phoenix-sqd.net"},
+                    {"name": "user.name", "type_id": 4, "value": "hera"},
+                    {"name": "tap.action", "type_id": 9, "value": "allowlist_override"},
+                    {"name": "policy.changed_by", "type_id": 4, "value": "cassian"}
+                ]
+            }
+        ],
+        "actor": {
+            "user": {"name": "hera", "email_addr": "hera@phoenix-sqd.net", "domain": "PHOENIX", "type_id": 1}
         }
+    },
+    "email": {"from": "empire-spoof@galactic-empire.gov", "to": ["hera@phoenix-sqd.net"], "subject": "Re: Project Stardust Update"},
+    "resources": [
+        {"uid": "DYNAMIC_RESOURCE_UID", "name": "hera@phoenix-sqd.net", "type": "User"}
     ],
     "severity": "high",
     "category_uid": 2,
@@ -20,15 +60,8 @@
     "activity_id": 1,
     "metadata": {
         "version": "1.1.0",
-        "extension": {
-            "name": "s1",
-            "uid": "998",
-            "version": "0.1.0"
-        },
-        "product": {
-            "name": "Proofpoint TAP",
-            "vendor_name": "Proofpoint"
-        },
+        "extension": {"name": "s1", "uid": "998", "version": "0.1.0"},
+        "product": {"name": "Proofpoint", "vendor_name": "Proofpoint"},
         "logged_time": "DYNAMIC",
         "modified_time": "DYNAMIC"
     },

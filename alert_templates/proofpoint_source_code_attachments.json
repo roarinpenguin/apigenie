@@ -2,13 +2,53 @@
     "finding_info": {
         "uid": "placeholder_uid",
         "title": "Proofpoint Source Code Files In Email Attachment",
-        "desc": "Email contains source code files as attachments. Potential intellectual property theft or code exfiltration."
-    },
-    "resources": [
-        {
-            "uid": "DYNAMIC_RESOURCE_UID",
-            "name": "jeanluc@starfleet.com"
+        "desc": "Outbound email carrying source-code-shaped attachments (`.zip` containing `.py`, `.js`, `.ts`, `.go`, `.java`, `.cpp` etc.) to an external recipient. Pattern is consistent with intellectual property exfiltration over the email channel.",
+        "related_events": [
+            {
+                "uid": "placeholder_uid",
+                "type": "Source Code Detected",
+                "time": "DYNAMIC",
+                "severity_id": 3,
+                "message": "Attachment 'rebellion-source.zip' (4.7 MB) sent from cassian@rebel-int.net to bad-actor@evil-example.com contains 127 source files (.py, .ts, .go) matching the rebellion-int code repository fingerprint",
+                "attacks": [
+                    {"tactic": {"uid": "TA0009", "name": "Collection"},
+                     "technique": {"uid": "T1213", "name": "Data from Information Repositories"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "email.from", "type_id": 5, "value": "cassian@rebel-int.net"},
+                    {"name": "email.to", "type_id": 5, "value": "bad-actor@evil-example.com"},
+                    {"name": "file.name", "type_id": 7, "value": "rebellion-source.zip"},
+                    {"name": "file.size", "type_id": 29, "value": "4928634"},
+                    {"name": "archive.file_count", "type_id": 29, "value": "127"},
+                    {"name": "code.languages", "type_id": 9, "value": "python,typescript,go"}
+                ]
+            },
+            {
+                "uid": "placeholder_uid",
+                "type": "Exfiltration",
+                "time": "DYNAMIC",
+                "severity_id": 4,
+                "message": "Recipient domain evil-example.com is not in the rebellion-int allowlist, has 14-day domain age, and resolves to imperial-relay.darkside.net \u2014 high-confidence IP exfiltration",
+                "attacks": [
+                    {"tactic": {"uid": "TA0010", "name": "Exfiltration"},
+                     "technique": {"uid": "T1567", "name": "Exfiltration Over Web Service"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "url.hostname", "type_id": 1, "value": "evil-example.com"},
+                    {"name": "domain.age_days", "type_id": 29, "value": "14"},
+                    {"name": "dst_endpoint.hostname", "type_id": 1, "value": "imperial-relay.darkside.net"}
+                ]
+            }
+        ],
+        "actor": {
+            "user": {"name": "cassian", "email_addr": "cassian@rebel-int.net", "domain": "REBELLION", "type_id": 1}
         }
+    },
+    "email": {"from": "cassian@rebel-int.net", "to": ["bad-actor@evil-example.com"]},
+    "resources": [
+        {"uid": "DYNAMIC_RESOURCE_UID", "name": "cassian@rebel-int.net", "type": "User"}
     ],
     "severity": "medium",
     "category_uid": 2,
@@ -20,15 +60,8 @@
     "activity_id": 1,
     "metadata": {
         "version": "1.1.0",
-        "extension": {
-            "name": "s1",
-            "uid": "998",
-            "version": "0.1.0"
-        },
-        "product": {
-            "name": "Proofpoint TAP",
-            "vendor_name": "Proofpoint"
-        },
+        "extension": {"name": "s1", "uid": "998", "version": "0.1.0"},
+        "product": {"name": "Proofpoint", "vendor_name": "Proofpoint"},
         "logged_time": "DYNAMIC",
         "modified_time": "DYNAMIC"
     },

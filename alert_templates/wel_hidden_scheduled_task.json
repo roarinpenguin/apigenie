@@ -1,14 +1,92 @@
 {
     "finding_info": {
         "uid": "placeholder_uid",
-        "title": "HELIOS - WEL Hidden Scheduled Task Creation",
-        "desc": "Detects the creation of a hidden scheduled task, a tactic often used by attackers to maintain persistence on a compromised system. Hidden tasks can evade detection by administrators and standard monitoring tools, allowing adversaries to execute malicious activities stealthily. This technique is commonly employed to run malicious scripts, download payloads, or maintain remote access without raising suspicion. Extended Windows Event Log collection must be enabled for this rule to work properly."
-    },
-    "resources": [
-        {
-            "uid": "DYNAMIC_RESOURCE_UID",
-            "name": "endpoint"
+        "title": "WEL Hidden Scheduled Task Creation",
+        "desc": "Detects creation of a scheduled task with the SD attribute manipulated to hide it from common enumeration tools (schtasks /query, Task Scheduler GUI). Adversaries use hidden tasks for persistence that survives reboot while staying invisible to casual inspection. Extended Windows Event Log collection must be enabled.",
+        "related_events": [
+            {
+                "uid": "placeholder_uid",
+                "type": "Scheduled Task Creation",
+                "time": "DYNAMIC",
+                "severity_id": 4,
+                "message": "Task 'WindowsUpdateHelper' created on ferrix-ws by REBELLION\\cassian (schtasks.exe /create /tn WindowsUpdateHelper /tr 'cmd.exe /c order66.exe -silent' /sc onlogon /rl HIGHEST)",
+                "attacks": [
+                    {"tactic": {"uid": "TA0003", "name": "Persistence"},
+                     "technique": {"uid": "T1053.005", "name": "Scheduled Task/Job: Scheduled Task"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "process.name", "type_id": 9, "value": "schtasks.exe"},
+                    {"name": "process.cmd_line", "type_id": 9, "value": "schtasks.exe /create /tn WindowsUpdateHelper /tr \"cmd.exe /c order66.exe -silent\" /sc onlogon /rl HIGHEST"},
+                    {"name": "winlog.event_id", "type_id": 29, "value": "4698"},
+                    {"name": "scheduled_task.name", "type_id": 9, "value": "WindowsUpdateHelper"},
+                    {"name": "user.name", "type_id": 4, "value": "cassian"},
+                    {"name": "dst_endpoint.hostname", "type_id": 1, "value": "ferrix-ws"}
+                ]
+            },
+            {
+                "uid": "placeholder_uid",
+                "type": "Defense Evasion",
+                "time": "DYNAMIC",
+                "severity_id": 4,
+                "message": "Task security descriptor patched in registry (HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Schedule\\TaskCache\\Tasks\\{GUID}\\SD) to drop READ rights for Everyone, hiding the task from enumeration",
+                "attacks": [
+                    {"tactic": {"uid": "TA0005", "name": "Defense Evasion"},
+                     "technique": {"uid": "T1564", "name": "Hide Artifacts"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "registry.key", "type_id": 9, "value": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Schedule\\TaskCache\\Tasks\\{4F2A8B6E-1D43-4C2F-9E2F-5A5C9C8F4A1B}"},
+                    {"name": "registry.value_name", "type_id": 9, "value": "SD"},
+                    {"name": "winlog.event_id", "type_id": 29, "value": "4657"}
+                ]
+            },
+            {
+                "uid": "placeholder_uid",
+                "type": "Process Creation",
+                "time": "DYNAMIC",
+                "severity_id": 5,
+                "message": "Hidden task fired on next logon: cmd.exe spawned order66.exe with SYSTEM privileges, immediately followed by outbound connection to imperial-relay.darkside.net:443",
+                "attacks": [
+                    {"tactic": {"uid": "TA0002", "name": "Execution"},
+                     "technique": {"uid": "T1059.003", "name": "Command and Scripting Interpreter: Windows Command Shell"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "process.name", "type_id": 9, "value": "order66.exe"},
+                    {"name": "process.parent.name", "type_id": 9, "value": "cmd.exe"},
+                    {"name": "process.cmd_line", "type_id": 9, "value": "cmd.exe /c order66.exe -silent"},
+                    {"name": "file.name", "type_id": 7, "value": "order66.exe"},
+                    {"name": "file.hash", "type_id": 8, "value": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"},
+                    {"name": "dst_endpoint.hostname", "type_id": 1, "value": "imperial-relay.darkside.net"},
+                    {"name": "dst_endpoint.ip", "type_id": 2, "value": "185.220.101.42"},
+                    {"name": "dst_endpoint.port", "type_id": 29, "value": "443"}
+                ]
+            }
+        ],
+        "actor": {
+            "user": {"name": "cassian", "email_addr": "cassian@rebel-int.net", "domain": "REBELLION", "type_id": 1},
+            "process": {"name": "schtasks.exe", "cmd_line": "schtasks.exe /create /tn WindowsUpdateHelper /tr \"cmd.exe /c order66.exe -silent\" /sc onlogon /rl HIGHEST"}
         }
+    },
+    "dst_endpoint": {"hostname": "ferrix-ws", "ip": "10.77.5.10"},
+    "evidences": [
+        {
+            "process": {
+                "name": "order66.exe",
+                "cmd_line": "cmd.exe /c order66.exe -silent",
+                "file": {
+                    "name": "order66.exe",
+                    "path": "C:\\ProgramData\\update\\order66.exe",
+                    "hashes": [
+                        {"algorithm_id": 3, "value": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"}
+                    ]
+                }
+            }
+        }
+    ],
+    "resources": [
+        {"uid": "DYNAMIC_RESOURCE_UID", "name": "ferrix-ws", "type": "Windows Workstation"}
     ],
     "severity": "high",
     "category_uid": 2,
@@ -20,15 +98,8 @@
     "activity_id": 1,
     "metadata": {
         "version": "1.1.0",
-        "extension": {
-            "name": "s1",
-            "uid": "998",
-            "version": "0.1.0"
-        },
-        "product": {
-            "name": "Windows Event Logs",
-            "vendor_name": "Microsoft"
-        },
+        "extension": {"name": "s1", "uid": "998", "version": "0.1.0"},
+        "product": {"name": "Windows Event Logs", "vendor_name": "Microsoft"},
         "logged_time": "DYNAMIC",
         "modified_time": "DYNAMIC"
     },
@@ -36,5 +107,5 @@
     "attack_surface_ids": [1],
     "severity_id": 4,
     "state_id": 1,
-    "s1_classification_id": 28
+    "s1_classification_id": 19
 }

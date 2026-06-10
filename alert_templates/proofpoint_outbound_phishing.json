@@ -2,13 +2,52 @@
     "finding_info": {
         "uid": "placeholder_uid",
         "title": "Proofpoint Outbound Phishing Email",
-        "desc": "Outbound email detected with phishing characteristics. Internal account may be compromised or used for phishing campaign."
-    },
-    "resources": [
-        {
-            "uid": "DYNAMIC_RESOURCE_UID",
-            "name": "jeanluc@starfleet.com"
+        "desc": "Outbound email matching phishing characteristics detected from an internal sender. The internal account is likely compromised and being used by an adversary to internally phish other employees (BEC pivot).",
+        "related_events": [
+            {
+                "uid": "placeholder_uid",
+                "type": "Outbound Anomaly",
+                "time": "DYNAMIC",
+                "severity_id": 4,
+                "message": "Internal sender cassian@rebel-int.net dispatched a bulk message to 47 internal recipients with subject 'URGENT: Action required \u2014 Project Stardust briefing' and a OneDrive link \u2014 cassian's mailing-pattern baseline is < 5 recipients per send",
+                "attacks": [
+                    {"tactic": {"uid": "TA0008", "name": "Lateral Movement"},
+                     "technique": {"uid": "T1534", "name": "Internal Spearphishing"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "email.from", "type_id": 5, "value": "cassian@rebel-int.net"},
+                    {"name": "email.subject", "type_id": 29, "value": "URGENT: Action required \u2014 Project Stardust briefing"},
+                    {"name": "email.recipient_count", "type_id": 29, "value": "47"},
+                    {"name": "anomaly.baseline_recipients", "type_id": 29, "value": "5"}
+                ]
+            },
+            {
+                "uid": "placeholder_uid",
+                "type": "Phishing URL",
+                "time": "DYNAMIC",
+                "severity_id": 5,
+                "message": "Embedded link 'https://rebel-int-onedrive.com/share/stardust' resolves to imperial-relay.darkside.net hosting an Office 365 credential-harvesting page",
+                "attacks": [
+                    {"tactic": {"uid": "TA0006", "name": "Credential Access"},
+                     "technique": {"uid": "T1056.003", "name": "Input Capture: Web Portal Capture"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "url.url", "type_id": 6, "value": "https://rebel-int-onedrive.com/share/stardust"},
+                    {"name": "url.redirect_to", "type_id": 6, "value": "https://imperial-relay.darkside.net/o365-login/"},
+                    {"name": "dst_endpoint.hostname", "type_id": 1, "value": "imperial-relay.darkside.net"}
+                ]
+            }
+        ],
+        "actor": {
+            "user": {"name": "cassian", "email_addr": "cassian@rebel-int.net", "domain": "REBELLION", "type_id": 1}
         }
+    },
+    "email": {"from": "cassian@rebel-int.net"},
+    "url": {"url": "https://rebel-int-onedrive.com/share/stardust"},
+    "resources": [
+        {"uid": "DYNAMIC_RESOURCE_UID", "name": "cassian@rebel-int.net", "type": "User"}
     ],
     "severity": "critical",
     "category_uid": 2,
@@ -20,15 +59,8 @@
     "activity_id": 1,
     "metadata": {
         "version": "1.1.0",
-        "extension": {
-            "name": "s1",
-            "uid": "998",
-            "version": "0.1.0"
-        },
-        "product": {
-            "name": "Proofpoint TAP",
-            "vendor_name": "Proofpoint"
-        },
+        "extension": {"name": "s1", "uid": "998", "version": "0.1.0"},
+        "product": {"name": "Proofpoint", "vendor_name": "Proofpoint"},
         "logged_time": "DYNAMIC",
         "modified_time": "DYNAMIC"
     },

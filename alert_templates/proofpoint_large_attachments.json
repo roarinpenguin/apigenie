@@ -2,13 +2,53 @@
     "finding_info": {
         "uid": "placeholder_uid",
         "title": "Proofpoint High Volume of Large Attachments to Recipient",
-        "desc": "Unusual volume of large email attachments detected to a single recipient. Pattern may indicate data exfiltration or bulk malicious file distribution."
-    },
-    "resources": [
-        {
-            "uid": "DYNAMIC_RESOURCE_UID",
-            "name": "jeanluc@starfleet.com"
+        "desc": "Unusual volume of large email attachments detected to a single external recipient. Pattern may indicate data exfiltration or bulk transfer of intellectual property over the email channel.",
+        "related_events": [
+            {
+                "uid": "placeholder_uid",
+                "type": "Anomalous Volume",
+                "time": "DYNAMIC",
+                "severity_id": 4,
+                "message": "User cassian@rebel-int.net sent 12 emails to empire-archive@galactic-empire.gov within 90 minutes, each carrying >10 MB attachments \u2014 baseline for this sender/recipient pair is 0 over 30 days",
+                "attacks": [
+                    {"tactic": {"uid": "TA0010", "name": "Exfiltration"},
+                     "technique": {"uid": "T1048.003", "name": "Exfiltration Over Alternative Protocol: Unencrypted/Obfuscated"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "email.from", "type_id": 5, "value": "cassian@rebel-int.net"},
+                    {"name": "email.to", "type_id": 5, "value": "empire-archive@galactic-empire.gov"},
+                    {"name": "transfer.file_count", "type_id": 29, "value": "12"},
+                    {"name": "transfer.bytes", "type_id": 29, "value": "151580672"},
+                    {"name": "anomaly.baseline_count", "type_id": 29, "value": "0"}
+                ]
+            },
+            {
+                "uid": "placeholder_uid",
+                "type": "Sensitive Content",
+                "time": "DYNAMIC",
+                "severity_id": 5,
+                "message": "DLP scan identified PII / source-code fragments in 8 of 12 attached files \u2014 'personnel_records.xlsx', 'death_star_specs.pdf', 'kyber_mining_routes.csv' among them",
+                "attacks": [
+                    {"tactic": {"uid": "TA0009", "name": "Collection"},
+                     "technique": {"uid": "T1213", "name": "Data from Information Repositories"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "file.name", "type_id": 7, "value": "personnel_records.xlsx"},
+                    {"name": "file.name", "type_id": 7, "value": "death_star_specs.pdf"},
+                    {"name": "file.name", "type_id": 7, "value": "kyber_mining_routes.csv"},
+                    {"name": "dlp.policy", "type_id": 9, "value": "PII-and-IP-leak"}
+                ]
+            }
+        ],
+        "actor": {
+            "user": {"name": "cassian", "email_addr": "cassian@rebel-int.net", "domain": "REBELLION", "type_id": 1}
         }
+    },
+    "email": {"from": "cassian@rebel-int.net", "to": ["empire-archive@galactic-empire.gov"]},
+    "resources": [
+        {"uid": "DYNAMIC_RESOURCE_UID", "name": "cassian@rebel-int.net", "type": "User"}
     ],
     "severity": "medium",
     "category_uid": 2,
@@ -20,15 +60,8 @@
     "activity_id": 1,
     "metadata": {
         "version": "1.1.0",
-        "extension": {
-            "name": "s1",
-            "uid": "998",
-            "version": "0.1.0"
-        },
-        "product": {
-            "name": "Proofpoint TAP",
-            "vendor_name": "Proofpoint"
-        },
+        "extension": {"name": "s1", "uid": "998", "version": "0.1.0"},
+        "product": {"name": "Proofpoint", "vendor_name": "Proofpoint"},
         "logged_time": "DYNAMIC",
         "modified_time": "DYNAMIC"
     },

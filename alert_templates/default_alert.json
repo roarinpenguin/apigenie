@@ -1,4 +1,105 @@
 {
+    "finding_info": {
+        "uid": "placeholder_uid",
+        "title": "Suspicious Process Execution",
+        "desc": "Unsigned binary written to a temp path and executed under SYSTEM privileges, immediately followed by an outbound connection to a known-bad host. Combination of file write + execution + C2 beacon is a high-confidence malware behavioural fingerprint.",
+        "related_events": [
+            {
+                "uid": "placeholder_uid",
+                "type": "File Write",
+                "time": "DYNAMIC",
+                "severity_id": 3,
+                "message": "Unsigned PE 'order66.exe' written to C:\\ProgramData\\update\\ by cmd.exe (parent: explorer.exe)",
+                "attacks": [
+                    {"tactic": {"uid": "TA0005", "name": "Defense Evasion"},
+                     "technique": {"uid": "T1027", "name": "Obfuscated Files or Information"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "file.name", "type_id": 7, "value": "order66.exe"},
+                    {"name": "file.path", "type_id": 7, "value": "C:\\ProgramData\\update\\order66.exe"},
+                    {"name": "file.hash", "type_id": 8, "value": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"},
+                    {"name": "file.hash", "type_id": 8, "value": "2c4d2c6262d46313990e31bf7b6437028a566ba8"},
+                    {"name": "file.hash", "type_id": 8, "value": "d41d8cd98f00b204e9800998ecf8427e"}
+                ]
+            },
+            {
+                "uid": "placeholder_uid",
+                "type": "Process Creation",
+                "time": "DYNAMIC",
+                "severity_id": 4,
+                "message": "Process order66.exe spawned by cmd.exe with -silent flag, running under NT AUTHORITY\\SYSTEM",
+                "attacks": [
+                    {"tactic": {"uid": "TA0002", "name": "Execution"},
+                     "technique": {"uid": "T1204.002", "name": "User Execution: Malicious File"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "process.name", "type_id": 9, "value": "order66.exe"},
+                    {"name": "process.cmd_line", "type_id": 9, "value": "cmd.exe /c order66.exe -silent"},
+                    {"name": "process.parent.name", "type_id": 9, "value": "cmd.exe"},
+                    {"name": "process.user", "type_id": 4, "value": "NT AUTHORITY\\SYSTEM"}
+                ]
+            },
+            {
+                "uid": "placeholder_uid",
+                "type": "C2 Beacon",
+                "time": "DYNAMIC",
+                "severity_id": 5,
+                "message": "Outbound HTTPS to imperial-relay.darkside.net:443 (resolves to 185.220.101.42) carrying base64-encoded host fingerprint in the User-Agent header",
+                "attacks": [
+                    {"tactic": {"uid": "TA0011", "name": "Command and Control"},
+                     "technique": {"uid": "T1071.001", "name": "Application Layer Protocol: Web Protocols"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "dst_endpoint.hostname", "type_id": 1, "value": "imperial-relay.darkside.net"},
+                    {"name": "dst_endpoint.ip", "type_id": 2, "value": "185.220.101.42"},
+                    {"name": "dst_endpoint.port", "type_id": 29, "value": "443"},
+                    {"name": "http.user_agent", "type_id": 9, "value": "Mozilla/5.0 (Windows NT 10.0) Order66/1.0"}
+                ]
+            }
+        ],
+        "actor": {
+            "user": {"name": "cassian", "email_addr": "cassian@rebel-int.net", "domain": "REBELLION", "type_id": 1},
+            "process": {"name": "order66.exe", "cmd_line": "cmd.exe /c order66.exe -silent", "pid": 4821}
+        }
+    },
+    "evidences": [
+        {
+            "process": {
+                "name": "order66.exe",
+                "pid": 4821,
+                "cmd_line": "cmd.exe /c order66.exe -silent",
+                "file": {
+                    "name": "order66.exe",
+                    "path": "C:\\ProgramData\\update\\order66.exe",
+                    "size": 1024000,
+                    "hashes": [
+                        {"algorithm_id": 6, "value": "2c4d2c6262d46313990e31bf7b6437028a566ba8"},
+                        {"algorithm_id": 1, "value": "d41d8cd98f00b204e9800998ecf8427e"},
+                        {"algorithm_id": 3, "value": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"}
+                    ],
+                    "signature": {
+                        "algorithm_id": 3,
+                        "certificate": {
+                            "subject": "CN=Unsigned",
+                            "serial_number": "00",
+                            "expiration_time": 0,
+                            "fingerprints": [],
+                            "issuer": "Self"
+                        }
+                    },
+                    "type_id": 3
+                }
+            }
+        }
+    ],
+    "dst_endpoint": {"hostname": "imperial-relay.darkside.net", "ip": "185.220.101.42", "port": 443},
+    "resources": [
+        {"uid": "DYNAMIC_RESOURCE_UID", "name": "ferrix-ws", "type": "Windows Workstation"}
+    ],
+    "severity": "high",
     "activity_id": 1,
     "attack_surface_ids": [1],
     "category_uid": 2,
@@ -7,79 +108,16 @@
     "class_uid": 99602001,
     "type_name": "S1 Security Alert: Create",
     "type_uid": 9960200101,
-    "finding_info": {
-        "title": "Suspicious Activity",
-        "uid": "placeholder_uid",
-        "desc": "Malware Detection - Suspicious file activity detected"
-    },
-    "evidences": [
-        {
-            "process": {
-                "file": {
-                    "name": "malicious_file.exe",
-                    "path": "/usr/local/bin/malicious_file.exe",
-                    "size": 1024000,
-                    "hashes": [
-                        {
-                            "algorithm_id": 6,
-                            "value": "2c4d2c6262d46313990e31bf7b6437028a566ba8"
-                        },
-                        {
-                            "algorithm_id": 1,
-                            "value": "d41d8cd98f00b204e9800998ecf8427e"
-                        },
-                        {
-                            "algorithm_id": 2,
-                            "value": "da39a3ee5e6b4b0d3255bfef95601890afd80709"
-                        }
-                    ],
-                    "signature": {
-                        "algorithm_id": 3,
-                        "certificate": {
-                            "subject": "CN=CodeSign Cert, O=Acme Corp, C=US",
-                            "serial_number": "1234567890ABCDEF",
-                            "expiration_time": 1718400000000,
-                            "fingerprints": [
-                                {
-                                    "algorithm_id": 6,
-                                    "value": "2c4d2c6262d46313990e31bf7b6437028a566ba8"
-                                },
-                                {
-                                    "algorithm_id": 1,
-                                    "value": "d41d8cd98f00b204e9800998ecf8427e"
-                                }
-                            ],
-                            "issuer": "Acme Corp"
-                        }
-                    },
-                    "type_id": 3
-                }
-            }
-        }
-    ],
-    "resources": [
-        {
-            "name": "endpoint-workstation-01",
-            "uid": "DYNAMIC_RESOURCE_UID"
-        }
-    ],
     "metadata": {
         "version": "1.1.0",
-        "extension": {
-            "name": "s1",
-            "uid": "998",
-            "version": "0.1.0"
-        },
-        "product": {
-            "name": "HELIOS",
-            "vendor_name": "RoarinPenguin"
-        },
+        "extension": {"name": "s1", "uid": "998", "version": "0.1.0"},
+        "product": {"name": "ApiGenie", "vendor_name": "RoarinPenguin"},
         "logged_time": "DYNAMIC",
         "modified_time": "DYNAMIC"
     },
     "time": "DYNAMIC",
-    "severity_id": 1,
+    "severity_id": 4,
     "state_id": 1,
     "s1_classification_id": 0,
-    "confidence_id": 1
+    "confidence_id": 3
 }

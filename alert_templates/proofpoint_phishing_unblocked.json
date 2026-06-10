@@ -2,13 +2,51 @@
     "finding_info": {
         "uid": "placeholder_uid",
         "title": "Proofpoint Phishing Email Unblocked",
-        "desc": "Phishing email was delivered after policy override. High risk of credential theft or account compromise."
-    },
-    "resources": [
-        {
-            "uid": "DYNAMIC_RESOURCE_UID",
-            "name": "jeanluc@starfleet.com"
+        "desc": "A previously quarantined phishing email was released back to the user inbox after manual admin action. The verdict pre-release was confirmed MALICIOUS by sandbox detonation; releasing it constitutes an active risk of credential theft or malware delivery.",
+        "related_events": [
+            {
+                "uid": "placeholder_uid",
+                "type": "Initial Quarantine",
+                "time": "DYNAMIC",
+                "severity_id": 3,
+                "message": "Email from tarkin@deathstar.mil to hera@phoenix-sqd.net (subject 'Project Stardust Update') quarantined by Proofpoint TAP \u2014 attachment stardust_plans.docx flagged MALICIOUS",
+                "attacks": [
+                    {"tactic": {"uid": "TA0001", "name": "Initial Access"},
+                     "technique": {"uid": "T1566.001", "name": "Phishing: Spearphishing Attachment"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "email.from", "type_id": 5, "value": "tarkin@deathstar.mil"},
+                    {"name": "email.to", "type_id": 5, "value": "hera@phoenix-sqd.net"},
+                    {"name": "file.name", "type_id": 7, "value": "stardust_plans.docx"},
+                    {"name": "tap.verdict", "type_id": 9, "value": "malicious"}
+                ]
+            },
+            {
+                "uid": "placeholder_uid",
+                "type": "Admin Release",
+                "time": "DYNAMIC",
+                "severity_id": 5,
+                "message": "Admin REBELLION\\cassian released the quarantined message back to hera@phoenix-sqd.net's inbox via Proofpoint Smart Search 'Release & Deliver' \u2014 cassian's session originated from 198.51.100.42, geo: TOR exit",
+                "attacks": [
+                    {"tactic": {"uid": "TA0005", "name": "Defense Evasion"},
+                     "technique": {"uid": "T1562.006", "name": "Impair Defenses: Indicator Blocking"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "user.name", "type_id": 4, "value": "cassian"},
+                    {"name": "src_endpoint.ip", "type_id": 2, "value": "198.51.100.42"},
+                    {"name": "tap.action", "type_id": 9, "value": "release_and_deliver"}
+                ]
+            }
+        ],
+        "actor": {
+            "user": {"name": "hera", "email_addr": "hera@phoenix-sqd.net", "domain": "PHOENIX", "type_id": 1}
         }
+    },
+    "email": {"from": "tarkin@deathstar.mil", "to": ["hera@phoenix-sqd.net"], "subject": "Project Stardust Update"},
+    "resources": [
+        {"uid": "DYNAMIC_RESOURCE_UID", "name": "hera@phoenix-sqd.net", "type": "User"}
     ],
     "severity": "high",
     "category_uid": 2,
@@ -20,15 +58,8 @@
     "activity_id": 1,
     "metadata": {
         "version": "1.1.0",
-        "extension": {
-            "name": "s1",
-            "uid": "998",
-            "version": "0.1.0"
-        },
-        "product": {
-            "name": "Proofpoint TAP",
-            "vendor_name": "Proofpoint"
-        },
+        "extension": {"name": "s1", "uid": "998", "version": "0.1.0"},
+        "product": {"name": "Proofpoint", "vendor_name": "Proofpoint"},
         "logged_time": "DYNAMIC",
         "modified_time": "DYNAMIC"
     },

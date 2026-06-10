@@ -2,15 +2,94 @@
     "finding_info": {
         "uid": "placeholder_uid",
         "title": "SharePoint Data Exfiltration Detected",
-        "desc": "User jeanluc@starfleet.com accessed and downloaded multiple sensitive documents from SharePoint sites including Personnel Records, Command Codes, and Enterprise Schematics. Pattern consistent with data exfiltration after initial compromise."
-    },
-    "resources": [
-        {
-            "uid": "DYNAMIC_RESOURCE_UID",
-            "name": "jeanluc@starfleet.com"
+        "desc": "Large-volume data egress from a SharePoint document library by a single user within a short window. Sensitive folders accessed include 'Strategy/Project-Stardust' and 'HR/Personnel-Records'. The user then opened RDP files indicating preparation for lateral movement before exfiltration channel was established to an external workstation.",
+        "related_events": [
+            {
+                "uid": "placeholder_uid",
+                "type": "Cloud Authentication",
+                "time": "DYNAMIC",
+                "severity_id": 3,
+                "message": "OAuth interactive sign-in for cassian@rebel-int.net to Microsoft 365 (SharePoint Online) from anomalous IP 198.51.100.42 (geo: TOR exit)",
+                "attacks": [
+                    {"tactic": {"uid": "TA0001", "name": "Initial Access"},
+                     "technique": {"uid": "T1078.004", "name": "Valid Accounts: Cloud Accounts"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "user.email", "type_id": 5, "value": "cassian@rebel-int.net"},
+                    {"name": "user.name", "type_id": 4, "value": "cassian"},
+                    {"name": "src_endpoint.ip", "type_id": 2, "value": "198.51.100.42"},
+                    {"name": "src_endpoint.geo", "type_id": 1, "value": "TOR-Exit-Node"},
+                    {"name": "auth.method", "type_id": 9, "value": "oauth2"}
+                ]
+            },
+            {
+                "uid": "placeholder_uid",
+                "type": "Bulk Download",
+                "time": "DYNAMIC",
+                "severity_id": 4,
+                "message": "47 sensitive documents downloaded (total 312 MB) from /sites/Strategy/Shared Documents/Project-Stardust within 90 seconds, including 'stardust_plans.docx', 'death_star_specs.pdf', and 12 .xlsx personnel records",
+                "attacks": [
+                    {"tactic": {"uid": "TA0009", "name": "Collection"},
+                     "technique": {"uid": "T1530", "name": "Data from Cloud Storage"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "user.email", "type_id": 5, "value": "cassian@rebel-int.net"},
+                    {"name": "sharepoint.site", "type_id": 9, "value": "/sites/Strategy"},
+                    {"name": "sharepoint.library", "type_id": 9, "value": "Project-Stardust"},
+                    {"name": "file.name", "type_id": 7, "value": "stardust_plans.docx"},
+                    {"name": "file.name", "type_id": 7, "value": "death_star_specs.pdf"},
+                    {"name": "transfer.bytes", "type_id": 29, "value": "327155712"},
+                    {"name": "transfer.file_count", "type_id": 29, "value": "47"}
+                ]
+            },
+            {
+                "uid": "placeholder_uid",
+                "type": "Lateral Movement Preparation",
+                "time": "DYNAMIC",
+                "severity_id": 4,
+                "message": "Three RDP connection files (.rdp) opened from the downloaded set, targeting lothal-dc, bravo-one, and krownest-bkp \u2014 indicates the actor mapped internal targets via the SharePoint dump",
+                "attacks": [
+                    {"tactic": {"uid": "TA0007", "name": "Discovery"},
+                     "technique": {"uid": "T1018", "name": "Remote System Discovery"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "file.name", "type_id": 7, "value": "lothal-dc.rdp"},
+                    {"name": "file.name", "type_id": 7, "value": "bravo-one.rdp"},
+                    {"name": "file.name", "type_id": 7, "value": "krownest-bkp.rdp"}
+                ]
+            },
+            {
+                "uid": "placeholder_uid",
+                "type": "Cloud Exfiltration",
+                "time": "DYNAMIC",
+                "severity_id": 5,
+                "message": "Downloaded archive re-uploaded to attacker-controlled cloud storage at imperial-relay.darkside.net via rclone-style PUT requests",
+                "attacks": [
+                    {"tactic": {"uid": "TA0010", "name": "Exfiltration"},
+                     "technique": {"uid": "T1567.002", "name": "Exfiltration Over Web Service: Exfiltration to Cloud Storage"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "dst_endpoint.hostname", "type_id": 1, "value": "imperial-relay.darkside.net"},
+                    {"name": "dst_endpoint.ip", "type_id": 2, "value": "185.220.101.42"},
+                    {"name": "dst_endpoint.port", "type_id": 29, "value": "443"},
+                    {"name": "transfer.bytes", "type_id": 29, "value": "327155712"}
+                ]
+            }
+        ],
+        "actor": {
+            "user": {"name": "cassian", "email_addr": "cassian@rebel-int.net", "domain": "REBELLION", "type_id": 1}
         }
+    },
+    "src_endpoint": {"ip": "198.51.100.42"},
+    "dst_endpoint": {"hostname": "imperial-relay.darkside.net", "ip": "185.220.101.42", "port": 443},
+    "resources": [
+        {"uid": "DYNAMIC_RESOURCE_UID", "name": "cassian@rebel-int.net", "type": "User"}
     ],
-    "severity": "high",
+    "severity": "critical",
     "category_uid": 2,
     "class_uid": 99602001,
     "class_name": "S1 Security Alert",
@@ -20,21 +99,14 @@
     "activity_id": 1,
     "metadata": {
         "version": "1.1.0",
-        "extension": {
-            "name": "s1",
-            "uid": "998",
-            "version": "0.1.0"
-        },
-        "product": {
-            "name": "Microsoft 365",
-            "vendor_name": "Microsoft"
-        },
+        "extension": {"name": "s1", "uid": "998", "version": "0.1.0"},
+        "product": {"name": "SharePoint Online", "vendor_name": "Microsoft"},
         "logged_time": "DYNAMIC",
         "modified_time": "DYNAMIC"
     },
     "time": "DYNAMIC",
     "attack_surface_ids": [1],
-    "severity_id": 4,
+    "severity_id": 5,
     "state_id": 1,
-    "s1_classification_id": 27
+    "s1_classification_id": 21
 }

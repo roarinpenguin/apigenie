@@ -2,13 +2,76 @@
     "finding_info": {
         "uid": "placeholder_uid",
         "title": "Proofpoint Phishing Email Link Clicked",
-        "desc": "User clicked on a phishing link in an email that was previously flagged as malicious. Potential credential theft or malware delivery."
-    },
-    "resources": [
-        {
-            "uid": "DYNAMIC_RESOURCE_UID",
-            "name": "jeanluc@starfleet.com"
+        "desc": "User clicked on a phishing link in an email that was previously flagged as malicious by Proofpoint TAP. Click was permitted because the URL was reclassified after delivery (TAP late verdict). Potential credential theft or drive-by malware execution.",
+        "related_events": [
+            {
+                "uid": "placeholder_uid",
+                "type": "Email Delivery",
+                "time": "DYNAMIC",
+                "severity_id": 3,
+                "message": "Email from emperor@galactic-empire.gov delivered to cassian@rebel-int.net (subject: 'New Imperial Decree'), URL https://bit.ly/imperial-decree present in body \u2014 verdict at delivery: clean",
+                "attacks": [
+                    {"tactic": {"uid": "TA0001", "name": "Initial Access"},
+                     "technique": {"uid": "T1566.002", "name": "Phishing: Spearphishing Link"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "email.from", "type_id": 5, "value": "emperor@galactic-empire.gov"},
+                    {"name": "email.to", "type_id": 5, "value": "cassian@rebel-int.net"},
+                    {"name": "email.subject", "type_id": 29, "value": "New Imperial Decree"},
+                    {"name": "email.message_id", "type_id": 10, "value": "<2026-06-10.galactic-empire.gov.42@mx1.galactic-empire.gov>"},
+                    {"name": "url.url", "type_id": 6, "value": "https://bit.ly/imperial-decree"}
+                ]
+            },
+            {
+                "uid": "placeholder_uid",
+                "type": "URL Reclassified",
+                "time": "DYNAMIC",
+                "severity_id": 4,
+                "message": "Proofpoint TAP re-scored bit.ly/imperial-decree to MALICIOUS after sandbox detonation \u2014 redirect chain resolves to imperial-relay.darkside.net hosting a credential-harvesting Office 365 lookalike",
+                "attacks": [
+                    {"tactic": {"uid": "TA0006", "name": "Credential Access"},
+                     "technique": {"uid": "T1056.003", "name": "Input Capture: Web Portal Capture"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "url.url", "type_id": 6, "value": "https://bit.ly/imperial-decree"},
+                    {"name": "url.redirect_to", "type_id": 6, "value": "https://imperial-relay.darkside.net/o365-login/"},
+                    {"name": "dst_endpoint.hostname", "type_id": 1, "value": "imperial-relay.darkside.net"},
+                    {"name": "tap.verdict", "type_id": 9, "value": "malicious"}
+                ]
+            },
+            {
+                "uid": "placeholder_uid",
+                "type": "User Click",
+                "time": "DYNAMIC",
+                "severity_id": 5,
+                "message": "User cassian@rebel-int.net clicked the malicious URL from ferrix-ws at 198.51.100.42 \u2014 click happened 47 minutes after delivery, after TAP had already reclassified",
+                "attacks": [
+                    {"tactic": {"uid": "TA0002", "name": "Execution"},
+                     "technique": {"uid": "T1204.001", "name": "User Execution: Malicious Link"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "user.email", "type_id": 5, "value": "cassian@rebel-int.net"},
+                    {"name": "user.name", "type_id": 4, "value": "cassian"},
+                    {"name": "src_endpoint.hostname", "type_id": 1, "value": "ferrix-ws"},
+                    {"name": "src_endpoint.ip", "type_id": 2, "value": "10.77.5.10"},
+                    {"name": "process.name", "type_id": 9, "value": "chrome.exe"},
+                    {"name": "url.url", "type_id": 6, "value": "https://bit.ly/imperial-decree"}
+                ]
+            }
+        ],
+        "actor": {
+            "user": {"name": "cassian", "email_addr": "cassian@rebel-int.net", "domain": "REBELLION", "type_id": 1}
         }
+    },
+    "email": {"from": "emperor@galactic-empire.gov", "to": ["cassian@rebel-int.net"], "subject": "New Imperial Decree"},
+    "url": {"url": "https://bit.ly/imperial-decree", "hostname": "bit.ly"},
+    "src_endpoint": {"hostname": "ferrix-ws", "ip": "10.77.5.10"},
+    "dst_endpoint": {"hostname": "imperial-relay.darkside.net", "ip": "185.220.101.42", "port": 443},
+    "resources": [
+        {"uid": "DYNAMIC_RESOURCE_UID", "name": "cassian@rebel-int.net", "type": "User"}
     ],
     "severity": "high",
     "category_uid": 2,
@@ -20,15 +83,8 @@
     "activity_id": 1,
     "metadata": {
         "version": "1.1.0",
-        "extension": {
-            "name": "s1",
-            "uid": "998",
-            "version": "0.1.0"
-        },
-        "product": {
-            "name": "Proofpoint TAP",
-            "vendor_name": "Proofpoint"
-        },
+        "extension": {"name": "s1", "uid": "998", "version": "0.1.0"},
+        "product": {"name": "Proofpoint", "vendor_name": "Proofpoint"},
         "logged_time": "DYNAMIC",
         "modified_time": "DYNAMIC"
     },

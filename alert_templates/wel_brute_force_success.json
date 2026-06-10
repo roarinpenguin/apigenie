@@ -1,13 +1,101 @@
 {
     "finding_info": {
         "uid": "placeholder_uid",
-        "title": "HELIOS - WEL Successful Brute Force Attack",
-        "desc": "Detects a successful brute force attack against a Windows endpoint. Multiple failed authentication attempts followed by a successful logon indicate credential compromise. This technique is commonly used by attackers to gain initial access or escalate privileges within a network. Extended Windows Event Log collection must be enabled for this rule to work properly."
+        "title": "WEL Successful Brute Force Attack",
+        "desc": "Detects a successful brute force attack against a Windows endpoint. Multiple failed authentication attempts followed by a successful logon indicate credential compromise. This technique is commonly used by attackers to gain initial access or escalate privileges within a network. Extended Windows Event Log collection must be enabled for this rule to work properly.",
+        "related_events": [
+            {
+                "uid": "placeholder_uid",
+                "type": "Authentication Failure",
+                "time": "DYNAMIC",
+                "severity_id": 3,
+                "message": "Multiple failed logon attempts (5x EventID 4625) from 198.51.100.42 against REBELLION\\cassian on ferrix-ws within 90 seconds",
+                "attacks": [
+                    {"tactic": {"uid": "TA0006", "name": "Credential Access"},
+                     "technique": {"uid": "T1110.001", "name": "Brute Force: Password Guessing"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "user.name", "type_id": 4, "value": "cassian"},
+                    {"name": "user.domain", "type_id": 1, "value": "REBELLION"},
+                    {"name": "src_endpoint.ip", "type_id": 2, "value": "198.51.100.42"},
+                    {"name": "dst_endpoint.hostname", "type_id": 1, "value": "ferrix-ws"},
+                    {"name": "dst_endpoint.ip", "type_id": 2, "value": "10.77.5.10"},
+                    {"name": "winlog.event_id", "type_id": 29, "value": "4625"},
+                    {"name": "winlog.failure_count", "type_id": 29, "value": "5"}
+                ]
+            },
+            {
+                "uid": "placeholder_uid",
+                "type": "Authentication Success",
+                "time": "DYNAMIC",
+                "severity_id": 4,
+                "message": "Successful interactive logon (EventID 4624 type 10) for REBELLION\\cassian from 198.51.100.42 on ferrix-ws after sustained failures",
+                "attacks": [
+                    {"tactic": {"uid": "TA0001", "name": "Initial Access"},
+                     "technique": {"uid": "T1078", "name": "Valid Accounts"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "user.name", "type_id": 4, "value": "cassian"},
+                    {"name": "user.domain", "type_id": 1, "value": "REBELLION"},
+                    {"name": "src_endpoint.ip", "type_id": 2, "value": "198.51.100.42"},
+                    {"name": "dst_endpoint.hostname", "type_id": 1, "value": "ferrix-ws"},
+                    {"name": "winlog.event_id", "type_id": 29, "value": "4624"},
+                    {"name": "winlog.logon_type", "type_id": 29, "value": "10"}
+                ]
+            },
+            {
+                "uid": "placeholder_uid",
+                "type": "Credential Dump",
+                "time": "DYNAMIC",
+                "severity_id": 5,
+                "message": "Suspicious LSASS handle acquired by cmd.exe -> mimikatz.exe (sekurlsa::logonpasswords) on ferrix-ws shortly after compromised logon",
+                "attacks": [
+                    {"tactic": {"uid": "TA0006", "name": "Credential Access"},
+                     "technique": {"uid": "T1003.001", "name": "OS Credential Dumping: LSASS Memory"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "process.name", "type_id": 9, "value": "mimikatz.exe"},
+                    {"name": "process.cmd_line", "type_id": 9, "value": "mimikatz.exe \"privilege::debug\" \"sekurlsa::logonpasswords\" exit"},
+                    {"name": "process.parent.name", "type_id": 9, "value": "cmd.exe"},
+                    {"name": "file.name", "type_id": 7, "value": "mimikatz.exe"},
+                    {"name": "file.hash", "type_id": 8, "value": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"}
+                ]
+            }
+        ],
+        "actor": {
+            "user": {
+                "name": "cassian",
+                "email_addr": "cassian@rebel-int.net",
+                "domain": "REBELLION",
+                "type_id": 1
+            }
+        }
     },
+    "src_endpoint": {"ip": "198.51.100.42"},
+    "dst_endpoint": {"hostname": "ferrix-ws", "ip": "10.77.5.10"},
+    "evidences": [
+        {
+            "process": {
+                "name": "mimikatz.exe",
+                "cmd_line": "mimikatz.exe \"privilege::debug\" \"sekurlsa::logonpasswords\" exit",
+                "file": {
+                    "name": "mimikatz.exe",
+                    "path": "C:\\Users\\cassian\\AppData\\Local\\Temp\\mimikatz.exe",
+                    "hashes": [
+                        {"algorithm_id": 3, "value": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"}
+                    ]
+                }
+            }
+        }
+    ],
     "resources": [
         {
             "uid": "DYNAMIC_RESOURCE_UID",
-            "name": "endpoint"
+            "name": "ferrix-ws",
+            "type": "Windows Workstation"
         }
     ],
     "severity": "critical",
@@ -20,15 +108,8 @@
     "activity_id": 1,
     "metadata": {
         "version": "1.1.0",
-        "extension": {
-            "name": "s1",
-            "uid": "998",
-            "version": "0.1.0"
-        },
-        "product": {
-            "name": "Windows Event Logs",
-            "vendor_name": "Microsoft"
-        },
+        "extension": {"name": "s1", "uid": "998", "version": "0.1.0"},
+        "product": {"name": "Windows Event Logs", "vendor_name": "Microsoft"},
         "logged_time": "DYNAMIC",
         "modified_time": "DYNAMIC"
     },

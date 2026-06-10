@@ -2,13 +2,66 @@
     "finding_info": {
         "uid": "placeholder_uid",
         "title": "Proofpoint Malicious Email Attachment Delivered",
-        "desc": "Email containing malicious attachment was delivered to recipient. Attachment may contain malware, ransomware, or exploit code."
-    },
-    "resources": [
-        {
-            "uid": "DYNAMIC_RESOURCE_UID",
-            "name": "jeanluc@starfleet.com"
+        "desc": "Email containing a malicious attachment was delivered to the recipient. Attachment may contain malware, ransomware, or exploit. Verdict assigned post-delivery by Proofpoint TAP sandbox detonation.",
+        "related_events": [
+            {
+                "uid": "placeholder_uid",
+                "type": "Email Delivery",
+                "time": "DYNAMIC",
+                "severity_id": 3,
+                "message": "Email from tarkin@deathstar.mil delivered to cassian@rebel-int.net (subject: 'Project Stardust Update', attachment: stardust_plans.docx, 1.2 MB)",
+                "attacks": [
+                    {"tactic": {"uid": "TA0001", "name": "Initial Access"},
+                     "technique": {"uid": "T1566.001", "name": "Phishing: Spearphishing Attachment"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "email.from", "type_id": 5, "value": "tarkin@deathstar.mil"},
+                    {"name": "email.to", "type_id": 5, "value": "cassian@rebel-int.net"},
+                    {"name": "email.subject", "type_id": 29, "value": "Project Stardust Update"},
+                    {"name": "file.name", "type_id": 7, "value": "stardust_plans.docx"},
+                    {"name": "file.hash", "type_id": 8, "value": "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3"}
+                ]
+            },
+            {
+                "uid": "placeholder_uid",
+                "type": "Sandbox Verdict",
+                "time": "DYNAMIC",
+                "severity_id": 4,
+                "message": "Proofpoint TAP sandbox detonation of stardust_plans.docx triggered VBA macro 'AutoOpen' that downloaded darktroopers.dll from imperial-relay.darkside.net \u2014 reclassified MALICIOUS",
+                "attacks": [
+                    {"tactic": {"uid": "TA0005", "name": "Defense Evasion"},
+                     "technique": {"uid": "T1027.010", "name": "Obfuscated Files or Information: Command Obfuscation"},
+                     "version": "13.1"}
+                ],
+                "observables": [
+                    {"name": "file.name", "type_id": 7, "value": "stardust_plans.docx"},
+                    {"name": "file.hash", "type_id": 8, "value": "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3"},
+                    {"name": "tap.verdict", "type_id": 9, "value": "malicious"},
+                    {"name": "malware.family", "type_id": 9, "value": "Emotet"},
+                    {"name": "dst_endpoint.hostname", "type_id": 1, "value": "imperial-relay.darkside.net"}
+                ]
+            }
+        ],
+        "actor": {
+            "user": {"name": "cassian", "email_addr": "cassian@rebel-int.net", "domain": "REBELLION", "type_id": 1}
         }
+    },
+    "email": {"from": "tarkin@deathstar.mil", "to": ["cassian@rebel-int.net"], "subject": "Project Stardust Update"},
+    "evidences": [
+        {
+            "file": {
+                "name": "stardust_plans.docx",
+                "path": "/var/spool/proofpoint/quarantine/stardust_plans.docx",
+                "size": 1258291,
+                "hashes": [
+                    {"algorithm_id": 3, "value": "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3"}
+                ]
+            }
+        }
+    ],
+    "resources": [
+        {"uid": "DYNAMIC_RESOURCE_UID", "name": "cassian@rebel-int.net", "type": "User"}
     ],
     "severity": "high",
     "category_uid": 2,
@@ -20,15 +73,8 @@
     "activity_id": 1,
     "metadata": {
         "version": "1.1.0",
-        "extension": {
-            "name": "s1",
-            "uid": "998",
-            "version": "0.1.0"
-        },
-        "product": {
-            "name": "Proofpoint TAP",
-            "vendor_name": "Proofpoint"
-        },
+        "extension": {"name": "s1", "uid": "998", "version": "0.1.0"},
+        "product": {"name": "Proofpoint", "vendor_name": "Proofpoint"},
         "logged_time": "DYNAMIC",
         "modified_time": "DYNAMIC"
     },
