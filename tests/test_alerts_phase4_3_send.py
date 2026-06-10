@@ -61,7 +61,7 @@ def stub_egress(monkeypatch):
             }
 
         def __call__(self, alert, *, uam_ingest_url, service_token,
-                     account_id, site_id=None, client=None):
+                     account_id, site_id=None, group_id=None, client=None):
             self.calls += 1
             self.captured.append({
                 "uam_ingest_url": uam_ingest_url,

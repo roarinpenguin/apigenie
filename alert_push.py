@@ -59,11 +59,13 @@ _UPDATABLE_KEYS: tuple[str, ...] = (
     "uam_ingest_url",
     "uam_account_id",
     "uam_site_id",
+    "uam_group_id",
     "overrides",
     "mode",
     "rate",
     "duration",
     "link_xdr_assets",
+    "enrich_observables",
 )
 
 
@@ -116,6 +118,7 @@ def _default_profile(data: dict[str, Any]) -> dict[str, Any]:
                            "https://ingest.us1.sentinelone.net").rstrip("/"),
         "uam_account_id": data.get("uam_account_id") or "",
         "uam_site_id": data.get("uam_site_id") or "",
+        "uam_group_id": data.get("uam_group_id") or "",
         "uam_service_token": data.get("uam_service_token") or "",
         # User overrides (dot-path -> value)
         "overrides": data.get("overrides") or {},
@@ -127,6 +130,10 @@ def _default_profile(data: dict[str, Any]) -> dict[str, Any]:
             "unit": duration.get("unit") or "minutes",
         },
         "link_xdr_assets": bool(data.get("link_xdr_assets", False)),
+        # Phase 4.7: attach MITRE attacks[] + harvested observables[]
+        # to the alert before egress. Default ON — every shipped
+        # template benefits, and the enricher is idempotent + cheap.
+        "enrich_observables": bool(data.get("enrich_observables", True)),
         # Runtime state (mutated by send + stream; P4.3 / P4.4)
         "status": "stopped",
         "error": "",
@@ -198,6 +205,8 @@ def update_profile(profile_id: str, data: dict[str, Any]) -> dict[str, Any] | No
                     "unit": value.get("unit") or "minutes",
                 }
             if key == "link_xdr_assets":
+                value = bool(value)
+            if key == "enrich_observables":
                 value = bool(value)
             p[key] = value
         # Token: only overwrite when caller sent a non-empty value.

@@ -96,6 +96,8 @@ def test_alert_push_ui_anchors_present(admin_html):
         ("identity override pane", 'data-ovr-pane="identity"'),
         ("resources override pane", 'data-ovr-pane="resources"'),
         ("custom override pane", 'data-ovr-pane="custom"'),
+        # P4.6 XDR asset linkage checkbox
+        ("link-xdr-assets checkbox", 'id="alert-link-xdr-assets"'),
     ]
     missing = [label for label, needle in required if needle not in admin_html]
     assert not missing, (

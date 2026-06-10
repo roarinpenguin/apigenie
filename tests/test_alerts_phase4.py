@@ -220,6 +220,55 @@ class TestEgressWireContract:
         )
         assert captured_requests[0].headers["s1-scope"] == "acct-only"
 
+    def test_s1_scope_with_site_and_group(self, mock_client, captured_requests):
+        """Triplet S1-Scope ``account:site:group`` — Resilient-Inc-style scope.
+
+        The S1 UAM gateway accepts this form (verified empirically against
+        ingest.us1.sentinelone.net 2026-06-10) and routes the alert into the
+        named group so binding to inventory can succeed when the agent lives
+        there.
+        """
+        import alerts
+        prepared = alerts.prepare_alert(alerts.get_template("default_alert"))
+        alerts.egress_alert(
+            prepared,
+            uam_ingest_url="https://ingest.us1.sentinelone.net",
+            service_token="svc-tok",
+            account_id="acct-123",
+            site_id="site-9",
+            group_id="grp-77",
+            client=mock_client,
+        )
+        assert captured_requests[0].headers["s1-scope"] == "acct-123:site-9:grp-77"
+
+    def test_s1_scope_orphan_group_falls_back_to_site(self, mock_client, captured_requests):
+        """``group_id`` without ``site_id`` is invalid (group lives inside a
+        site). build_scope ignores the orphan group and degrades to account
+        scope so a misconfigured profile still ingests rather than 400ing."""
+        import alerts
+        prepared = alerts.prepare_alert(alerts.get_template("default_alert"))
+        alerts.egress_alert(
+            prepared,
+            uam_ingest_url="https://ingest.us1.sentinelone.net",
+            service_token="svc-tok",
+            account_id="acct-only",
+            group_id="grp-77",   # orphan — no site_id provided
+            client=mock_client,
+        )
+        assert captured_requests[0].headers["s1-scope"] == "acct-only"
+
+    def test_build_scope_helper(self):
+        """Unit-test build_scope directly so regressions surface even if
+        egress_alert is refactored."""
+        import alerts
+        assert alerts.build_scope("A") == "A"
+        assert alerts.build_scope("A", "S") == "A:S"
+        assert alerts.build_scope("A", "S", "G") == "A:S:G"
+        # Orphan group is dropped
+        assert alerts.build_scope("A", None, "G") == "A"
+        # Empty string treated as absent
+        assert alerts.build_scope("A", "", "G") == "A"
+
     def test_body_is_gzipped_json_round_trip(self, mock_client, captured_requests):
         import alerts
         prepared = alerts.prepare_alert(alerts.get_template("default_alert"))

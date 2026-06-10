@@ -1476,10 +1476,38 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
               <label style="font-size:.72rem;color:rgba(224,170,255,.5)">Site ID <span style="color:rgba(224,170,255,.3)">(opt.)</span></label>
               <input id="alert-uam-site-id" type="text" placeholder="leave blank for account-scope" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/>
             </div>
+            <div style="flex:1">
+              <label style="font-size:.72rem;color:rgba(224,170,255,.5)">Group ID <span style="color:rgba(224,170,255,.3)">(opt.)</span></label>
+              <input id="alert-uam-group-id" type="text" placeholder="requires Site ID" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/>
+            </div>
           </div>
           <div>
             <label style="font-size:.72rem;color:rgba(224,170,255,.5)">Service token <span id="alert-token-hint" style="color:rgba(224,170,255,.3)"></span></label>
             <input id="alert-uam-service-token" type="password" placeholder="UAM Service Account API token" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem;font-family:monospace"/>
+          </div>
+          <!-- XDR asset linkage (P4.6) — opt-in name-to-UUID resolution at send time -->
+          <div style="padding:8px 10px;background:rgba(36,0,70,.3);border-radius:8px;border:1px solid rgba(199,125,255,.18)">
+            <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer">
+              <input id="alert-link-xdr-assets" type="checkbox" style="margin-top:2px;accent-color:#c77dff"/>
+              <span style="font-size:.78rem;color:var(--mist);line-height:1.45">
+                🎯 <b>Link to SentinelOne XDR assets</b>
+                <span style="display:block;font-size:.7rem;color:rgba(224,170,255,.55);margin-top:2px">
+                  At send time, look up <code>device.name</code> / <code>device.hostname</code> against your S1 mgmt console and inject the matching <code>device.uid</code> (agent UUID) so each alert pins to the right asset tile in UAM. Requires an S1 console URL + API token on your <b>Account</b> page.
+                </span>
+              </span>
+            </label>
+          </div>
+          <!-- Enrichment (P4.7) — MITRE attacks[] + harvested observables[] -->
+          <div style="padding:8px 10px;background:rgba(36,0,70,.3);border-radius:8px;border:1px solid rgba(199,125,255,.18)">
+            <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer">
+              <input id="alert-enrich-observables" type="checkbox" checked style="margin-top:2px;accent-color:#c77dff"/>
+              <span style="font-size:.78rem;color:var(--mist);line-height:1.45">
+                🧬 <b>Enrich with MITRE attacks &amp; observables</b>
+                <span style="display:block;font-size:.7rem;color:rgba(224,170,255,.55);margin-top:2px">
+                  Auto-attach <code>finding_info.related_events[].attacks[]</code> (MITRE tactic+technique mapped from the template) and harvest <code>observables[]</code> (hostnames, IPs, users, emails, files, hashes, URLs) from the alert tree. Default ON. Disable for strict-passthrough sends.
+                </span>
+              </span>
+            </label>
           </div>
           <!-- Section 3: Overrides (3 sub-sections) -->
           <div style="font-size:.72rem;color:#c77dff;margin-top:8px;font-weight:600;display:flex;justify-content:space-between;align-items:center">
@@ -1569,6 +1597,10 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
             <div style="flex:1">
               <label style="font-size:.72rem;color:rgba(224,170,255,.5)">Site ID (opt.)</label>
               <input id="alert-cust-site" type="text" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/>
+            </div>
+            <div style="flex:1">
+              <label style="font-size:.72rem;color:rgba(224,170,255,.5)">Group ID (opt.)</label>
+              <input id="alert-cust-group" type="text" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/>
             </div>
           </div>
           <div>
@@ -5291,7 +5323,7 @@ async function loadAlertProfiles() {
         h += '</div></div>';
         h += '<div style="display:flex;gap:16px;font-size:.7rem;color:rgba(224,170,255,.4);flex-wrap:wrap">';
         h += '<span>' + escHtml(p.uam_ingest_url || '?') + '</span>';
-        h += '<span>acct ' + escHtml(p.uam_account_id || '—') + (p.uam_site_id ? ('/' + escHtml(p.uam_site_id)) : '') + '</span>';
+        h += '<span>acct ' + escHtml(p.uam_account_id || '—') + (p.uam_site_id ? ('/' + escHtml(p.uam_site_id)) : '') + (p.uam_group_id ? ('/' + escHtml(p.uam_group_id)) : '') + '</span>';
         h += '<span>' + (p.has_uam_service_token ? '🔑 token saved' : '<span style="color:#ff8080">⚠ no token</span>') + '</span>';
         if (p.alerts_sent) h += '<span style="color:#c77dff">' + p.alerts_sent + ' sent (lifetime)</span>';
         h += '</div>';
@@ -5359,7 +5391,12 @@ async function openAlertEditor(profileId) {
       document.getElementById('alert-uam-ingest-url').value = p.uam_ingest_url || '';
       document.getElementById('alert-uam-account-id').value = p.uam_account_id || '';
       document.getElementById('alert-uam-site-id').value = p.uam_site_id || '';
+      document.getElementById('alert-uam-group-id').value = p.uam_group_id || '';
       document.getElementById('alert-uam-service-token').value = '';
+      document.getElementById('alert-link-xdr-assets').checked = !!p.link_xdr_assets;
+      // P4.7: enrichment defaults to ON on profiles that predate the field.
+      document.getElementById('alert-enrich-observables').checked =
+        ('enrich_observables' in p) ? !!p.enrich_observables : true;
       document.getElementById('alert-token-hint').textContent = p.has_uam_service_token ? '(saved — leave blank to keep, or type to replace)' : '';
       // Spread saved overrides across the known inputs + the Custom textarea.
       var saved = p.overrides || {};
@@ -5383,7 +5420,10 @@ async function openAlertEditor(profileId) {
     document.getElementById('alert-uam-ingest-url').value = 'https://ingest.us1.sentinelone.net';
     document.getElementById('alert-uam-account-id').value = '';
     document.getElementById('alert-uam-site-id').value = '';
+    document.getElementById('alert-uam-group-id').value = '';
     document.getElementById('alert-uam-service-token').value = '';
+    document.getElementById('alert-link-xdr-assets').checked = false;
+    document.getElementById('alert-enrich-observables').checked = true;
     _applyAlertMode(null);
   }
 }
@@ -5451,6 +5491,9 @@ async function saveAlertProfile() {
     uam_ingest_url: document.getElementById('alert-uam-ingest-url').value,
     uam_account_id: document.getElementById('alert-uam-account-id').value,
     uam_site_id: document.getElementById('alert-uam-site-id').value,
+    uam_group_id: document.getElementById('alert-uam-group-id').value,
+    link_xdr_assets: document.getElementById('alert-link-xdr-assets').checked,
+    enrich_observables: document.getElementById('alert-enrich-observables').checked,
     overrides: _collectAlertOverrides(),
   };
   // Only send the token if the user typed one — preserves saved token otherwise.
@@ -5513,10 +5556,53 @@ async function sendAlertProfileQuick(profileId, count) {
     } else {
       toast('Sent ' + s.success_count + ' alert' + (s.success_count === 1 ? '' : 's') + ' (UAM accepted)');
     }
+    // P4.6: secondary toast describing whether the XDR resolver actually ran.
+    _toastResolverStatus(d.resolver);
+    // P4.7: tertiary toast describing whether enrichment ran.
+    _toastEnrichStatus(d.enrich);
     // Refresh the profile row + history.
     loadAlertProfiles();
     if (_alertOpenHistory[profileId]) viewAlertHistory(profileId, true);
   } catch(e) { toast('Send failed: ' + e, true); }
+}
+
+// Surface the P4.7 enrichment status. Stashes on window._lastEnrichStatus
+// for ad-hoc devtools inspection. We don't show a toast when it's
+// enabled-default (that's the expected case and would be noisy) — only
+// when it was deliberately turned off on this profile, so the user
+// sees the alert WILL ship without MITRE/observables.
+function _toastEnrichStatus(es) {
+  if (!es) return;
+  window._lastEnrichStatus = es;
+  if (es.status === 'disabled') {
+    toast('🧬 Enrichment: OFF — alert ships without MITRE attacks or harvested observables');
+  }
+}
+
+// Surface the P4.6 resolver diagnostics in a follow-up toast so the user
+// doesn't have to grep container logs. Stashes the last status on
+// ``window._lastResolverStatus`` for ad-hoc devtools inspection.
+function _toastResolverStatus(rs) {
+  if (!rs) return;
+  window._lastResolverStatus = rs;
+  if (rs.status === 'disabled') return;   // toggle off — don't be chatty
+  if (rs.status === 'no_creds') {
+    toast('🎯 XDR linkage: NO CREDS — set S1 console URL + token on your Account page', true);
+    return;
+  }
+  // status === 'used'
+  var lookups = rs.lookups || 0, hits = rs.hits || 0, misses = rs.misses || 0;
+  if (lookups === 0) {
+    toast('🎯 XDR linkage: ON but template had no device-shaped resources to resolve');
+    return;
+  }
+  if (hits === 0) {
+    var firstMiss = (rs.trace || [])[0] || {};
+    var why = firstMiss.status ? (' [' + firstMiss.status + ']') : '';
+    toast('🎯 XDR linkage: 0/' + lookups + ' hits' + why + ' — name(s) didn\\'t match any S1 agent', true);
+    return;
+  }
+  toast('🎯 XDR linkage: ' + hits + '/' + lookups + ' resolved → bound to real S1 agents');
 }
 
 async function viewAlertHistory(profileId, forceReload) {
@@ -5587,6 +5673,7 @@ async function sendCustomAlert() {
     uam_ingest_url: document.getElementById('alert-cust-url').value,
     uam_account_id: document.getElementById('alert-cust-account').value,
     uam_site_id: document.getElementById('alert-cust-site').value,
+    uam_group_id: document.getElementById('alert-cust-group').value,
     uam_service_token: document.getElementById('alert-cust-token').value,
     auto_generate_uid: document.getElementById('alert-cust-autouid').checked,
   };
@@ -8756,6 +8843,58 @@ def _validate_uam_profile_for_send(p: dict[str, Any]) -> str | None:
     return None
 
 
+def _build_asset_resolver_for_session(ag_session: str | None,
+                                      *,
+                                      account_id: str | None = None,
+                                      site_id: str | None = None,
+                                      group_id: str | None = None):
+    """Construct an :class:`s1_assets.S1AssetResolver` from the caller's S1
+    mgmt console credentials, or return ``None`` when none are configured.
+
+    Resolution order mirrors :func:`s1_detection_library._resolved_settings`:
+    a registered user's own ``console_url`` + ``console_token`` win when both
+    are set; the built-in admin (or a partially-configured user) falls back
+    to the global ``s1_settings.json``. Empty / missing creds return ``None``
+    so the caller silently sends without XDR enrichment.
+
+    The profile's ``account_id`` (and optionally ``site_id``) scope the
+    ``/xdr/assets`` enumeration the resolver does — narrows the search to
+    the relevant inventory and avoids pulling every asset across a
+    multi-tenant console. ``group_id`` is accepted for API compatibility
+    with the profile shape but **ignored**: ``/xdr/assets`` doesn't take a
+    group filter, and the binding key (XDR Asset ID) lives below scope
+    boundaries anyway.
+
+    The caller is responsible for ``close()``-ing the returned resolver (or
+    using it as a context manager) so the underlying httpx client doesn't
+    leak.
+    """
+    import s1_assets
+    url = ""
+    token = ""
+    uid, _is_admin = _session_identity(ag_session)
+    if uid:
+        u = accounts.get_user(uid, with_secrets=True) or {}
+        url = (u.get("console_url") or "").strip()
+        token = (u.get("console_token") or "").strip()
+    if not (url and token):
+        try:
+            import s1_detection_library
+            s = s1_detection_library.get_settings() or {}
+            url = url or (s.get("console_url") or "").strip()
+            token = token or (s.get("api_token") or "").strip()
+        except Exception:                            # pragma: no cover
+            pass
+    if not (url and token):
+        return None
+    # group_id is accepted but not forwarded — see docstring above.
+    _ = group_id
+    return s1_assets.S1AssetResolver(
+        console_url=url, api_token=token,
+        account_id=account_id, site_id=site_id,
+    )
+
+
 @router.post("/api/alerts/profiles/{profile_id}/send")
 async def api_alerts_profiles_send(profile_id: str, request: Request,
                                    ag_session: str | None = Cookie(None)):
@@ -8783,18 +8922,53 @@ async def api_alerts_profiles_send(profile_id: str, request: Request,
     except Exception:
         body = {}
     count = max(1, min(100, int(body.get("count") or 1)))
-    results = alerts.send_alert(
-        existing["template_id"],
-        uam_ingest_url=existing["uam_ingest_url"],
-        service_token=existing["uam_service_token"],
-        account_id=existing["uam_account_id"],
-        site_id=existing.get("uam_site_id") or None,
-        overrides=existing.get("overrides") or {},
-        count=count,
-    )
+    # XDR asset resolution (P4.6) — only built when the profile opts in AND
+    # the caller has S1 mgmt creds. Resolver is closed on every exit path so
+    # the underlying httpx client never leaks.
+    resolver = None
+    resolver_status: dict[str, Any] = {"status": "disabled"}
+    if existing.get("link_xdr_assets"):
+        resolver = _build_asset_resolver_for_session(
+            ag_session,
+            account_id=existing.get("uam_account_id") or None,
+            site_id=existing.get("uam_site_id") or None,
+            group_id=existing.get("uam_group_id") or None,
+        )
+        if resolver is None:
+            resolver_status = {"status": "no_creds",
+                               "note": "link_xdr_assets is ON for this profile but no "
+                                       "S1 console URL + API token are configured for "
+                                       "your account. Set them on the Account page."}
+        else:
+            resolver_status = {"status": "used"}
+    # Phase 4.7: opt-in MITRE + observables enrichment. Default-on at the
+    # profile level; per-profile flag wins, env var APIGENIE_ALERT_ENRICH
+    # provides the global kill-switch (handled inside prepare_alert).
+    enrich_flag = bool(existing.get("enrich_observables", True))
+    enrich_status: dict[str, Any] = {"status": "enabled" if enrich_flag else "disabled"}
+    try:
+        results = alerts.send_alert(
+            existing["template_id"],
+            uam_ingest_url=existing["uam_ingest_url"],
+            service_token=existing["uam_service_token"],
+            account_id=existing["uam_account_id"],
+            site_id=existing.get("uam_site_id") or None,
+            group_id=existing.get("uam_group_id") or None,
+            overrides=existing.get("overrides") or {},
+            count=count,
+            resolver=resolver,
+            enrich=enrich_flag,
+        )
+    finally:
+        if resolver is not None:
+            # Capture diagnostics BEFORE close() so the trace is still intact.
+            resolver_status.update(resolver.stats())
+            resolver.close()
     summary = alert_push.summarise_results(existing["template_id"], results)
     alert_push.record_send(profile_id, summary)
-    return JSONResponse({"summary": summary, "results": results})
+    return JSONResponse({"summary": summary, "results": results,
+                         "resolver": resolver_status,
+                         "enrich": enrich_status})
 
 
 @router.post("/api/alerts/send-custom")
@@ -8822,18 +8996,51 @@ async def api_alerts_send_custom(request: Request, ag_session: str | None = Cook
         return JSONResponse({"error": "uam_ingest_url, uam_account_id, "
                              "uam_service_token are all required"},
                             status_code=400)
-    result = alerts.send_custom_alert(
-        alert_json,
-        uam_ingest_url=ingest_url,
-        service_token=token,
-        account_id=account_id,
-        site_id=(body.get("uam_site_id") or None),
-        auto_generate_uid=bool(body.get("auto_generate_uid", True)),
-    )
+    # XDR asset resolution (P4.6) — opt-in per ad-hoc send via the JSON body.
+    resolver = None
+    resolver_status: dict[str, Any] = {"status": "disabled"}
+    if bool(body.get("link_xdr_assets")):
+        resolver = _build_asset_resolver_for_session(
+            ag_session,
+            account_id=(body.get("uam_account_id") or "").strip() or None,
+            site_id=(body.get("uam_site_id") or "").strip() or None,
+            group_id=(body.get("uam_group_id") or "").strip() or None,
+        )
+        if resolver is None:
+            resolver_status = {"status": "no_creds",
+                               "note": "link_xdr_assets requested but no S1 console URL + "
+                                       "API token are configured for your account."}
+        else:
+            resolver_status = {"status": "used"}
+    # Phase 4.7: ad-hoc enrichment flag. Defaults to True so paste-and-go
+    # custom sends still ship MITRE + observables. Caller can disable via
+    # ``enrich_observables: false`` in the body when they want a strict
+    # passthrough (typically for re-sending a captured payload verbatim,
+    # in which case ``auto_generate_uid: false`` also skips the enricher).
+    enrich_flag = bool(body.get("enrich_observables", True))
+    enrich_status: dict[str, Any] = {"status": "enabled" if enrich_flag else "disabled"}
+    try:
+        result = alerts.send_custom_alert(
+            alert_json,
+            uam_ingest_url=ingest_url,
+            service_token=token,
+            account_id=account_id,
+            site_id=(body.get("uam_site_id") or None),
+            group_id=(body.get("uam_group_id") or None),
+            auto_generate_uid=bool(body.get("auto_generate_uid", True)),
+            resolver=resolver,
+            enrich=enrich_flag,
+        )
+    finally:
+        if resolver is not None:
+            resolver_status.update(resolver.stats())
+            resolver.close()
     result["alert_index"] = 0
     summary = alert_push.summarise_results("_custom", [result])
     alert_push.record_send("_custom", summary)
-    return JSONResponse({"summary": summary, "result": result})
+    return JSONResponse({"summary": summary, "result": result,
+                         "resolver": resolver_status,
+                         "enrich": enrich_status})
 
 
 @router.get("/api/alerts/profiles/{profile_id}/history")
