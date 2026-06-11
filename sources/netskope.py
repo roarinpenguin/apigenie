@@ -1,9 +1,16 @@
-"""Netskope Alerts and Audit Events mock data generator."""
+"""Netskope Alerts and Audit Events mock data generator.
+
+Event catalog grounded in the Netskope v2 alerts API
+(``docs.netskope.com/en/netskope-rest-apis-v2-public-1.html``). The
+``type`` query parameter selects one of 11 alert kinds; admins can
+rebalance their share of the unfiltered stream via Event Mix.
+"""
 
 import random
 from typing import Any
 
 import detection_rules
+import event_mix
 import profiles
 from generators import (
     generate_country_code,
@@ -111,12 +118,30 @@ _ALERT_TEMPLATES: dict[str, dict[str, Any]] = {
     },
 }
 
+# ── Event catalog ──────────────────────────────────────────────────────
+# Uniform 1/11 ≈ 0.091 defaults preserve the existing random.choice
+# distribution. Sum equals 1.0 within rounding tolerance.
+_UNIFORM_WEIGHT = round(1.0 / 11, 4)
+EVENT_CATALOG: list[dict[str, Any]] = [
+    {"id": eid, "label": tpl["alert_name"], "default_weight": _UNIFORM_WEIGHT,
+     "docs_anchor": "docs.netskope.com/en/netskope-rest-apis-v2-public-1.html"}
+    for eid, tpl in _ALERT_TEMPLATES.items()
+]
+
+# Catalogue ids → (template_dict, default_weight). Reuses the existing
+# _ALERT_TEMPLATES payloads; keys MUST match EVENT_CATALOG ids exactly.
+_ALERT_MIX: dict[str, tuple[dict[str, Any], float]] = {
+    eid: (tpl, _UNIFORM_WEIGHT) for eid, tpl in _ALERT_TEMPLATES.items()
+}
+
 
 def _generate_alert(alert_type: str | None = None, ctx: profiles.ProfileContext | None = None) -> dict[str, Any]:
     if alert_type and alert_type in _ALERT_TEMPLATES:
+        # Explicit filter wins over the mix — collectors that ask for a
+        # specific alert_type expect that exact type regardless of overrides.
         template = _ALERT_TEMPLATES[alert_type]
     else:
-        template = random.choice(list(_ALERT_TEMPLATES.values()))
+        template = weighted_choice(event_mix.apply(_ALERT_MIX, "netskope"))
     app = random.choice(_APPS)
     pu = ctx.pick_user() if ctx else None
     pm = ctx.pick_machine() if ctx else None

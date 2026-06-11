@@ -58,6 +58,11 @@ docker cp sources/azure_ad.py                      "$C":/app/sources/azure_ad.py
 docker cp sources/microsoft_defender.py            "$C":/app/sources/microsoft_defender.py
 docker cp sources/m365.py                          "$C":/app/sources/m365.py
 docker cp sources/mimecast.py                      "$C":/app/sources/mimecast.py
+docker cp sources/cato.py                          "$C":/app/sources/cato.py
+docker cp sources/darktrace.py                     "$C":/app/sources/darktrace.py
+docker cp sources/gcp_audit.py                     "$C":/app/sources/gcp_audit.py
+docker cp sources/netskope.py                      "$C":/app/sources/netskope.py
+docker cp sources/sentinelone.py                   "$C":/app/sources/sentinelone.py
 docker cp tests/test_event_mix_sources.py          "$C":/app/tests/test_event_mix_sources.py
 
 echo "[2/3] restarting container..."

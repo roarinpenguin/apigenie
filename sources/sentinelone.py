@@ -16,8 +16,9 @@ import base64
 import json
 from datetime import datetime, timezone, timedelta
 from typing import Any
-from generators import generate_ip, generate_hostname, generate_uuid
+from generators import generate_ip, generate_hostname, generate_uuid, weighted_choice
 from detection_rules import inject_detection_events
+import event_mix
 import profiles
 
 # ── Shared constants ─────────────────────────────────────────────────────────
@@ -77,6 +78,26 @@ _THREAT_NAMES = [
 ]
 _CLASSIFICATIONS = ["Malware", "Trojan", "Ransomware", "Exploit", "PUA",
                      "Infostealer", "Backdoor", "Worm", "Dropper"]
+
+# ── Event catalog ──────────────────────────────────────────────────────
+# SentinelOne is already broad — the v4.1 roadmap notes it should be
+# calibrated, not expanded. Mix-eligibility here is the THREAT CLASSIFICATION
+# axis (9 entries). An admin can demo a ransomware-only or infostealer-only
+# scenario by disabling everything else. Uniform 1/9 ≈ 0.111 defaults
+# preserve the existing random.choice(_CLASSIFICATIONS) distribution.
+_S1_UNIFORM_WEIGHT = round(1.0 / 9, 4)
+EVENT_CATALOG: list[dict[str, Any]] = [
+    {"id": cls.lower(), "label": f"Threat classification: {cls}",
+     "default_weight": _S1_UNIFORM_WEIGHT,
+     "docs_anchor": "usea1-partners.sentinelone.net/api-doc/openapi.html#tag/Threats"}
+    for cls in _CLASSIFICATIONS
+]
+
+# Catalogue ids → (classification_string, default_weight). Keys MUST match
+# EVENT_CATALOG ids (lowercased classification name) exactly.
+_CLASSIFICATION_TEMPLATES: dict[str, tuple[Any, float]] = {
+    cls.lower(): (cls, _S1_UNIFORM_WEIGHT) for cls in _CLASSIFICATIONS
+}
 _ENGINES = ["On-Write Static AI", "On-Write Dynamic AI", "Behavioral AI",
             "Cloud Intelligence", "Application Control", "STAR Custom Rule"]
 _ANALYST_VERDICTS = ["undefined", "suspicious", "true_positive", "false_positive"]
@@ -208,7 +229,9 @@ def _generate_threat(ctx=None) -> dict[str, Any]:
 
     tactic, technique = random.choice(_TACTICS_TECHNIQUES)
     threat_name = pmal.get("filename", random.choice(_THREAT_NAMES)) if pmal else random.choice(_THREAT_NAMES)
-    classification = random.choice(_CLASSIFICATIONS)
+    classification = weighted_choice(
+        event_mix.apply(_CLASSIFICATION_TEMPLATES, "sentinelone")
+    )
     engine = random.choice(_ENGINES)
     confidence = random.choices(_CONFIDENCE_LEVELS, weights=[60, 30, 10])[0]
     user = pu.get("username", random.choice(_USERS_DOMAIN)) if pu else random.choice(_USERS_DOMAIN)

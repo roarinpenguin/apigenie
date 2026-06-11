@@ -9,8 +9,9 @@ from __future__ import annotations
 import random
 from datetime import datetime, timezone, timedelta
 from typing import Any
-from generators import generate_ip, generate_hostname, generate_uuid
+from generators import generate_ip, generate_hostname, generate_uuid, weighted_choice
 from detection_rules import inject_detection_events
+import event_mix
 import profiles
 
 _ACCOUNT_IDS = ["12345", "67890"]
@@ -176,17 +177,38 @@ def _audit_event(ctx=None) -> dict[str, Any]:
     }
 
 
-_GENERATORS = [
-    (_security_event, 30), (_internet_access_event, 30),
-    (_wan_event, 20), (_audit_event, 20),
+# ── Event catalog ──────────────────────────────────────────────────────
+# Four top-level event-feed categories exposed by Cato's eventsFeed +
+# auditFeed GraphQL queries.
+EVENT_CATALOG: list[dict[str, Any]] = [
+    {"id": "security", "label": "Security event (IPS / anti-malware / firewall)",
+     "default_weight": 0.30,
+     "docs_anchor": "api.catonetworks.com/documentation/#operation/eventsFeed"},
+    {"id": "internet_access", "label": "Internet access event (URL / SWG)",
+     "default_weight": 0.30,
+     "docs_anchor": "api.catonetworks.com/documentation/#operation/eventsFeed"},
+    {"id": "wan", "label": "WAN event (tunnel / link / routing)",
+     "default_weight": 0.20,
+     "docs_anchor": "api.catonetworks.com/documentation/#operation/eventsFeed"},
+    {"id": "audit", "label": "Audit event (admin actions, config changes)",
+     "default_weight": 0.20,
+     "docs_anchor": "api.catonetworks.com/documentation/#operation/auditFeed"},
 ]
-_GEN_FUNCS = [g for g, _ in _GENERATORS]
-_GEN_WEIGHTS = [w for _, w in _GENERATORS]
+
+# Catalogue ids → (generator callable, default weight). Keys MUST match
+# EVENT_CATALOG ids exactly so admin overrides bind 1:1.
+_EVENT_TEMPLATES: dict[str, tuple[Any, float]] = {
+    "security":        (_security_event,        0.30),
+    "internet_access": (_internet_access_event, 0.30),
+    "wan":             (_wan_event,             0.20),
+    "audit":           (_audit_event,           0.20),
+}
 
 
 def generate_events(count: int = 20) -> list[dict[str, Any]]:
     ctx = profiles.get_context("cato")
     count = profiles.scale_count("cato", count)
-    events = [random.choices(_GEN_FUNCS, weights=_GEN_WEIGHTS, k=1)[0](ctx) for _ in range(count)]
+    templates = event_mix.apply(_EVENT_TEMPLATES, "cato")
+    events = [weighted_choice(templates)(ctx) for _ in range(count)]
     events = inject_detection_events("cato", events)
     return events

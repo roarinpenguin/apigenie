@@ -1,9 +1,21 @@
-"""Darktrace mock data generator."""
+"""Darktrace mock data generator.
+
+Event catalog spans two endpoint families:
+
+* ``/modelbreaches`` — 6 model-breach categories (Compromise, Unusual
+  Activity, Anomalous Connection, Device, User, etc.).
+* ``/aianalyst/incidentevents`` — 4 AI Analyst incident severities
+  (Critical/Informational/High/Medium).
+
+Like cisco_duo and azure_ad, each entry carries an ``endpoint`` key so the
+catalog-coverage test sums weights per family.
+"""
 
 import random
 from typing import Any
 
 import detection_rules
+import event_mix
 import profiles
 from generators import (
     generate_hostname,
@@ -14,6 +26,8 @@ from generators import (
     weighted_choice,
 )
 
+# Tuples kept under the original name for backwards compatibility with the
+# generator code; the catalogue + template dicts below add the mix layer.
 _MODELS = [
     ("Anomalous Connection / New User Agent", "Device / New User Agent", 5),
     ("Anomalous Connection / Rare External SSL Self-Signed", "Network / Rare External SSL", 7),
@@ -30,12 +44,71 @@ _AI_INCIDENT_CATEGORIES = [
     "Medium/unusual-activity",
 ]
 
+# ── Event catalog ──────────────────────────────────────────────────────
+EVENT_CATALOG: list[dict[str, Any]] = [
+    # /modelbreaches — 6 categories. Uniform 1/6 ≈ 0.167 default preserves
+    # the existing random.choice(_MODELS) distribution.
+    {"id": "model_new_user_agent", "label": "Anomalous Connection / New User Agent",
+     "endpoint": "modelbreaches", "default_weight": 0.1667,
+     "docs_anchor": "customerportal.darktrace.com/inflection-help/model-breaches"},
+    {"id": "model_rare_ssl", "label": "Anomalous Connection / Rare External SSL Self-Signed",
+     "endpoint": "modelbreaches", "default_weight": 0.1667,
+     "docs_anchor": "customerportal.darktrace.com/inflection-help/model-breaches"},
+    {"id": "model_agent_beacon", "label": "Compromise / Agent Beacon",
+     "endpoint": "modelbreaches", "default_weight": 0.1667,
+     "docs_anchor": "customerportal.darktrace.com/inflection-help/model-breaches"},
+    {"id": "model_new_device", "label": "Device / New Device on Network",
+     "endpoint": "modelbreaches", "default_weight": 0.1667,
+     "docs_anchor": "customerportal.darktrace.com/inflection-help/model-breaches"},
+    {"id": "model_data_transfer", "label": "Unusual Activity / Unusual External Data Transfer",
+     "endpoint": "modelbreaches", "default_weight": 0.1667,
+     "docs_anchor": "customerportal.darktrace.com/inflection-help/model-breaches"},
+    {"id": "model_early_hours", "label": "User / Early Work Hours",
+     "endpoint": "modelbreaches", "default_weight": 0.1665,
+     "docs_anchor": "customerportal.darktrace.com/inflection-help/model-breaches"},
+    # /aianalyst/incidentevents — 4 categories. Uniform 0.25 default.
+    {"id": "ai_critical_compromise", "label": "AI: Critical / potential compromise",
+     "endpoint": "aianalyst", "default_weight": 0.25,
+     "docs_anchor": "customerportal.darktrace.com/inflection-help/ai-analyst"},
+    {"id": "ai_info_new_creds", "label": "AI: Informational / new credentials",
+     "endpoint": "aianalyst", "default_weight": 0.25,
+     "docs_anchor": "customerportal.darktrace.com/inflection-help/ai-analyst"},
+    {"id": "ai_high_exfil", "label": "AI: High / data exfiltration",
+     "endpoint": "aianalyst", "default_weight": 0.25,
+     "docs_anchor": "customerportal.darktrace.com/inflection-help/ai-analyst"},
+    {"id": "ai_medium_unusual", "label": "AI: Medium / unusual activity",
+     "endpoint": "aianalyst", "default_weight": 0.25,
+     "docs_anchor": "customerportal.darktrace.com/inflection-help/ai-analyst"},
+]
+
+# Model-breach templates: id → (model_tuple, default_weight). The tuple
+# (name, category, severity) becomes the payload returned by weighted_choice
+# and is unpacked at the call site.
+_MODEL_TEMPLATES: dict[str, tuple[Any, float]] = {
+    "model_new_user_agent":  (_MODELS[0], 0.1667),
+    "model_rare_ssl":        (_MODELS[1], 0.1667),
+    "model_agent_beacon":    (_MODELS[2], 0.1667),
+    "model_new_device":      (_MODELS[3], 0.1667),
+    "model_data_transfer":   (_MODELS[4], 0.1667),
+    "model_early_hours":     (_MODELS[5], 0.1665),
+}
+
+# AI-incident templates: id → (category_string, default_weight).
+_AI_INCIDENT_TEMPLATES: dict[str, tuple[Any, float]] = {
+    "ai_critical_compromise": (_AI_INCIDENT_CATEGORIES[0], 0.25),
+    "ai_info_new_creds":      (_AI_INCIDENT_CATEGORIES[1], 0.25),
+    "ai_high_exfil":           (_AI_INCIDENT_CATEGORIES[2], 0.25),
+    "ai_medium_unusual":      (_AI_INCIDENT_CATEGORIES[3], 0.25),
+}
+
 _DEVICE_LABELS = ["Desktop", "Laptop", "Server", "Mobile Phone", "Network Equipment", "IoT Device", "Virtual Machine"]
 _SEVERITIES = [0, 0, 0, 1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 
 
 def _generate_model_breach(ctx: profiles.ProfileContext | None = None) -> dict[str, Any]:
-    model_name, category, severity = random.choice(_MODELS)
+    model_name, category, severity = weighted_choice(
+        event_mix.apply(_MODEL_TEMPLATES, "darktrace")
+    )
     ts_ms = now_epoch_ms() - random.randint(0, 3600000)
     pm = ctx.pick_machine() if ctx else None
     pc2 = ctx.pick_c2() if ctx else None
@@ -118,7 +191,7 @@ def _generate_model_breach(ctx: profiles.ProfileContext | None = None) -> dict[s
 
 def _generate_analyst_incident() -> dict[str, Any]:
     ts_ms = now_epoch_ms() - random.randint(0, 7200000)
-    category = random.choice(_AI_INCIDENT_CATEGORIES)
+    category = weighted_choice(event_mix.apply(_AI_INCIDENT_TEMPLATES, "darktrace"))
 
     return {
         "uuid": generate_uuid(),

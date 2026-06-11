@@ -55,6 +55,11 @@ _WIRED_SOURCES = (
     "microsoft_defender",
     "m365",
     "mimecast",
+    "cato",
+    "darktrace",
+    "gcp_audit",
+    "netskope",
+    "sentinelone",
 )
 
 
@@ -226,6 +231,72 @@ def test_mimecast_mta_subset_is_subset_of_event_templates():
     assert set(mimecast._MTA_ONLY_IDS).issubset(tpl_ids), (
         f"_MTA_ONLY_IDS references unknown ids: "
         f"{set(mimecast._MTA_ONLY_IDS) - tpl_ids}"
+    )
+
+
+def test_cato_catalog_ids_match_template_keys():
+    from sources import cato
+
+    cat_ids = {e["id"] for e in cato.EVENT_CATALOG}
+    tpl_ids = set(cato._EVENT_TEMPLATES.keys())
+    assert cat_ids == tpl_ids, (
+        f"cato catalog/template drift: "
+        f"catalog-only={cat_ids - tpl_ids}, template-only={tpl_ids - cat_ids}"
+    )
+
+
+def test_darktrace_catalog_ids_match_template_keys():
+    """darktrace spans two endpoint families like cisco_duo/azure_ad —
+    catalogue must cover BOTH _MODEL_TEMPLATES and _AI_INCIDENT_TEMPLATES."""
+    from sources import darktrace
+
+    cat_ids = {e["id"] for e in darktrace.EVENT_CATALOG}
+    tpl_ids = (
+        set(darktrace._MODEL_TEMPLATES.keys())
+        | set(darktrace._AI_INCIDENT_TEMPLATES.keys())
+    )
+    assert cat_ids == tpl_ids, (
+        f"darktrace catalog/template drift: "
+        f"catalog-only={cat_ids - tpl_ids}, template-only={tpl_ids - cat_ids}"
+    )
+
+
+def test_gcp_audit_catalog_ids_match_template_keys():
+    from sources import gcp_audit
+
+    cat_ids = {e["id"] for e in gcp_audit.EVENT_CATALOG}
+    tpl_ids = set(gcp_audit._LOG_TEMPLATES.keys())
+    assert cat_ids == tpl_ids, (
+        f"gcp_audit catalog/template drift: "
+        f"catalog-only={cat_ids - tpl_ids}, template-only={tpl_ids - cat_ids}"
+    )
+
+
+def test_netskope_catalog_ids_match_template_keys():
+    """netskope uses a parallel _ALERT_MIX (alongside the existing
+    _ALERT_TEMPLATES) so the explicit alert_type lookup keeps working.
+    The catalog tracks _ALERT_MIX, which mirrors _ALERT_TEMPLATES keys."""
+    from sources import netskope
+
+    cat_ids = {e["id"] for e in netskope.EVENT_CATALOG}
+    mix_ids = set(netskope._ALERT_MIX.keys())
+    tpl_ids = set(netskope._ALERT_TEMPLATES.keys())
+    assert cat_ids == mix_ids == tpl_ids, (
+        f"netskope catalog/mix/template drift: "
+        f"catalog={cat_ids}, mix={mix_ids}, templates={tpl_ids}"
+    )
+
+
+def test_sentinelone_catalog_ids_match_classification_axis():
+    """sentinelone wires the threat classification axis (9 entries).
+    Catalogue ids are the lowercased classification names."""
+    from sources import sentinelone
+
+    cat_ids = {e["id"] for e in sentinelone.EVENT_CATALOG}
+    expected = {cls.lower() for cls in sentinelone._CLASSIFICATIONS}
+    assert cat_ids == expected, (
+        f"sentinelone catalog/classification drift: "
+        f"catalog-only={cat_ids - expected}, classifications-only={expected - cat_ids}"
     )
 
 
@@ -419,4 +490,97 @@ def test_mimecast_mta_only_endpoint_respects_global_disable(_isolate_data_root):
     random.seed(42)
     events, _token = mimecast.generate_siem_logs_response(count=100)
     hits = sum(1 for ev in events if ev.get("subtype") == "receipt")
+    assert hits == 0
+
+
+def test_cato_resolver_actually_disables_event(_isolate_data_root):
+    """Disabling ``audit`` should drop every event with event_type='audit'
+    from the feed. The audit generator stamps that field uniquely."""
+    em = _isolate_data_root
+    _apply_disable_mix(em, "cato", ["audit"])
+    from sources import cato
+
+    random.seed(42)
+    events = cato.generate_events(count=100)
+    hits = sum(1 for ev in events if ev.get("event_type") == "audit")
+    assert hits == 0
+
+
+def test_darktrace_model_resolver_actually_disables_event(_isolate_data_root):
+    """Disabling ``model_agent_beacon`` should remove the unique
+    'Compromise / Agent Beacon' model name from /modelbreaches output."""
+    em = _isolate_data_root
+    _apply_disable_mix(em, "darktrace", ["model_agent_beacon"])
+    from sources import darktrace
+
+    random.seed(42)
+    breaches = darktrace.get_model_breaches(limit=50)
+    hits = sum(
+        1 for b in breaches
+        if b["model"]["then"]["name"] == "Compromise / Agent Beacon"
+    )
+    assert hits == 0
+
+
+def test_darktrace_ai_incident_resolver_actually_disables_event(_isolate_data_root):
+    """Disabling ``ai_critical_compromise`` should drop incidents with
+    groupCategory == 'Critical'. Proves the resolver is threaded through
+    BOTH darktrace endpoints, not just the model-breach one."""
+    em = _isolate_data_root
+    _apply_disable_mix(em, "darktrace", ["ai_critical_compromise"])
+    from sources import darktrace
+
+    random.seed(42)
+    incidents = darktrace.get_analyst_incidents(limit=20)
+    hits = sum(1 for i in incidents if i["groupCategory"] == "Critical")
+    assert hits == 0
+
+
+def test_gcp_audit_resolver_actually_disables_event(_isolate_data_root):
+    """Disabling ``iam_policy_change`` should remove logs with the
+    'WARNING' severity from the audit stream — that severity is unique
+    to the iam_policy_change template."""
+    em = _isolate_data_root
+    _apply_disable_mix(em, "gcp_audit", ["iam_policy_change"])
+    from sources import gcp_audit
+
+    random.seed(42)
+    hits = 0
+    for _ in range(200):
+        log = gcp_audit.generate_audit_log()
+        if log["severity"] == "WARNING":
+            hits += 1
+    assert hits == 0
+
+
+def test_netskope_resolver_actually_disables_event(_isolate_data_root):
+    """Disabling ``Malware`` should drop alerts where alert_type == 'Malware'
+    from the unfiltered alert stream. The explicit-lookup path still works
+    independently (tested implicitly by the alignment test)."""
+    em = _isolate_data_root
+    _apply_disable_mix(em, "netskope", ["Malware"])
+    from sources import netskope
+
+    random.seed(42)
+    hits = 0
+    for _ in range(200):
+        alert = netskope._generate_alert(alert_type=None, ctx=None)
+        if alert.get("alert_type") == "Malware":
+            hits += 1
+    assert hits == 0
+
+
+def test_sentinelone_resolver_actually_disables_event(_isolate_data_root):
+    """Disabling ``ransomware`` should drop every threat with
+    classification == 'Ransomware' from the threat stream."""
+    em = _isolate_data_root
+    _apply_disable_mix(em, "sentinelone", ["ransomware"])
+    from sources import sentinelone
+
+    random.seed(42)
+    resp = sentinelone.generate_threats(count=50)
+    hits = sum(
+        1 for threat in resp["data"]
+        if threat.get("threatInfo", {}).get("classification") == "Ransomware"
+    )
     assert hits == 0
