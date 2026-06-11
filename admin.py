@@ -266,6 +266,7 @@ ADMIN_ONLY_API_PREFIXES: tuple[str, ...] = (
     "/admin/api/change-password",
     "/admin/api/request-logs",
     "/admin/api/rbac",                         # entitlements + user account management
+    "/admin/api/webhook-settings",             # SSRF allowlist (security-sensitive)
 )
 
 
@@ -359,6 +360,19 @@ def _perm_requirement(path: str, method: str) -> tuple[str, tuple[str, ...]] | N
     if path.startswith("/admin/api/source-intensity/"):
         if m in ("PUT", "PATCH"):
             return (C.SOURCE_BINDINGS, (P.MODIFY,))
+    # Webhooks (Phase 6 — v5.0): mirrors Alert Push gate shape.
+    if path == "/admin/api/webhooks":
+        if m == "POST":
+            return (C.WEBHOOKS, (P.CREATE,))
+    elif path.startswith("/admin/api/webhooks/"):
+        if path.endswith("/clone"):
+            return (C.WEBHOOKS, (P.CREATE,))
+        if path.endswith("/send"):
+            return (C.WEBHOOKS, (P.MANAGE, P.MODIFY))
+        if m in ("PUT", "PATCH"):
+            return (C.WEBHOOKS, (P.MODIFY,))
+        if m == "DELETE":
+            return (C.WEBHOOKS, (P.DELETE,))
     return None
 
 
@@ -1127,6 +1141,7 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
   <a class="nav-item" data-portal="user" onclick="showTab('profiles', this); loadProfiles()"><span class="nav-icon">🎭</span> Log Profiles &amp;<br/><span style="padding-left:1.65rem">Detection Rules</span></a>
   <a class="nav-item" data-portal="user" onclick="showTab('push', this); loadPushProfiles()"><span class="nav-icon">🚀</span> Log Push</a>
   <a class="nav-item" data-portal="user" onclick="showTab('alert-push', this); loadAlertProfiles()"><span class="nav-icon">🚨</span> Alert Push</a>
+  <a class="nav-item" data-portal="user" onclick="showTab('webhooks', this); loadWebhooks()"><span class="nav-icon">🪝</span> Webhooks</a>
   <a class="nav-item" data-portal="user" onclick="showTab('identifiers', this); loadIdentifiers()"><span class="nav-icon">🔑</span> Source Identifiers</a>
   <a class="nav-item" data-portal="user" style="display:none" onclick="showTab('scenarios', this); loadScenarios()"><span class="nav-icon">⚔</span> Attack Scenarios</a>
   <a class="nav-item" data-portal="user" onclick="showTab('config', this)"><span class="nav-icon">🔧</span> Source Details</a>
@@ -1706,6 +1721,42 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
       </div>
     </div>
 
+    <!-- WEBHOOKS TAB -->
+    <div class="pane" id="pane-webhooks">
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span>Webhooks</span>
+          <button class="btn-sm" onclick="newWebhook()">+ New Webhook</button>
+        </div>
+        <p style="font-size:.78rem;color:rgba(224,170,255,.45);margin-bottom:10px">
+          Compose templated outbound HTTP requests against any URL.
+          Pick a bound log profile and reference fields like
+          <code>{{profile.user.email}}</code> or
+          <code>{{custom.title}}</code> in URL, headers, query and body.
+          Egress is filtered (no RFC1918 / loopback / IMDS unless explicitly
+          allow-listed). Last response is captured for inspection; sensitive
+          auth headers are redacted in the rendered view.
+        </p>
+        <div style="display:grid;grid-template-columns:260px 1fr;gap:14px;align-items:start">
+          <!-- Left rail -->
+          <div id="webhook-list" style="min-height:240px"><p class="empty">Loading…</p></div>
+          <!-- Editor -->
+          <div id="webhook-editor"><p class="empty">Pick a webhook on the left or click <b>+ New Webhook</b>.</p></div>
+        </div>
+      </div>
+      <!-- Response pane (revealed on first send) -->
+      <div class="card" id="webhook-response-card" style="display:none">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span>Last response</span>
+          <div style="display:flex;gap:6px">
+            <button class="btn-sm" onclick="copyWebhookCurl()">📋 Copy as curl</button>
+            <button class="btn-sm" onclick="hideWebhookResponse()" style="background:rgba(90,24,154,.3)">Close</button>
+          </div>
+        </div>
+        <div id="webhook-response"></div>
+      </div>
+    </div>
+
     <!-- CONFIG TAB -->
     <div class="pane" id="pane-config">
       <div class="card">
@@ -2041,6 +2092,47 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
       </div>
 
       <div class="card">
+        <div class="card-title">Webhook egress allowlist</div>
+        <p style="font-size:.78rem;color:rgba(224,170,255,.45);margin-bottom:10px">
+          The Webhooks composer refuses RFC1918 / loopback / link-local / IMDS
+          targets by default to block SSRF abuse. Add LAN ranges or specific
+          hostnames here to enable local lab demos.
+          Entries set via the <code>APIGENIE_WEBHOOK_ALLOWED_HOSTS</code> env
+          var are shown for reference and cannot be removed from this UI
+          (edit <code>.env</code> + <code>docker compose up -d apigenie</code>
+          to change them).
+        </p>
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <div>
+            <label style="font-size:.72rem;color:rgba(224,170,255,.5);display:block;margin-bottom:4px">From <code>.env</code> (read-only)</label>
+            <div id="wh-settings-env"><p class="empty" style="margin:0">…</p></div>
+          </div>
+          <div>
+            <label style="font-size:.72rem;color:rgba(224,170,255,.5);display:block;margin-bottom:4px">Custom entries (CIDR or hostname)</label>
+            <div id="wh-settings-entries" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px"></div>
+            <div style="display:flex;gap:6px">
+              <input id="wh-settings-new" type="text" placeholder="e.g. 192.168.0.0/16 or collector.lab"
+                     onkeydown="if(event.key==='Enter'){addWebhookAllowEntry();event.preventDefault();}"
+                     style="flex:1;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/>
+              <button class="btn-sm" onclick="addWebhookAllowEntry()">+ Add</button>
+            </div>
+            <p style="font-size:.7rem;color:rgba(224,170,255,.4);margin:4px 0 0">
+              Press <kbd style="font-size:.65rem">Enter</kbd> after typing to add. Entries are validated before saving.
+            </p>
+          </div>
+          <div>
+            <label style="font-size:.72rem;color:rgba(224,170,255,.5);display:block;margin-bottom:4px">Default block list <span style="color:rgba(224,170,255,.3)">(always rejected unless explicitly allowed above)</span></label>
+            <div id="wh-settings-defaults" style="display:flex;flex-wrap:wrap;gap:4px"></div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn-sm" onclick="saveWebhookAllowlist()">💾 Save allowlist</button>
+            <button class="btn-sm" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2)" onclick="loadWebhookAllowlist()">↺ Reload</button>
+            <span id="wh-settings-status" style="font-size:.72rem"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
         <div class="card-title">Change admin password</div>
         <div class="row"><label style="min-width:140px;font-size:.82rem;color:rgba(224,170,255,.7)">Current password</label>
           <input id="pw-current" type="password" autocomplete="current-password" style="flex:1;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 12px;color:var(--mist);outline:none"/>
@@ -2098,7 +2190,7 @@ function showTab(tab, el) {
   document.getElementById('pane-' + tab).classList.add('active');
   if (el) el.classList.add('active');
   activeTab = tab;
-  const titles = {requests:'Request Inspector', observability:'Observability', intrusions:'Intrusions', listeners:'Listeners', profiles:'Log Profiles & Detection Rules', push:'Log Push', 'alert-push':'Alert Push', scenarios:'Attack Scenarios', investigate:'Investigations', logs:'Container Logs', config:'Source Details', identifiers:'Source Identifiers', settings:'System Settings'};
+  const titles = {requests:'Request Inspector', observability:'Observability', intrusions:'Intrusions', listeners:'Listeners', profiles:'Log Profiles & Detection Rules', push:'Log Push', 'alert-push':'Alert Push', webhooks:'Webhooks', scenarios:'Attack Scenarios', investigate:'Investigations', logs:'Container Logs', config:'Source Details', identifiers:'Source Identifiers', settings:'System Settings'};
   // Resize viz canvases when the Observability tab becomes active.
   if (tab === 'observability') {
     if (window._sankey) window._sankey.resize();
@@ -2568,6 +2660,9 @@ async function loadSettings() {
       ? '<span style="color:#2ecc71">Configured</span>'
       : '<span style="color:rgba(224,170,255,.3)">Not configured</span>';
   } catch(e) {}
+  // Webhook egress allowlist (admin-only; the endpoint returns 401 for users
+  // and the card simply stays empty in that case).
+  loadWebhookAllowlist();
   // RBAC: entitlements + user accounts
   loadEntitlements();
   loadUsersList();
@@ -2599,6 +2694,130 @@ async function testS1Connection() {
       el.innerHTML = '<span style="color:#ff5050">Failed: ' + escHtml(d.error || 'unknown') + '</span>';
     }
   } catch(e) { el.innerHTML = '<span style="color:#ff5050">Error: ' + escHtml(String(e)) + '</span>'; }
+}
+
+// ── Webhook egress allowlist (Settings card) ─────────────────────────────────
+// In-memory mirror of the persisted list while the user is editing. Only the
+// "Save" button writes back to the server.
+var _whAllowEntries = [];
+
+async function loadWebhookAllowlist() {
+  var envBox = document.getElementById('wh-settings-env');
+  var entriesBox = document.getElementById('wh-settings-entries');
+  var defBox = document.getElementById('wh-settings-defaults');
+  if (!envBox || !entriesBox || !defBox) return;  // card not in DOM
+  try {
+    var r = await fetch('/admin/api/webhook-settings', {credentials:'same-origin'});
+    if (r.status === 401) {
+      envBox.innerHTML = '<p class="empty" style="margin:0">Admin only — sign in as admin to manage.</p>';
+      entriesBox.innerHTML = '';
+      defBox.innerHTML = '';
+      return;
+    }
+    if (!r.ok) {
+      envBox.innerHTML = '<p class="empty" style="margin:0">Error: HTTP ' + r.status + '</p>';
+      return;
+    }
+    var d = await r.json();
+    // env-sourced entries (read-only chips)
+    var envList = d.env_allowed_hosts || [];
+    envBox.innerHTML = envList.length
+      ? envList.map(function(e) { return _whChip(e, true); }).join('')
+      : '<p class="empty" style="margin:0;font-size:.72rem">None — <code>' + escHtml(d.env_var_name || 'APIGENIE_WEBHOOK_ALLOWED_HOSTS') + '</code> is unset.</p>';
+    // persisted entries (removable chips)
+    _whAllowEntries = (d.allowed_hosts || []).slice();
+    _whRenderAllowEntries();
+    // default block list (informational chips)
+    var blocked = d.default_blocked || [];
+    defBox.innerHTML = blocked.map(function(n) {
+      return '<span style="font-size:.7rem;font-family:monospace;padding:2px 8px;border-radius:10px;'
+           + 'background:rgba(255,80,80,.1);border:1px solid rgba(255,80,80,.25);color:#ff9c9c">'
+           + escHtml(n) + '</span>';
+    }).join('');
+  } catch(e) {
+    envBox.innerHTML = '<p class="empty" style="margin:0">Error: ' + escHtml(String(e)) + '</p>';
+  }
+}
+
+function _whChip(text, readOnly) {
+  // Read-only chips (env-sourced) have no remove button; editable chips do.
+  if (readOnly) {
+    return '<span style="font-size:.72rem;font-family:monospace;padding:3px 9px;border-radius:10px;'
+         + 'background:rgba(128,200,255,.1);border:1px solid rgba(128,200,255,.3);color:#a7d3ff;'
+         + 'display:inline-block;margin-right:4px;margin-bottom:4px">' + escHtml(text) + '</span>';
+  }
+  return '<span style="font-size:.72rem;font-family:monospace;padding:3px 9px;border-radius:10px;'
+       + 'background:rgba(199,125,255,.12);border:1px solid rgba(199,125,255,.3);color:#e0aaff;'
+       + 'display:inline-flex;align-items:center;gap:6px">'
+       + escHtml(text)
+       + '<span onclick="removeWebhookAllowEntry(&apos;' + escHtml(text).replace(/'/g, '') + '&apos;)" '
+       +   'style="cursor:pointer;color:#ff9c9c;font-weight:600">×</span>'
+       + '</span>';
+}
+
+function _whRenderAllowEntries() {
+  var box = document.getElementById('wh-settings-entries');
+  if (!box) return;
+  if (!_whAllowEntries.length) {
+    box.innerHTML = '<p class="empty" style="margin:0;font-size:.72rem">No custom entries yet. Add a CIDR or hostname below.</p>';
+    return;
+  }
+  box.innerHTML = _whAllowEntries.map(function(e) { return _whChip(e, false); }).join('');
+}
+
+function addWebhookAllowEntry() {
+  var inp = document.getElementById('wh-settings-new');
+  var status = document.getElementById('wh-settings-status');
+  if (!inp) return;
+  var v = (inp.value || '').trim();
+  if (!v) return;
+  // Quick client-side check: must look like a CIDR/IP or a hostname. The
+  // server re-validates and is the source of truth.
+  var looksOk = /^[0-9a-fA-F:.\/\-]+$/.test(v) || /^[a-zA-Z0-9][a-zA-Z0-9.\-]{0,252}$/.test(v);
+  if (!looksOk) {
+    if (status) status.innerHTML = '<span style="color:#ff8080">Not a valid CIDR or hostname.</span>';
+    return;
+  }
+  if (_whAllowEntries.indexOf(v) !== -1) {
+    if (status) status.innerHTML = '<span style="color:rgba(224,170,255,.5)">Already in list.</span>';
+    return;
+  }
+  _whAllowEntries.push(v);
+  inp.value = '';
+  if (status) status.innerHTML = '<span style="color:rgba(224,170,255,.5)">Added (unsaved).</span>';
+  _whRenderAllowEntries();
+}
+
+function removeWebhookAllowEntry(text) {
+  var idx = _whAllowEntries.indexOf(text);
+  if (idx === -1) return;
+  _whAllowEntries.splice(idx, 1);
+  var status = document.getElementById('wh-settings-status');
+  if (status) status.innerHTML = '<span style="color:rgba(224,170,255,.5)">Removed (unsaved).</span>';
+  _whRenderAllowEntries();
+}
+
+async function saveWebhookAllowlist() {
+  var status = document.getElementById('wh-settings-status');
+  if (status) status.innerHTML = '<span style="color:rgba(224,170,255,.5)">Saving…</span>';
+  try {
+    var r = await fetch('/admin/api/webhook-settings', {
+      method: 'PUT', credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({allowed_hosts: _whAllowEntries}),
+    });
+    var d = await r.json();
+    if (!r.ok) {
+      if (status) status.innerHTML = '<span style="color:#ff8080">Save failed: ' + escHtml(d.error || ('HTTP ' + r.status)) + '</span>';
+      return;
+    }
+    _whAllowEntries = d.allowed_hosts || [];
+    _whRenderAllowEntries();
+    if (status) status.innerHTML = '<span style="color:#2ecc71">Saved · ' + _whAllowEntries.length + ' entr' + (_whAllowEntries.length === 1 ? 'y' : 'ies') + '</span>';
+    toast('Webhook allowlist saved');
+  } catch(e) {
+    if (status) status.innerHTML = '<span style="color:#ff8080">Error: ' + escHtml(String(e)) + '</span>';
+  }
 }
 
 // ── RBAC: entitlements + user accounts ───────────────────────────────────────
@@ -5847,6 +6066,504 @@ async function sendCustomAlert() {
     }
     loadAlertGlobalHistory();
   } catch(e) { toast('Send failed: ' + e, true); }
+}
+
+// ── Webhooks (v5.0) ────────────────────────────────────────────────────────
+// Outbound HTTP request composer. Left rail lists webhooks visible to the
+// signed-in user; right pane is an editor with URL/method/auth/headers/
+// query/body + a bound-profile dropdown. Send hits the server-side renderer
+// + httpx pipeline; the captured "effective request" is what powers the
+// Copy-as-curl button.
+var _whList = [];          // last list response
+var _whCurrent = null;     // dict being edited (no id ⇒ unsaved draft)
+var _whProfiles = [];      // available profiles for the binding dropdown
+var _whLastResult = null;  // last send result for the response pane
+
+async function loadWebhooks() {
+  var box = document.getElementById('webhook-list');
+  if (!box) return;
+  box.innerHTML = '<p class="empty">Loading…</p>';
+  // Profiles for the binding dropdown — best-effort; failure shouldn't
+  // block the list.
+  try {
+    var pr = await fetch('/admin/api/profiles', {credentials:'same-origin'});
+    if (pr.ok) {
+      var pd = await pr.json();
+      _whProfiles = pd.profiles || [];
+    }
+  } catch(e) { _whProfiles = []; }
+  try {
+    var r = await fetch('/admin/api/webhooks', {credentials:'same-origin'});
+    if (!r.ok) { box.innerHTML = '<p class="empty">Error: ' + r.status + '</p>'; return; }
+    var d = await r.json();
+    _whList = d.webhooks || [];
+    _whRenderRail();
+  } catch(e) { box.innerHTML = '<p class="empty">Error: ' + e + '</p>'; }
+}
+
+function _whRenderRail() {
+  var box = document.getElementById('webhook-list');
+  if (!box) return;
+  if (!_whList.length) {
+    box.innerHTML = '<p class="empty">No webhooks yet. Click <b>+ New Webhook</b> to create one.</p>';
+    return;
+  }
+  var html = '<div style="display:flex;flex-direction:column;gap:6px">';
+  _whList.forEach(function(w) {
+    var sel = (_whCurrent && _whCurrent.id === w.id) ? ' webhook-row-active' : '';
+    html += '<div class="webhook-row' + sel + '" onclick="selectWebhook(&apos;' + w.id + '&apos;)" '
+         +  'style="padding:8px 10px;background:rgba(36,0,70,.4);border:1px solid rgba(199,125,255,.2);'
+         +  'border-radius:8px;cursor:pointer">'
+         +  '<div style="font-size:.85rem;font-weight:600;color:var(--mist);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(w.name || 'Untitled') + '</div>'
+         +  '<div style="font-size:.7rem;color:rgba(224,170,255,.5);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+         +    '<span style="color:#c77dff">' + escHtml(w.method || 'POST') + '</span> '
+         +    escHtml(w.url || '')
+         +  '</div>'
+         +  '<div style="font-size:.65rem;color:rgba(224,170,255,.35);margin-top:2px">'
+         +    (w.visibility === 'public' ? '🌐 public' : '🔒 private')
+         +    (w.profile_id ? '  ·  🎭 ' + escHtml(w.profile_id) : '')
+         +  '</div>'
+         + '</div>';
+  });
+  html += '</div>';
+  box.innerHTML = html;
+}
+
+async function selectWebhook(id) {
+  try {
+    var r = await fetch('/admin/api/webhooks/' + encodeURIComponent(id),
+                        {credentials:'same-origin'});
+    if (!r.ok) { toast('Load failed: ' + r.status, true); return; }
+    _whCurrent = await r.json();
+    _whRenderRail();
+    _whRenderEditor();
+  } catch(e) { toast('Load failed: ' + e, true); }
+}
+
+function newWebhook() {
+  _whCurrent = {
+    name: 'New webhook',
+    description: '',
+    url: '',
+    method: 'POST',
+    auth: {type: 'none'},
+    headers: [],
+    query: [],
+    body_template: '{\\n  "title": "{{custom.title}}",\\n  "user":  "{{profile.user.email}}",\\n  "ts":    "{{now}}"\\n}',
+    body_format: 'json',
+    profile_id: null,
+    visibility: 'private',
+  };
+  _whRenderRail();
+  _whRenderEditor();
+}
+
+function _whRenderEditor() {
+  var box = document.getElementById('webhook-editor');
+  if (!box || !_whCurrent) {
+    if (box) box.innerHTML = '<p class="empty">Pick a webhook on the left or click <b>+ New Webhook</b>.</p>';
+    return;
+  }
+  var w = _whCurrent;
+  var INPUT = 'background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem;width:100%';
+  var LABEL = 'font-size:.72rem;color:rgba(224,170,255,.5);display:block;margin-bottom:4px';
+  var SECTION = 'font-size:.72rem;color:#c77dff;margin-top:12px;font-weight:600;border-top:1px solid rgba(199,125,255,.15);padding-top:10px';
+
+  // Method dropdown
+  var methods = ['GET','POST','PUT','PATCH','DELETE','HEAD','OPTIONS'];
+  var methodOpts = methods.map(function(m){
+    return '<option value="' + m + '"' + (w.method === m ? ' selected' : '') + '>' + m + '</option>';
+  }).join('');
+
+  // Visibility dropdown
+  var visOpts = ['private','public'].map(function(v){
+    return '<option value="' + v + '"' + (w.visibility === v ? ' selected' : '') + '>' + v + '</option>';
+  }).join('');
+
+  // Profile dropdown
+  var profOpts = '<option value="">— no profile binding —</option>'
+    + (_whProfiles || []).map(function(p){
+        return '<option value="' + escHtml(p.id) + '"' + (w.profile_id === p.id ? ' selected' : '') + '>'
+             + escHtml(p.name || p.id) + '</option>';
+      }).join('');
+
+  // Body format
+  var bodyFmtOpts = ['json','form','raw'].map(function(f){
+    return '<option value="' + f + '"' + ((w.body_format||'json') === f ? ' selected' : '') + '>' + f + '</option>';
+  }).join('');
+
+  // Auth
+  var authT = (w.auth && w.auth.type) || 'none';
+  var authOpts = ['none','bearer','basic','custom'].map(function(a){
+    return '<option value="' + a + '"' + (authT === a ? ' selected' : '') + '>' + a + '</option>';
+  }).join('');
+
+  // Headers / query rows
+  function kvRows(items, container) {
+    var rows = (items || []).map(function(kv, i){
+      return _whKvRowHtml(container, i, kv.key || '', kv.value || '');
+    }).join('');
+    return rows || '<p class="empty" style="margin:6px 0">None yet.</p>';
+  }
+
+  box.innerHTML =
+    '<div style="display:flex;flex-direction:column;gap:8px">'
+    + '<div style="display:flex;gap:10px">'
+    +   '<div style="flex:2">'
+    +     '<label style="' + LABEL + '">Name</label>'
+    +     '<input id="wh-name" type="text" value="' + escHtml(w.name || '') + '" style="' + INPUT + '"/>'
+    +   '</div>'
+    +   '<div style="flex:1">'
+    +     '<label style="' + LABEL + '">Visibility</label>'
+    +     '<select id="wh-visibility" style="' + INPUT + '">' + visOpts + '</select>'
+    +   '</div>'
+    + '</div>'
+    + '<div>'
+    +   '<label style="' + LABEL + '">Description <span style="color:rgba(224,170,255,.3)">(optional)</span></label>'
+    +   '<input id="wh-description" type="text" value="' + escHtml(w.description || '') + '" style="' + INPUT + '"/>'
+    + '</div>'
+
+    + '<div style="' + SECTION + '">① Request</div>'
+    + '<div style="display:flex;gap:10px">'
+    +   '<div style="flex:0 0 120px">'
+    +     '<label style="' + LABEL + '">Method</label>'
+    +     '<select id="wh-method" style="' + INPUT + '">' + methodOpts + '</select>'
+    +   '</div>'
+    +   '<div style="flex:1">'
+    +     '<label style="' + LABEL + '">URL <span style="color:rgba(224,170,255,.3)">(supports {{vars}})</span></label>'
+    +     '<input id="wh-url" type="text" value="' + escHtml(w.url || '') + '" placeholder="https://hooks.example/incoming" style="' + INPUT + '"/>'
+    +   '</div>'
+    + '</div>'
+
+    + '<div style="' + SECTION + '">② Authentication</div>'
+    + '<div style="display:flex;gap:10px;align-items:flex-end">'
+    +   '<div style="flex:0 0 140px">'
+    +     '<label style="' + LABEL + '">Type</label>'
+    +     '<select id="wh-auth-type" onchange="_whRefreshAuthFields()" style="' + INPUT + '">' + authOpts + '</select>'
+    +   '</div>'
+    +   '<div style="flex:1" id="wh-auth-fields"></div>'
+    + '</div>'
+
+    + '<div style="' + SECTION + '">③ Headers</div>'
+    + '<div id="wh-headers">' + kvRows(w.headers, 'wh-headers') + '</div>'
+    + '<button class="btn-sm" style="align-self:flex-start;padding:4px 12px;font-size:.7rem"'
+    + ' onclick="_whAddKvRow(&apos;wh-headers&apos;)">+ add header</button>'
+
+    + '<div style="' + SECTION + '">④ Query parameters</div>'
+    + '<div id="wh-query">' + kvRows(w.query, 'wh-query') + '</div>'
+    + '<button class="btn-sm" style="align-self:flex-start;padding:4px 12px;font-size:.7rem"'
+    + ' onclick="_whAddKvRow(&apos;wh-query&apos;)">+ add query param</button>'
+
+    + '<div style="' + SECTION + '">⑤ Body</div>'
+    + '<div style="display:flex;gap:10px">'
+    +   '<div style="flex:1">'
+    +     '<label style="' + LABEL + '">Bound profile <span style="color:rgba(224,170,255,.3)">(powers {{profile.user.*}} etc.)</span></label>'
+    +     '<select id="wh-profile-id" style="' + INPUT + '">' + profOpts + '</select>'
+    +   '</div>'
+    +   '<div style="flex:0 0 120px">'
+    +     '<label style="' + LABEL + '">Format</label>'
+    +     '<select id="wh-body-format" style="' + INPUT + '">' + bodyFmtOpts + '</select>'
+    +   '</div>'
+    + '</div>'
+    + '<label style="' + LABEL + '">Body template</label>'
+    + '<textarea id="wh-body-template" rows="8" placeholder="{\&quot;hello\&quot;: \&quot;{{custom.who}}\&quot;}"'
+    + ' style="' + INPUT + ';font-family:monospace;font-size:.78rem;resize:vertical">'
+    + escHtml(w.body_template || '') + '</textarea>'
+
+    + '<div style="display:flex;flex-wrap:wrap;gap:4px;font-size:.65rem;color:rgba(224,170,255,.45)">'
+    +   'Quick insert: '
+    +   _whVarChip('{{profile.user.email}}')
+    +   _whVarChip('{{profile.user.username}}')
+    +   _whVarChip('{{profile.machine.hostname}}')
+    +   _whVarChip('{{custom.title}}')
+    +   _whVarChip('{{now}}')
+    +   _whVarChip('{{epoch_ms}}')
+    +   _whVarChip('{{uuid}}')
+    + '</div>'
+
+    + '<div style="' + SECTION + '">⑥ Send-time variables <span style="color:rgba(224,170,255,.3);font-weight:normal">(rows fill {{custom.&lt;key&gt;}})</span></div>'
+    + '<div id="wh-custom-vars">' + _whKvRowHtml('wh-custom-vars', 0, 'title', 'Hello from ApiGenie') + '</div>'
+    + '<button class="btn-sm" style="align-self:flex-start;padding:4px 12px;font-size:.7rem"'
+    + ' onclick="_whAddKvRow(&apos;wh-custom-vars&apos;)">+ add variable</button>'
+
+    + '<div style="display:flex;gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid rgba(199,125,255,.15)">'
+    +   '<button class="btn-sm" onclick="saveWebhook()">💾 Save</button>'
+    +   '<button class="btn-sm" onclick="sendWebhook()" style="background:rgba(102,255,170,.15);border:1px solid rgba(102,255,170,.4);color:#a7ffd1">▶ Send</button>'
+    +   (w.id ? '<button class="btn-sm" onclick="cloneWebhook(&apos;' + w.id + '&apos;)" style="background:rgba(90,24,154,.3)">📋 Clone</button>' : '')
+    +   '<div style="flex:1"></div>'
+    +   (w.id ? '<button class="btn-sm" onclick="deleteWebhook(&apos;' + w.id + '&apos;)" style="background:rgba(255,80,80,.15);border:1px solid rgba(255,80,80,.35);color:#ff8080">🗑 Delete</button>' : '')
+    + '</div>'
+    + '</div>';
+
+  _whRefreshAuthFields();
+}
+
+function _whKvRowHtml(container, idx, k, v) {
+  var INPUT = 'background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:6px 8px;color:var(--mist);font-size:.78rem;width:100%';
+  return '<div class="wh-kv" style="display:flex;gap:6px;margin-bottom:4px" data-container="' + container + '">'
+    + '<input class="wh-kv-key" type="text" placeholder="key" value="' + escHtml(k) + '" style="' + INPUT + ';flex:1"/>'
+    + '<input class="wh-kv-val" type="text" placeholder="value (supports {{vars}})" value="' + escHtml(v) + '" style="' + INPUT + ';flex:2"/>'
+    + '<button class="btn-sm" onclick="_whRemoveKvRow(this)" style="background:rgba(255,80,80,.15);border:1px solid rgba(255,80,80,.3);color:#ff8080;padding:4px 8px">×</button>'
+    + '</div>';
+}
+
+function _whAddKvRow(containerId) {
+  var box = document.getElementById(containerId);
+  if (!box) return;
+  // Wipe the "None yet." placeholder if it's still there.
+  if (box.querySelector('.empty')) box.innerHTML = '';
+  var idx = box.querySelectorAll('.wh-kv').length;
+  box.insertAdjacentHTML('beforeend', _whKvRowHtml(containerId, idx, '', ''));
+}
+
+function _whRemoveKvRow(btn) {
+  var row = btn.closest('.wh-kv');
+  if (row) row.remove();
+}
+
+function _whVarChip(s) {
+  // &apos; quoting around the argument keeps the rendered onclick="…" attribute
+  // well-formed (no nested double quotes). Chip values are hard-coded template
+  // strings with no apostrophes, so straight entity-encoding is safe.
+  return '<span onclick="_whInsertVar(&apos;' + s + '&apos;)"'
+       + ' style="cursor:pointer;padding:2px 8px;border-radius:10px;'
+       + 'background:rgba(199,125,255,.12);border:1px solid rgba(199,125,255,.3);'
+       + 'color:#c77dff;font-family:monospace">' + escHtml(s) + '</span>';
+}
+
+function _whInsertVar(text) {
+  // Insert into whichever input/textarea last had focus, or default to body.
+  var el = document.activeElement;
+  var ok = el && (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT');
+  if (!ok) el = document.getElementById('wh-body-template');
+  if (!el) return;
+  var start = el.selectionStart || el.value.length;
+  var end = el.selectionEnd || el.value.length;
+  el.value = el.value.slice(0, start) + text + el.value.slice(end);
+  el.focus();
+  el.selectionStart = el.selectionEnd = start + text.length;
+}
+
+function _whRefreshAuthFields() {
+  var box = document.getElementById('wh-auth-fields');
+  var sel = document.getElementById('wh-auth-type');
+  if (!box || !sel) return;
+  var t = sel.value;
+  var a = (_whCurrent && _whCurrent.auth) || {};
+  var INPUT = 'background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem;width:100%';
+  if (t === 'none') {
+    box.innerHTML = '<span style="font-size:.72rem;color:rgba(224,170,255,.4);padding-top:18px;display:inline-block">No Authorization header will be sent.</span>';
+  } else if (t === 'bearer') {
+    box.innerHTML = '<input id="wh-auth-token" type="password" placeholder="Bearer token (supports {{vars}})"'
+                  + ' value="' + escHtml(a.token_value || '') + '" style="' + INPUT + '"/>';
+  } else if (t === 'basic') {
+    box.innerHTML = '<div style="display:flex;gap:8px">'
+      + '<input id="wh-auth-user" type="text" placeholder="username" value="' + escHtml(a.username || '') + '" style="' + INPUT + ';flex:1"/>'
+      + '<input id="wh-auth-pass" type="password" placeholder="password" value="' + escHtml(a.password || '') + '" style="' + INPUT + ';flex:1"/>'
+      + '</div>';
+  } else if (t === 'custom') {
+    box.innerHTML = '<div style="display:flex;gap:8px">'
+      + '<input id="wh-auth-prefix" type="text" placeholder="prefix (e.g. ApiKey)" value="' + escHtml(a.token_prefix || '') + '" style="' + INPUT + ';flex:0 0 140px"/>'
+      + '<input id="wh-auth-token" type="password" placeholder="value (supports {{vars}})" value="' + escHtml(a.token_value || '') + '" style="' + INPUT + ';flex:1"/>'
+      + '</div>';
+  }
+}
+
+function _whCollectKv(containerId) {
+  var rows = document.querySelectorAll('#' + containerId + ' .wh-kv');
+  var out = [];
+  rows.forEach(function(r) {
+    var k = r.querySelector('.wh-kv-key').value.trim();
+    var v = r.querySelector('.wh-kv-val').value;
+    if (k) out.push({key: k, value: v});
+  });
+  return out;
+}
+
+function _whCollect() {
+  var t = (document.getElementById('wh-auth-type') || {}).value || 'none';
+  var auth = {type: t};
+  if (t === 'bearer') {
+    auth.token_value = (document.getElementById('wh-auth-token') || {}).value || '';
+  } else if (t === 'basic') {
+    auth.username = (document.getElementById('wh-auth-user') || {}).value || '';
+    auth.password = (document.getElementById('wh-auth-pass') || {}).value || '';
+  } else if (t === 'custom') {
+    auth.token_prefix = (document.getElementById('wh-auth-prefix') || {}).value || '';
+    auth.token_value  = (document.getElementById('wh-auth-token')  || {}).value || '';
+  }
+  return {
+    name:          (document.getElementById('wh-name') || {}).value || 'Untitled webhook',
+    description:   (document.getElementById('wh-description') || {}).value || '',
+    url:           (document.getElementById('wh-url') || {}).value || '',
+    method:        (document.getElementById('wh-method') || {}).value || 'POST',
+    auth:          auth,
+    headers:       _whCollectKv('wh-headers'),
+    query:         _whCollectKv('wh-query'),
+    body_template: (document.getElementById('wh-body-template') || {}).value || '',
+    body_format:   (document.getElementById('wh-body-format') || {}).value || 'json',
+    profile_id:    (document.getElementById('wh-profile-id') || {}).value || null,
+    visibility:    (document.getElementById('wh-visibility') || {}).value || 'private',
+  };
+}
+
+async function saveWebhook() {
+  if (!_whCurrent) return;
+  var payload = _whCollect();
+  var isUpdate = !!_whCurrent.id;
+  var url = isUpdate ? ('/admin/api/webhooks/' + encodeURIComponent(_whCurrent.id))
+                     : '/admin/api/webhooks';
+  try {
+    var r = await fetch(url, {
+      method: isUpdate ? 'PUT' : 'POST',
+      credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    var d = await r.json();
+    if (!r.ok) { toast('Save failed: ' + (d.error || r.status), true); return; }
+    _whCurrent = d;
+    toast(isUpdate ? 'Saved' : 'Created');
+    await loadWebhooks();
+    _whRenderEditor();
+  } catch(e) { toast('Save failed: ' + e, true); }
+}
+
+async function deleteWebhook(id) {
+  if (!confirm('Delete this webhook? This cannot be undone.')) return;
+  try {
+    var r = await fetch('/admin/api/webhooks/' + encodeURIComponent(id),
+                        {method:'DELETE', credentials:'same-origin'});
+    if (!r.ok) { var d = await r.json(); toast('Delete failed: ' + (d.error || r.status), true); return; }
+    toast('Deleted');
+    _whCurrent = null;
+    await loadWebhooks();
+    document.getElementById('webhook-editor').innerHTML = '<p class="empty">Pick a webhook on the left or click <b>+ New Webhook</b>.</p>';
+  } catch(e) { toast('Delete failed: ' + e, true); }
+}
+
+async function cloneWebhook(id) {
+  try {
+    var r = await fetch('/admin/api/webhooks/' + encodeURIComponent(id) + '/clone',
+                        {method:'POST', credentials:'same-origin'});
+    var d = await r.json();
+    if (!r.ok) { toast('Clone failed: ' + (d.error || r.status), true); return; }
+    toast('Cloned');
+    await loadWebhooks();
+    if (d && d.id) selectWebhook(d.id);
+  } catch(e) { toast('Clone failed: ' + e, true); }
+}
+
+async function sendWebhook() {
+  if (!_whCurrent) return;
+  // Auto-save unsaved drafts before send so the server can route to a real id.
+  if (!_whCurrent.id) {
+    await saveWebhook();
+    if (!_whCurrent || !_whCurrent.id) return;  // save errored
+  } else {
+    // Also save current edits so the on-disk state matches what we'll send.
+    await saveWebhook();
+    if (!_whCurrent || !_whCurrent.id) return;
+  }
+  var customVars = {};
+  _whCollectKv('wh-custom-vars').forEach(function(kv) { customVars[kv.key] = kv.value; });
+  try {
+    var r = await fetch('/admin/api/webhooks/' + encodeURIComponent(_whCurrent.id) + '/send', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({custom_vars: customVars}),
+    });
+    var d = await r.json();
+    if (!r.ok) { toast('Send failed: ' + (d.error || r.status), true); return; }
+    _whLastResult = d;
+    _whRenderResponse();
+    if (d.error) {
+      toast('Send error: ' + d.error, true);
+    } else {
+      toast('HTTP ' + d.status + ' in ' + d.elapsed_ms + 'ms');
+    }
+  } catch(e) { toast('Send failed: ' + e, true); }
+}
+
+function _whRenderResponse() {
+  var card = document.getElementById('webhook-response-card');
+  var box = document.getElementById('webhook-response');
+  if (!card || !box || !_whLastResult) return;
+  card.style.display = '';
+  var d = _whLastResult;
+  var statusColor = (d.status >= 200 && d.status < 300) ? '#a7ffd1'
+                  : (d.status === 0 ? '#ff8080' : '#ffb347');
+  var html = '<div style="display:flex;gap:14px;align-items:center;margin-bottom:10px;flex-wrap:wrap">'
+    + '<span style="font-size:1.4rem;font-weight:700;color:' + statusColor + '">' + d.status + '</span>'
+    + '<span style="font-size:.78rem;color:rgba(224,170,255,.6)">' + d.elapsed_ms + ' ms</span>'
+    + (d.error ? '<span style="font-size:.78rem;color:#ff8080">' + escHtml(d.error) + '</span>' : '')
+    + '</div>';
+
+  // Effective request (what we *actually* sent, with redacted auth).
+  var er = d.effective_request || {};
+  html += '<div style="font-size:.72rem;color:#c77dff;font-weight:600;margin:8px 0 4px">Effective request</div>';
+  html += '<div style="font-family:monospace;font-size:.74rem;background:rgba(0,0,0,.35);border:1px solid rgba(199,125,255,.15);border-radius:8px;padding:10px;overflow-x:auto">';
+  html += '<div><b>' + escHtml(er.method || '') + '</b> ' + escHtml(er.url || '') + '</div>';
+  Object.keys(er.headers || {}).forEach(function(k){
+    html += '<div>' + escHtml(k) + ': ' + escHtml(String(er.headers[k])) + '</div>';
+  });
+  if (er.body) {
+    html += '<div style="margin-top:6px;color:rgba(224,170,255,.7);white-space:pre-wrap;word-break:break-word">' + escHtml(er.body) + '</div>';
+  }
+  html += '</div>';
+
+  // Response.
+  html += '<div style="font-size:.72rem;color:#c77dff;font-weight:600;margin:14px 0 4px">Response'
+       + (d.response_truncated ? ' <span style="color:rgba(224,170,255,.4);font-weight:normal">(truncated to ' + (d.response_body.length) + ' bytes)</span>' : '')
+       + '</div>';
+  html += '<div style="font-family:monospace;font-size:.74rem;background:rgba(0,0,0,.35);border:1px solid rgba(199,125,255,.15);border-radius:8px;padding:10px;overflow-x:auto">';
+  Object.keys(d.response_headers || {}).forEach(function(k){
+    html += '<div>' + escHtml(k) + ': ' + escHtml(String(d.response_headers[k])) + '</div>';
+  });
+  if (d.response_body) {
+    html += '<div style="margin-top:6px;color:rgba(224,170,255,.7);white-space:pre-wrap;word-break:break-word;max-height:300px;overflow-y:auto">'
+         + escHtml(d.response_body) + '</div>';
+  }
+  html += '</div>';
+  box.innerHTML = html;
+}
+
+function hideWebhookResponse() {
+  var card = document.getElementById('webhook-response-card');
+  if (card) card.style.display = 'none';
+}
+
+function copyWebhookCurl() {
+  if (!_whLastResult || !_whLastResult.effective_request) {
+    toast('Nothing to copy — send the webhook first.', true);
+    return;
+  }
+  var er = _whLastResult.effective_request;
+  // Build a copy-pastable curl. Note: this uses the REDACTED headers visible
+  // in the UI; if the user wants the un-redacted secret they have to fill it
+  // in by hand. That's the right tradeoff: never silently expose secrets via
+  // a one-click clipboard write.
+  function sh(s) {
+    if (s === '' || s === null || s === undefined) return "''";
+    if (/^[A-Za-z0-9@%+=:,.\/_\-]+$/.test(s)) return s;
+    return "'" + String(s).replace(/'/g, "'\\''") + "'";
+  }
+  var parts = ['curl', '-sS', '-X', er.method || 'GET'];
+  Object.keys(er.headers || {}).forEach(function(k){
+    parts.push('-H', sh(k + ': ' + er.headers[k]));
+  });
+  if (er.body) {
+    parts.push('--data-binary', sh(er.body));
+  }
+  parts.push(sh(er.url || ''));
+  var cmd = parts.join(' ');
+  navigator.clipboard.writeText(cmd).then(function(){
+    toast('curl command copied to clipboard');
+  }, function(){
+    // Fallback for older browsers — show in a prompt so the user can copy.
+    window.prompt('Copy:', cmd);
+  });
 }
 
 // ── Attack Scenarios ──────────────────────────────────────────────────────
@@ -9400,6 +10117,188 @@ async def api_scenario_status(scenario_id: str, ag_session: str | None = Cookie(
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     import attack_scenarios
     return JSONResponse(attack_scenarios.get_scenario_status(scenario_id))
+
+
+# ── Webhooks API (v5.0) ──────────────────────────────────────────────────────
+# Outbound HTTP request composer. Storage / renderer / send pipeline live in
+# webhooks.py; this layer wires authentication, RBAC (Category.WEBHOOKS via
+# the centralised _perm_requirement gate above), and owner/visibility scoping
+# the same way log profiles, alert push, and listeners do.
+
+@router.get("/api/webhooks")
+async def api_webhooks_list(ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import webhooks
+    items = [w for w in webhooks.list_webhooks() if _can_see_obj(w, ag_session)]
+    return JSONResponse({"webhooks": items, "count": len(items)})
+
+
+@router.post("/api/webhooks")
+async def api_webhooks_create(request: Request, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import webhooks
+    try:
+        body = await request.json()
+    except Exception as exc:
+        return JSONResponse({"error": f"invalid JSON body: {exc}"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+    _owner_stamp(ag_session, body)
+    try:
+        wh = webhooks.create_webhook(body)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return JSONResponse(wh, status_code=201)
+
+
+@router.get("/api/webhooks/{wid}")
+async def api_webhooks_get(wid: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import webhooks
+    wh = webhooks.get_webhook(wid)
+    if not wh:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_see_obj(wh, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    return JSONResponse(wh)
+
+
+@router.put("/api/webhooks/{wid}")
+async def api_webhooks_update(wid: str, request: Request,
+                              ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import webhooks
+    wh = webhooks.get_webhook(wid)
+    if not wh:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_write_obj(wh, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    try:
+        body = await request.json()
+    except Exception as exc:
+        return JSONResponse({"error": f"invalid JSON body: {exc}"}, status_code=400)
+    try:
+        updated = webhooks.update_webhook(wid, body)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    if updated is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return JSONResponse(updated)
+
+
+@router.delete("/api/webhooks/{wid}")
+async def api_webhooks_delete(wid: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import webhooks
+    wh = webhooks.get_webhook(wid)
+    if not wh:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_write_obj(wh, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    webhooks.delete_webhook(wid)
+    return JSONResponse({"ok": True, "id": wid})
+
+
+@router.post("/api/webhooks/{wid}/clone")
+async def api_webhooks_clone(wid: str, ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import webhooks
+    src = webhooks.get_webhook(wid)
+    if not src:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_see_obj(src, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    uid, _is_admin = _session_identity(ag_session)
+    new = webhooks.clone_webhook(wid, owner_id=uid)
+    if new is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return JSONResponse(new, status_code=201)
+
+
+@router.post("/api/webhooks/{wid}/send")
+async def api_webhooks_send(wid: str, request: Request,
+                            ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import webhooks
+    wh = webhooks.get_webhook(wid)
+    if not wh:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_see_obj(wh, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    try:
+        body = await request.json() if (await request.body()) else {}
+    except Exception as exc:
+        return JSONResponse({"error": f"invalid JSON body: {exc}"}, status_code=400)
+    if not isinstance(body, dict):
+        body = {}
+    custom_vars = body.get("custom_vars") or {}
+    override_url = body.get("override_url") or None
+
+    # Resolve the bound profile (if any). Profile visibility / ownership are
+    # checked here so a user can only render against profiles they can see.
+    profile = None
+    if wh.get("profile_id"):
+        import profiles as _profiles
+        prof = _profiles.get_profile(wh["profile_id"])
+        if prof and _can_see_obj(prof, ag_session):
+            profile = prof
+
+    result = webhooks.send_webhook(
+        wh,
+        profile=profile,
+        custom_vars=custom_vars if isinstance(custom_vars, dict) else {},
+        override_url=override_url,
+    )
+    return JSONResponse(result)
+
+
+# Webhook egress allowlist — admin only. Editing this changes the SSRF guard's
+# behaviour so anyone with access here can route the composer at internal
+# networks. ADMIN_ONLY_API_PREFIXES enforces the role gate; we double-check
+# here so a misconfigured prefix table can never demote the control silently.
+@router.get("/api/webhook-settings")
+async def api_webhook_settings_get(ag_session: str | None = Cookie(None)):
+    if session_role(ag_session) != "admin":
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import webhooks
+    persisted = webhooks.load_settings()
+    env_raw = os.environ.get("APIGENIE_WEBHOOK_ALLOWED_HOSTS", "")
+    env_entries = [t.strip() for t in env_raw.split(",") if t.strip()]
+    # The default block list never changes; surface it so the UI can render a
+    # "the following CIDRs are blocked unless explicitly allowed" hint.
+    default_blocked = [str(net) for net in webhooks._BLOCKED_NETS]
+    return JSONResponse({
+        "allowed_hosts": persisted.get("allowed_hosts", []),
+        "env_allowed_hosts": env_entries,
+        "env_var_name": "APIGENIE_WEBHOOK_ALLOWED_HOSTS",
+        "default_blocked": default_blocked,
+    })
+
+
+@router.put("/api/webhook-settings")
+async def api_webhook_settings_save(request: Request,
+                                    ag_session: str | None = Cookie(None)):
+    if session_role(ag_session) != "admin":
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import webhooks
+    try:
+        body = await request.json()
+    except Exception as exc:
+        return JSONResponse({"error": f"invalid JSON body: {exc}"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "payload must be an object"}, status_code=400)
+    try:
+        saved = webhooks.save_settings({"allowed_hosts": body.get("allowed_hosts", [])})
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return JSONResponse(saved)
 
 
 # ── S1 Detection Library API ─────────────────────────────────────────────────

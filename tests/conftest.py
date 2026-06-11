@@ -98,6 +98,17 @@ def _isolated_state(tmp_path, monkeypatch):
         # simply skip themselves when they try to import avatars.
         pass
 
+    # --- webhooks: per-test JSON tree (v5.0) ---
+    try:
+        import webhooks
+        monkeypatch.setattr(webhooks, "DATA_ROOT", tmp_path)
+        monkeypatch.setattr(webhooks, "WEBHOOKS_DIR", tmp_path / "webhooks")
+        monkeypatch.setattr(webhooks, "SETTINGS_PATH",
+                            tmp_path / "webhook_settings.json")
+    except ImportError:
+        # webhooks lands in v5.0; older test suites can skip the isolation.
+        pass
+
     yield
 
     if accounts._conn is not None:

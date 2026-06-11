@@ -74,6 +74,11 @@ services:
       APIGENIE_LISTENER_HITS_CAP: ${APIGENIE_LISTENER_HITS_CAP:-200}
       APIGENIE_LISTENER_HITS_DISK_CAP: ${APIGENIE_LISTENER_HITS_DISK_CAP:-5000}
       APIGENIE_REPLAY_MAX_MB: ${APIGENIE_REPLAY_MAX_MB:-100}
+      # Webhooks egress allowlist (see docs/WEBHOOKS.md). Comma-separated CIDRs
+      # and/or hostnames that override the default RFC1918/loopback/IMDS block.
+      # Leave empty in production; set to e.g. "192.168.0.0/16,10.0.0.0/8" for
+      # local LAN demos.
+      APIGENIE_WEBHOOK_ALLOWED_HOSTS: ${APIGENIE_WEBHOOK_ALLOWED_HOSTS:-}
       # OTLP push sink (see docs/OTEL_LISTENER.md)
       APIGENIE_OTLP_GRPC_ENABLED: ${APIGENIE_OTLP_GRPC_ENABLED:-true}
       APIGENIE_OTLP_GRPC_PORT: ${APIGENIE_OTLP_GRPC_PORT:-4317}

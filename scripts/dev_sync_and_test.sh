@@ -19,6 +19,7 @@ set -euo pipefail
 C=apigenie
 
 echo "[1/3] copying source files into the container..."
+# OTLP work (v4.1)
 docker cp admin.py                                 "$C":/app/admin.py
 docker cp log_pusher.py                            "$C":/app/log_pusher.py
 docker cp otlp_pusher.py                           "$C":/app/otlp_pusher.py
@@ -30,6 +31,11 @@ docker cp push_sources/synthetic_network.py        "$C":/app/push_sources/synthe
 docker cp push_sources/replay_file.py              "$C":/app/push_sources/replay_file.py
 docker cp tests/test_otel_pusher.py                "$C":/app/tests/test_otel_pusher.py
 docker cp scripts/smoke_otlp_egress.py             "$C":/app/scripts/smoke_otlp_egress.py
+# Webhooks (v5.0 Phase 6)
+docker cp accounts.py                              "$C":/app/accounts.py
+docker cp webhooks.py                              "$C":/app/webhooks.py
+docker cp tests/conftest.py                        "$C":/app/tests/conftest.py
+docker cp tests/test_webhooks.py                   "$C":/app/tests/test_webhooks.py
 
 echo "[2/3] restarting container..."
 docker restart "$C" > /dev/null

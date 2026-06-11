@@ -79,6 +79,7 @@ class Category:
     ALERT_PUSH = "alert_push"
     LISTENERS = "listeners"
     SOURCE_BINDINGS = "source_bindings"
+    WEBHOOKS = "webhooks"
 
 
 ALL_CATEGORIES: tuple[str, ...] = (
@@ -88,6 +89,7 @@ ALL_CATEGORIES: tuple[str, ...] = (
     Category.ALERT_PUSH,
     Category.LISTENERS,
     Category.SOURCE_BINDINGS,
+    Category.WEBHOOKS,
 )
 
 CATEGORY_LABELS: dict[str, str] = {
@@ -97,6 +99,7 @@ CATEGORY_LABELS: dict[str, str] = {
     Category.ALERT_PUSH: "Alert Push Profiles",
     Category.LISTENERS: "Custom Listeners",
     Category.SOURCE_BINDINGS: "Source Bindings",
+    Category.WEBHOOKS: "Webhooks",
 }
 
 # Identifier kinds a user may register per source for pull-response matching.
