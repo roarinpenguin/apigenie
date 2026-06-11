@@ -360,6 +360,15 @@ def _perm_requirement(path: str, method: str) -> tuple[str, tuple[str, ...]] | N
     if path.startswith("/admin/api/source-intensity/"):
         if m in ("PUT", "PATCH"):
             return (C.SOURCE_BINDINGS, (P.MODIFY,))
+    # Event mix per source — same RBAC bucket as bindings since both tune
+    # how a source emits. A user with source_bindings:modify gets event-mix
+    # management for free; that matches the mental model "I can shape what
+    # this source sends to my collector".
+    if path.startswith("/admin/api/source-event-mix/"):
+        if m in ("PUT", "PATCH"):
+            return (C.SOURCE_BINDINGS, (P.CREATE, P.MODIFY))
+        if m == "DELETE":
+            return (C.SOURCE_BINDINGS, (P.DELETE, P.MODIFY))
     # Webhooks (Phase 6 — v5.0): mirrors Alert Push gate shape.
     if path == "/admin/api/webhooks":
         if m == "POST":
@@ -9885,6 +9894,121 @@ async def api_source_profiles_unbind(source: str, ag_session: str | None = Cooki
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     uid, is_admin = _session_identity(ag_session)
     if profiles.unbind_source(source, owner_id=uid):
+        return JSONResponse({"ok": True})
+    return JSONResponse({"error": "not_found"}, status_code=404)
+
+
+# ── Event Mix API (v4.1 Phase 5 admin surface, completed in v5.0) ────────────
+# Per-source event-type catalogue + selectable mix overrides. Source modules
+# under ``sources/`` opt in by declaring ``EVENT_CATALOG``; the resolver lives
+# in ``event_mix.py`` and is already used by the cisco_duo pilot at request
+# time. These endpoints expose the storage layer to the admin UI so operators
+# can finally toggle / re-weight what every catalog-aware source emits.
+
+@router.get("/api/sources/{source}/event-catalog")
+async def api_source_event_catalog(source: str,
+                                   ag_session: str | None = Cookie(None)):
+    """Return the source's catalog enriched with each entry's effective
+    ``enabled`` + ``weight`` (override if present, else default).
+
+    404 when the source either doesn't exist or hasn't opted into the mix
+    surface yet — the UI uses that signal to hide the card for sources
+    that still hard-code their weights.
+    """
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import event_mix
+    from sources import get_event_catalog
+    catalog = get_event_catalog(source)
+    if catalog is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    uid, _ = _session_identity(ag_session)
+    enriched = event_mix.merge_catalog_with_mix(catalog, source, user_id=uid)
+    # ``own`` is true when the effective record belongs to this caller
+    # (admin without acting-as → global is "own"; user → only their own
+    # override counts). Listing the user's mixes once gives us a truthful
+    # answer without relying on dict identity.
+    if uid is None:
+        owns = event_mix.get_mix(source, user_id=None) is not None
+    else:
+        owns = source in event_mix.list_mixes_for_user(uid)
+    return JSONResponse({
+        "source": source,
+        "catalog": enriched,
+        "has_override": event_mix.get_mix(source, user_id=uid) is not None,
+        "own": owns,
+    })
+
+
+@router.get("/api/source-event-mix")
+async def api_source_event_mix_list(ag_session: str | None = Cookie(None)):
+    """List every mix the caller can manage.
+
+    - Admin without acting-as → global mixes only.
+    - User or admin-acting-as → user's own overrides, plus inherited globals
+      flagged read-only (``own: False``) so the UI can show both at once.
+    """
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import event_mix
+    uid, _ = _session_identity(ag_session)
+    if uid is None:
+        # Built-in admin: edit the global mixes directly.
+        mixes = event_mix.list_mixes()
+        return JSONResponse({"mixes": {
+            src: {**rec, "own": True} for src, rec in mixes.items()
+        }})
+    # Real user (or admin acting-as): overlay own mixes onto global so the UI
+    # can render both layers — own ones are editable, inherited globals are
+    # informational. The flat dict keeps the shape symmetric with the
+    # source-profiles endpoint above.
+    glob = event_mix.list_mixes()
+    own = event_mix.list_mixes_for_user(uid)
+    out = {src: {**rec, "own": False} for src, rec in glob.items()}
+    for src, rec in own.items():
+        out[src] = {**rec, "own": True}
+    return JSONResponse({"mixes": out})
+
+
+@router.put("/api/source-event-mix/{source}")
+async def api_source_event_mix_set(source: str, request: Request,
+                                    ag_session: str | None = Cookie(None)):
+    """Persist a mix override. Body: ``{"mix": [{"event_id", "enabled",
+    "weight"}, ...]}``.
+
+    ``owner_id`` follows the bindings pattern: ``None`` (built-in admin)
+    writes the global mix; any real user — including an admin acting-as
+    — writes a private override that only shadows the mix for them.
+    """
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import event_mix
+    from sources import get_event_catalog
+    if get_event_catalog(source) is None:
+        return JSONResponse({"error": "unknown source or no event catalog"},
+                            status_code=404)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    mix = body.get("mix")
+    if not isinstance(mix, list):
+        return JSONResponse({"error": "mix must be a list"}, status_code=400)
+    uid, _ = _session_identity(ag_session)
+    record = event_mix.set_mix(source, mix, owner_id=uid)
+    return JSONResponse({"ok": True, **record, "own": True})
+
+
+@router.delete("/api/source-event-mix/{source}")
+async def api_source_event_mix_reset(source: str,
+                                      ag_session: str | None = Cookie(None)):
+    """Drop the caller's mix for *source* — reverts to the inherited
+    global, or to the source's hard-coded defaults if no global is set."""
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import event_mix
+    uid, _ = _session_identity(ag_session)
+    if event_mix.reset_mix(source, owner_id=uid):
         return JSONResponse({"ok": True})
     return JSONResponse({"error": "not_found"}, status_code=404)
 

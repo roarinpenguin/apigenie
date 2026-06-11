@@ -44,6 +44,10 @@ docker cp trace.py                                 "$C":/app/trace.py
 docker cp tests/test_attack_scenarios.py           "$C":/app/tests/test_attack_scenarios.py
 docker cp tests/test_phase32_attack_search.py      "$C":/app/tests/test_phase32_attack_search.py
 docker cp tests/test_phase33_timeline.py           "$C":/app/tests/test_phase33_timeline.py
+# Event Mix admin surface (v5.0 — completes v4.1 Phase 5)
+docker cp event_mix.py                             "$C":/app/event_mix.py
+docker cp sources/__init__.py                      "$C":/app/sources/__init__.py
+docker cp tests/test_event_mix_admin.py            "$C":/app/tests/test_event_mix_admin.py
 
 echo "[2/3] restarting container..."
 docker restart "$C" > /dev/null
