@@ -186,11 +186,38 @@ so wiring a source up is **zero-cost** when no admin has touched it.
 | `gcp_audit` | **wired** | 4 Cloud Audit Logs categories from the GCP audit taxonomy: `admin_activity`, `data_access`, `iam_policy_change`, `system_event`. Already used the framework's `weighted_choice` shape — wiring was a 3-line change. |
 | `netskope` | **wired** | 11 alert types from the v2 alerts API (`policy`, `DLP`, `Malware`, `anomaly`, `Compromised Credential`, `watchlist`, `malsite`, `Security Assessment`, `quarantine`, `Remediation`, `uba`). Explicit `alert_type=…` lookup still bypasses the mix (collectors get the requested type back regardless of admin overrides). Uniform 1/11 defaults. |
 | `sentinelone` | **wired** | 9 threat classifications (`Malware`, `Trojan`, `Ransomware`, `Exploit`, `PUA`, `Infostealer`, `Backdoor`, `Worm`, `Dropper`). SentinelOne is already broad; mix-eligibility is the classification axis, not the threat-name axis. An admin can demo a ransomware-only or infostealer-only scenario by disabling everything else. |
-| Everyone else | pending | 5 sources still hard-code their weights (`cloudflare`, `snyk`, `tenable`, `wiz`, `zscaler_zpa`). |
+| `cloudflare` | **wired** | 8 Logpush dataset families (`http_request`, `firewall_event`, `waf_event`, `dns_event`, `bot_management`, `access_event`, `gateway_event`, `audit_event`). Catalogue ids match the stamped `event_type` field exactly. |
+| `snyk` | **wired** | 4 issue templates from the Snyk Issues API: critical Log4Shell, high prototype pollution (lodash), medium license, low information exposure (express). Already used the framework's `weighted_choice` shape — wiring was a 3-line change. |
+| `tenable` | **wired** | 4 vuln plugins from the Tenable.io API: critical Log4Shell (plugin 156032), high Apache (173163), medium SMB signing (57608), low SSL untrusted (51192). Already used the framework's `weighted_choice` shape. |
+| `wiz` | **wired** | 7 issue types from the Wiz GraphQL issuesV2 API spanning toxic combinations, vulnerabilities, misconfigurations, exposed secrets, IAM, container, and Kubernetes findings. Already used the framework's `weighted_choice` shape. |
+| `zscaler_zpa` | **wired** | 5 ZPA log streams (`user_activity`, `connector_status`, `policy_event`, `audit_event`, `health`). Catalogue ids match the stamped `event_type` field exactly. |
+| `azure_platform` | **wired** | 14 templates spanning Azure Monitor diagnostic settings + Entra ID activity logs that flow through the Event Hubs / Kafka topic `azure-platform-logs`: 4 platform plane (Administrative VM write, Security alert, Policy assignment, ServiceHealth), 2 SignInLogs (success, risky), 5 AuditLogs user-lifecycle (add / update / delete / group-add / password reset), 1 RiskyUsers, 2 AuditLogs entitlement (app consent, service principal add). Generator was relocated from `publishers/kafka_publisher.py` into `sources/azure_platform.py`; the publisher now imports `generate_azure_event` from there. |
+
+**Track B complete: 21 / 21 sources wired (100%).** Every source listed in
+the v4.1 Phase 5 catalog ships with an `EVENT_CATALOG` and threads through
+`event_mix.apply()`.
 
 When adding a new source, the catalog-coverage test
 (`tests/test_event_mix_sources.py`) parametrises over a `_WIRED_SOURCES`
 tuple — add the new id there to keep the safety net exhaustive.
+
+### Source-id aliases
+
+The bindings page in `admin.py` (`SOURCES` dict) uses Microsoft's marketing
+names for some sources, which differ from the Python module filenames:
+
+| Bindings UI id | Canonical module | Reason |
+|---|---|---|
+| `entra_id` | `sources/azure_ad.py` | Microsoft renamed Azure AD to Entra ID (2023); module kept the older filename to avoid touching every test fixture. |
+| `defender` | `sources/microsoft_defender.py` | Defender XDR (Endpoint + Identity + Cloud Apps). |
+
+`sources/__init__.py` exposes `SOURCE_ID_ALIASES` + `canonical_source_id()`.
+Every event-mix endpoint in `admin.py` canonicalises before touching storage
+so the override key matches the source-side resolver
+(`event_mix.apply(_TEMPLATES, "azure_ad")` from inside `sources/azure_ad.py`).
+The `/admin/api/event-mix/sources` payload mirrors each aliased catalog
+under both ids so the bindings UI's `_mixAwareSources[src]` lookup always
+hits.
 
 ---
 

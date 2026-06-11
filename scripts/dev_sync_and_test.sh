@@ -63,6 +63,13 @@ docker cp sources/darktrace.py                     "$C":/app/sources/darktrace.p
 docker cp sources/gcp_audit.py                     "$C":/app/sources/gcp_audit.py
 docker cp sources/netskope.py                      "$C":/app/sources/netskope.py
 docker cp sources/sentinelone.py                   "$C":/app/sources/sentinelone.py
+docker cp sources/cloudflare.py                    "$C":/app/sources/cloudflare.py
+docker cp sources/snyk.py                          "$C":/app/sources/snyk.py
+docker cp sources/tenable.py                       "$C":/app/sources/tenable.py
+docker cp sources/wiz.py                           "$C":/app/sources/wiz.py
+docker cp sources/zscaler_zpa.py                   "$C":/app/sources/zscaler_zpa.py
+docker cp sources/azure_platform.py                "$C":/app/sources/azure_platform.py
+docker cp publishers/kafka_publisher.py            "$C":/app/publishers/kafka_publisher.py
 docker cp tests/test_event_mix_sources.py          "$C":/app/tests/test_event_mix_sources.py
 
 echo "[2/3] restarting container..."

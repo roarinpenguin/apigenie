@@ -10079,24 +10079,27 @@ async def api_source_event_catalog(source: str,
     if not _valid(ag_session):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     import event_mix
-    from sources import get_event_catalog
+    from sources import canonical_source_id, get_event_catalog
     catalog = get_event_catalog(source)
     if catalog is None:
         return JSONResponse({"error": "not_found"}, status_code=404)
+    # Resolve the UI alias (entra_id → azure_ad, defender →
+    # microsoft_defender) before touching storage so the override key matches
+    # the module-side resolver. Without this an admin's save against the
+    # ``entra_id`` card would persist under a key the source module never
+    # consults — silent override bypass.
+    storage_id = canonical_source_id(source)
     uid, _ = _session_identity(ag_session)
-    enriched = event_mix.merge_catalog_with_mix(catalog, source, user_id=uid)
-    # ``own`` is true when the effective record belongs to this caller
-    # (admin without acting-as → global is "own"; user → only their own
-    # override counts). Listing the user's mixes once gives us a truthful
-    # answer without relying on dict identity.
+    enriched = event_mix.merge_catalog_with_mix(catalog, storage_id, user_id=uid)
     if uid is None:
-        owns = event_mix.get_mix(source, user_id=None) is not None
+        owns = event_mix.get_mix(storage_id, user_id=None) is not None
     else:
-        owns = source in event_mix.list_mixes_for_user(uid)
+        owns = storage_id in event_mix.list_mixes_for_user(uid)
     return JSONResponse({
+        # Echo the id the UI sent so its card lookup stays consistent.
         "source": source,
         "catalog": enriched,
-        "has_override": event_mix.get_mix(source, user_id=uid) is not None,
+        "has_override": event_mix.get_mix(storage_id, user_id=uid) is not None,
         "own": owns,
     })
 
@@ -10144,7 +10147,7 @@ async def api_source_event_mix_set(source: str, request: Request,
     if not _valid(ag_session):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     import event_mix
-    from sources import get_event_catalog
+    from sources import canonical_source_id, get_event_catalog
     if get_event_catalog(source) is None:
         return JSONResponse({"error": "unknown source or no event catalog"},
                             status_code=404)
@@ -10156,7 +10159,9 @@ async def api_source_event_mix_set(source: str, request: Request,
     if not isinstance(mix, list):
         return JSONResponse({"error": "mix must be a list"}, status_code=400)
     uid, _ = _session_identity(ag_session)
-    record = event_mix.set_mix(source, mix, owner_id=uid)
+    # Storage uses the canonical module id (see GET handler above).
+    storage_id = canonical_source_id(source)
+    record = event_mix.set_mix(storage_id, mix, owner_id=uid)
     return JSONResponse({"ok": True, **record, "own": True})
 
 
@@ -10168,8 +10173,10 @@ async def api_source_event_mix_reset(source: str,
     if not _valid(ag_session):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     import event_mix
+    from sources import canonical_source_id
     uid, _ = _session_identity(ag_session)
-    if event_mix.reset_mix(source, owner_id=uid):
+    storage_id = canonical_source_id(source)
+    if event_mix.reset_mix(storage_id, owner_id=uid):
         return JSONResponse({"ok": True})
     return JSONResponse({"error": "not_found"}, status_code=404)
 
