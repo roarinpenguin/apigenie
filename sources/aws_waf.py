@@ -1,9 +1,18 @@
-"""AWS WAF mock data generator (logs in millisecond timestamps)."""
+"""AWS WAF mock data generator (logs in millisecond timestamps).
+
+Event catalog grounded in the WAFv2 logging format
+(``docs.aws.amazon.com/waf/latest/developerguide/logging-fields.html``).
+Seven templates cover the action × terminating-rule cross-product:
+allowed regular traffic, XSS/SQLi/LFI managed-rule blocks, rate-based
+blocks, signal-non-browser bot blocks, captcha challenges. ``EVENT_CATALOG``
+ids align 1:1 with ``_LOG_TEMPLATES`` keys.
+"""
 
 import random
 from typing import Any
 
 import detection_rules
+import event_mix
 import profiles
 from generators import (
     generate_ip,
@@ -19,6 +28,31 @@ _WEB_ACLS = [
 _RULE_GROUPS = ["AWS-AWSManagedRulesCommonRuleSet", "AWS-AWSManagedRulesSQLiRuleSet", "AWS-AWSManagedRulesKnownBadInputsRuleSet"]
 _HTTP_METHODS = ["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"]
 _PATHS = ["/api/v1/users", "/api/v1/login", "/api/v1/data", "/admin", "/wp-admin", "/api/search", "/"]
+
+# ── Event catalog ──────────────────────────────────────────────────────
+EVENT_CATALOG: list[dict[str, Any]] = [
+    {"id": "allowed_request", "label": "Allowed request (no rule match)",
+     "default_weight": 0.40,
+     "docs_anchor": "docs.aws.amazon.com/waf/latest/developerguide/logging-fields.html"},
+    {"id": "xss_block", "label": "XSS block (CrossSiteScripting_BODY)",
+     "default_weight": 0.25,
+     "docs_anchor": "docs.aws.amazon.com/waf/latest/developerguide/aws-managed-rule-groups-list.html#aws-managed-rule-groups-list-CrossSiteScripting"},
+    {"id": "sql_injection_block", "label": "SQL injection block (SQLi_BODY)",
+     "default_weight": 0.15,
+     "docs_anchor": "docs.aws.amazon.com/waf/latest/developerguide/aws-managed-rule-groups-list.html#aws-managed-rule-groups-list-SQLi"},
+    {"id": "rate_limit_block", "label": "Rate-limit block (RateBasedRule)",
+     "default_weight": 0.10,
+     "docs_anchor": "docs.aws.amazon.com/waf/latest/developerguide/waf-rule-statement-type-rate-based.html"},
+    {"id": "bot_block", "label": "Bot block (SignalNonBrowserUserAgent)",
+     "default_weight": 0.05,
+     "docs_anchor": "docs.aws.amazon.com/waf/latest/developerguide/aws-managed-rule-groups-bot.html"},
+    {"id": "captcha_challenge", "label": "CAPTCHA challenge",
+     "default_weight": 0.03,
+     "docs_anchor": "docs.aws.amazon.com/waf/latest/developerguide/waf-captcha-and-challenge.html"},
+    {"id": "lfi_block", "label": "LFI block (LFI_URIPATH)",
+     "default_weight": 0.02,
+     "docs_anchor": "docs.aws.amazon.com/waf/latest/developerguide/aws-managed-rule-groups-list.html#aws-managed-rule-groups-list-KnownBadInputs"},
+]
 
 _LOG_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
     "allowed_request": ({"action": "ALLOW", "terminatingRuleType": "REGULAR", "ruleId": "AllowRule"}, 0.40),
@@ -50,7 +84,7 @@ _LOG_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
 
 
 def _generate_log(ctx: profiles.ProfileContext | None = None) -> dict[str, Any]:
-    template = weighted_choice(_LOG_TEMPLATES)
+    template = weighted_choice(event_mix.apply(_LOG_TEMPLATES, "aws_waf"))
     ts_ms = now_epoch_ms() - random.randint(0, 3600000)
     web_acl = random.choice(_WEB_ACLS)
     path = random.choice(_PATHS)

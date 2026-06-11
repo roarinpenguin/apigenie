@@ -1,9 +1,18 @@
-"""AWS GuardDuty mock data generator."""
+"""AWS GuardDuty mock data generator.
+
+Event catalog grounded in the GuardDuty findings type matrix
+(``docs.aws.amazon.com/guardduty/latest/ug/guardduty_finding-types-active.html``).
+Seven category-representative templates: C2 traffic, crypto mining, SSH
+brute force, port reconnaissance, S3 data exfil, DNS data exfil, IAM
+persistence. ``EVENT_CATALOG`` ids align 1:1 with ``_FINDING_TEMPLATES``
+keys.
+"""
 
 import random
 from typing import Any
 
 import detection_rules
+import event_mix
 import profiles
 from generators import (
     generate_ip,
@@ -14,6 +23,31 @@ from generators import (
 
 _REGIONS = ["us-east-1", "us-west-2", "eu-west-1", "ap-southeast-1"]
 _ACCOUNT_IDS = ["123456789012", "210987654321", "112233445566"]
+
+# ── Event catalog ──────────────────────────────────────────────────────
+EVENT_CATALOG: list[dict[str, Any]] = [
+    {"id": "c2_activity", "label": "C2 traffic (Trojan:EC2/BlackholeTraffic)",
+     "default_weight": 0.35,
+     "docs_anchor": "docs.aws.amazon.com/guardduty/latest/ug/guardduty_finding-types-active.html#trojan-ec2-blackholetraffic"},
+    {"id": "crypto_mining", "label": "Crypto mining (CryptoCurrency:EC2/BitcoinTool.B!DNS)",
+     "default_weight": 0.20,
+     "docs_anchor": "docs.aws.amazon.com/guardduty/latest/ug/guardduty_finding-types-active.html#cryptocurrency-ec2-bitcointoolb"},
+    {"id": "unauthorized_access", "label": "SSH brute force (UnauthorizedAccess:EC2/SSHBruteForce)",
+     "default_weight": 0.15,
+     "docs_anchor": "docs.aws.amazon.com/guardduty/latest/ug/guardduty_finding-types-active.html#unauthorizedaccess-ec2-sshbruteforce"},
+    {"id": "recon", "label": "Port probe reconnaissance",
+     "default_weight": 0.10,
+     "docs_anchor": "docs.aws.amazon.com/guardduty/latest/ug/guardduty_finding-types-active.html#recon-ec2-portprobeunprotectedport"},
+    {"id": "data_exfiltration", "label": "S3 data exfiltration (Exfiltration:S3/ObjectRead.Unusual)",
+     "default_weight": 0.10,
+     "docs_anchor": "docs.aws.amazon.com/guardduty/latest/ug/guardduty_finding-types-active.html#exfiltration-s3-objectreadunusual"},
+    {"id": "malware", "label": "DNS exfiltration (Trojan:EC2/DNSDataExfiltration)",
+     "default_weight": 0.05,
+     "docs_anchor": "docs.aws.amazon.com/guardduty/latest/ug/guardduty_finding-types-active.html#trojan-ec2-dnsdataexfiltration"},
+    {"id": "persistence", "label": "IAM persistence (Persistence:IAM/AnomalousBehavior)",
+     "default_weight": 0.05,
+     "docs_anchor": "docs.aws.amazon.com/guardduty/latest/ug/guardduty_finding-types-active.html#persistence-iam-anomalousbehavior"},
+]
 
 _FINDING_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
     "c2_activity": (
@@ -90,7 +124,7 @@ _FINDING_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
 
 
 def _generate_finding(ctx: profiles.ProfileContext | None = None) -> dict[str, Any]:
-    template = weighted_choice(_FINDING_TEMPLATES)
+    template = weighted_choice(event_mix.apply(_FINDING_TEMPLATES, "aws_guardduty"))
     region = random.choice(_REGIONS)
     account_id = random.choice(_ACCOUNT_IDS)
     finding_id = generate_uuid().replace("-", "")

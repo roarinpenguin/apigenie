@@ -51,6 +51,9 @@ docker cp tests/test_event_mix_admin.py            "$C":/app/tests/test_event_mi
 # Event Mix per-source rollout (v5.0)
 docker cp sources/okta.py                          "$C":/app/sources/okta.py
 docker cp sources/proofpoint.py                    "$C":/app/sources/proofpoint.py
+docker cp sources/aws_cloudtrail.py                "$C":/app/sources/aws_cloudtrail.py
+docker cp sources/aws_guardduty.py                 "$C":/app/sources/aws_guardduty.py
+docker cp sources/aws_waf.py                       "$C":/app/sources/aws_waf.py
 docker cp tests/test_event_mix_sources.py          "$C":/app/tests/test_event_mix_sources.py
 
 echo "[2/3] restarting container..."

@@ -1,9 +1,18 @@
-"""AWS CloudTrail mock data generator."""
+"""AWS CloudTrail mock data generator.
+
+Event catalog grounded in the CloudTrail event taxonomy
+(``docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-event-reference.html``).
+The six templates capture the SecOps-relevant slice: normal API calls,
+unauthorized-access denials, privilege escalation, S3 data exfil, root
+account usage, console login without MFA. ``EVENT_CATALOG`` ids align 1:1
+with ``_EVENT_TEMPLATES`` keys — the catalog-coverage test fails on drift.
+"""
 
 import random
 from typing import Any
 
 import detection_rules
+import event_mix
 import profiles
 from generators import (
     generate_email,
@@ -23,6 +32,28 @@ _EVENT_SOURCES = [
     ("sts.amazonaws.com", ["AssumeRole", "GetCallerIdentity", "AssumeRoleWithWebIdentity"]),
     ("lambda.amazonaws.com", ["CreateFunction", "InvokeFunction", "DeleteFunction", "UpdateFunctionCode"]),
     ("rds.amazonaws.com", ["CreateDBInstance", "DeleteDBInstance", "ModifyDBInstance"]),
+]
+
+# ── Event catalog ──────────────────────────────────────────────────────
+EVENT_CATALOG: list[dict[str, Any]] = [
+    {"id": "normal", "label": "Normal API call (no error)",
+     "default_weight": 0.65,
+     "docs_anchor": "docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-event-reference.html"},
+    {"id": "unauthorized_access", "label": "Unauthorized access (AccessDenied)",
+     "default_weight": 0.12,
+     "docs_anchor": "docs.aws.amazon.com/IAM/latest/UserGuide/troubleshoot_access-denied.html"},
+    {"id": "privilege_escalation", "label": "Privilege escalation (AttachRolePolicy)",
+     "default_weight": 0.10,
+     "docs_anchor": "docs.aws.amazon.com/IAM/latest/APIReference/API_AttachRolePolicy.html"},
+    {"id": "s3_data_exfil", "label": "S3 data exfiltration (GetObject)",
+     "default_weight": 0.08,
+     "docs_anchor": "docs.aws.amazon.com/AmazonS3/latest/userguide/cloudtrail-logging-s3-info.html"},
+    {"id": "root_account_usage", "label": "Root account usage",
+     "default_weight": 0.03,
+     "docs_anchor": "docs.aws.amazon.com/IAM/latest/UserGuide/best-practices.html#lock-away-credentials"},
+    {"id": "console_login_no_mfa", "label": "Console login without MFA",
+     "default_weight": 0.02,
+     "docs_anchor": "docs.aws.amazon.com/IAM/latest/UserGuide/cloudtrail-integration.html"},
 ]
 
 _EVENT_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
@@ -48,7 +79,7 @@ _EVENT_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
 
 
 def _generate_event(ctx: profiles.ProfileContext | None = None) -> dict[str, Any]:
-    template = weighted_choice(_EVENT_TEMPLATES)
+    template = weighted_choice(event_mix.apply(_EVENT_TEMPLATES, "aws_cloudtrail"))
     region = random.choice(_REGIONS)
     account_id = random.choice(_ACCOUNT_IDS)
     source, actions = random.choice(_EVENT_SOURCES)

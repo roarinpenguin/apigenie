@@ -44,7 +44,14 @@ def _isolate_data_root(tmp_path, monkeypatch):
 # Sources known to be wired today. As we land more, add them here so the
 # coverage check stays exhaustive — a fresh wiring without a row in this
 # list would still pass, but we want the safety of the explicit list.
-_WIRED_SOURCES = ("cisco_duo", "okta", "proofpoint")
+_WIRED_SOURCES = (
+    "cisco_duo",
+    "okta",
+    "proofpoint",
+    "aws_cloudtrail",
+    "aws_guardduty",
+    "aws_waf",
+)
 
 
 @pytest.mark.parametrize("source", _WIRED_SOURCES)
@@ -120,6 +127,39 @@ def test_cisco_duo_catalog_ids_match_template_keys():
     assert cat_ids == tpl_ids
 
 
+def test_aws_cloudtrail_catalog_ids_match_template_keys():
+    from sources import aws_cloudtrail
+
+    cat_ids = {e["id"] for e in aws_cloudtrail.EVENT_CATALOG}
+    tpl_ids = set(aws_cloudtrail._EVENT_TEMPLATES.keys())
+    assert cat_ids == tpl_ids, (
+        f"aws_cloudtrail catalog/template drift: "
+        f"catalog-only={cat_ids - tpl_ids}, template-only={tpl_ids - cat_ids}"
+    )
+
+
+def test_aws_guardduty_catalog_ids_match_template_keys():
+    from sources import aws_guardduty
+
+    cat_ids = {e["id"] for e in aws_guardduty.EVENT_CATALOG}
+    tpl_ids = set(aws_guardduty._FINDING_TEMPLATES.keys())
+    assert cat_ids == tpl_ids, (
+        f"aws_guardduty catalog/template drift: "
+        f"catalog-only={cat_ids - tpl_ids}, template-only={tpl_ids - cat_ids}"
+    )
+
+
+def test_aws_waf_catalog_ids_match_template_keys():
+    from sources import aws_waf
+
+    cat_ids = {e["id"] for e in aws_waf.EVENT_CATALOG}
+    tpl_ids = set(aws_waf._LOG_TEMPLATES.keys())
+    assert cat_ids == tpl_ids, (
+        f"aws_waf catalog/template drift: "
+        f"catalog-only={cat_ids - tpl_ids}, template-only={tpl_ids - cat_ids}"
+    )
+
+
 # ── Empirical override at scale (resolver actually wired through) ───────────
 
 
@@ -162,3 +202,51 @@ def test_proofpoint_resolver_actually_disables_event(_isolate_data_root):
         if msg["phishScore"] == 99 and msg["spamScore"] == 95:
             polymorphic_hits += 1
     assert polymorphic_hits == 0
+
+
+def test_aws_cloudtrail_resolver_actually_disables_event(_isolate_data_root):
+    """Disabling ``unauthorized_access`` should remove every AccessDenied
+    errorCode from the output. That field is unique to that template."""
+    em = _isolate_data_root
+    _apply_disable_mix(em, "aws_cloudtrail", ["unauthorized_access"])
+    from sources import aws_cloudtrail
+
+    random.seed(42)
+    denied = 0
+    for _ in range(200):
+        ev = aws_cloudtrail._generate_event(ctx=None)
+        if ev.get("errorCode") == "AccessDenied":
+            denied += 1
+    assert denied == 0
+
+
+def test_aws_guardduty_resolver_actually_disables_event(_isolate_data_root):
+    """Disabling ``crypto_mining`` should drop CryptoCurrency findings
+    from the output. The Type string is unique to that template."""
+    em = _isolate_data_root
+    _apply_disable_mix(em, "aws_guardduty", ["crypto_mining"])
+    from sources import aws_guardduty
+
+    random.seed(42)
+    crypto = 0
+    for _ in range(200):
+        finding = aws_guardduty._generate_finding(ctx=None)
+        if finding["Type"] == "CryptoCurrency:EC2/BitcoinTool.B!DNS":
+            crypto += 1
+    assert crypto == 0
+
+
+def test_aws_waf_resolver_actually_disables_event(_isolate_data_root):
+    """Disabling ``sql_injection_block`` should drop SQLi_BODY
+    terminating-rule rows. That rule id is unique to that template."""
+    em = _isolate_data_root
+    _apply_disable_mix(em, "aws_waf", ["sql_injection_block"])
+    from sources import aws_waf
+
+    random.seed(42)
+    sqli = 0
+    for _ in range(200):
+        log = aws_waf._generate_log(ctx=None)
+        if log["terminatingRuleId"] == "SQLi_BODY":
+            sqli += 1
+    assert sqli == 0

@@ -174,7 +174,10 @@ so wiring a source up is **zero-cost** when no admin has touched it.
 | `cisco_duo` | **wired** | 9 event types across `/admin/v1/logs/authentication` and `/admin/v1/logs/administrator`. |
 | `okta` | **wired** | 5 event types from the System Log API (`user.session.start`, `user.mfa.factor.activate`, `system.api_token.create`, `user.account.update_password`, `user.account.lock`). |
 | `proofpoint` | **wired** | 6 message dispositions from the TAP SIEM API (delivered, ransomware retro, double-wrapped URL, blocked-but-clicked, false positive, polymorphic). |
-| Everyone else | pending | 11 sources still hard-code their weights (`aws_*`, `azure_ad`, `microsoft_defender`, `m365`, `mimecast`, `cloudflare`, `netskope`, `snyk`, `tenable`, `wiz`, `darktrace`, …). |
+| `aws_cloudtrail` | **wired** | 6 templates from the LookupEvents event reference: normal API calls, AccessDenied, AttachRolePolicy (privesc), S3 GetObject (exfil), root usage, console login without MFA. |
+| `aws_guardduty` | **wired** | 7 category-representative findings: C2 traffic, crypto mining, SSH brute force, port recon, S3 exfil, DNS exfil, IAM persistence. |
+| `aws_waf` | **wired** | 7 action × terminating-rule templates: allowed, XSS/SQLi/LFI managed-rule blocks, rate-based blocks, bot blocks, CAPTCHA challenges. |
+| Everyone else | pending | 14 sources still hard-code their weights (`azure_ad`, `cato`, `cloudflare`, `darktrace`, `gcp_audit`, `m365`, `microsoft_defender`, `mimecast`, `netskope`, `sentinelone`, `snyk`, `tenable`, `wiz`, `zscaler_zpa`). |
 
 When adding a new source, the catalog-coverage test
 (`tests/test_event_mix_sources.py`) parametrises over a `_WIRED_SOURCES`
