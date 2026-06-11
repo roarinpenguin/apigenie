@@ -4853,18 +4853,27 @@ async function loadProfiles() {
   await loadDetectionRules();
 }
 
+// Set of source ids that have opted into the event-mix system (declare
+// EVENT_CATALOG). Populated by loadBindings(); cards check this before
+// rendering the Event Mix disclosure row.
+var _mixAwareSources = {};
+
 async function loadBindings() {
   const box = document.getElementById('bindings-list');
   if (!box) return;
   try {
-    const [bndResp, lstResp, intResp] = await Promise.all([
+    const [bndResp, lstResp, intResp, mixResp] = await Promise.all([
       fetch('/admin/api/source-profiles', {credentials:'same-origin'}),
       fetch('/admin/api/listeners', {credentials:'same-origin'}),
-      fetch('/admin/api/source-intensity', {credentials:'same-origin'})
+      fetch('/admin/api/source-intensity', {credentials:'same-origin'}),
+      fetch('/admin/api/event-mix/sources', {credentials:'same-origin'})
     ]);
     const d = await bndResp.json();
     const ld = await lstResp.json();
     const intData = await intResp.json();
+    const mixData = mixResp.ok ? await mixResp.json() : {sources: []};
+    _mixAwareSources = {};
+    (mixData.sources || []).forEach(s => { _mixAwareSources[s.source] = s.event_count; });
     const intensities = intData.intensities || {};
     const bindings = d.bindings || {};
     const allSources = Object.keys(SOURCES);
@@ -4907,6 +4916,16 @@ async function loadBindings() {
       h += '<input type="range" min="1" max="100" value="'+curInt+'" id="bnd-int-'+escHtml(src)+'" style="flex:1;max-width:120px" oninput="document.getElementById(&apos;bnd-iv-'+escHtml(src)+'&apos;).textContent=this.value+&apos;% (~&apos;+Math.max(1,Math.round(this.value))+&apos; logs/req)&apos;"/>';
       h += '<span id="bnd-iv-'+escHtml(src)+'" style="font-size:.58rem;color:rgba(224,170,255,.4);white-space:nowrap">'+curInt+'% (~'+Math.max(1,Math.round(curInt))+' logs/req)</span>';
       h += '</div>';
+      // Event Mix disclosure — only for sources that declare EVENT_CATALOG.
+      // The catalog is fetched lazily when the user expands the section to
+      // avoid hammering the API on every bindings page render.
+      if (_mixAwareSources[src]) {
+        var n = _mixAwareSources[src];
+        h += '<div style="margin-top:6px;padding-top:6px;border-top:1px dashed rgba(199,125,255,.18)">';
+        h += '<button class="btn-sm" id="emix-toggle-'+escHtml(src)+'" style="background:rgba(36,0,70,.5);border:1px solid rgba(199,125,255,.2);padding:3px 8px;font-size:.65rem" onclick="toggleEventMix(&apos;'+escHtml(src)+'&apos;)" title="Toggle per-event-type weights and on/off switches">▸ Event mix ('+n+' '+(n===1?'type':'types')+')</button>';
+        h += '<div id="emix-body-'+escHtml(src)+'" style="display:none;margin-top:6px"></div>';
+        h += '</div>';
+      }
       h += '</div>';
     });
     h += '</div>';
@@ -4942,6 +4961,129 @@ function unbindSource(src) {
     .then(r=>{if(!r.ok&&r.status!==404)throw new Error(r.status);return r.json()})
     .then(()=>{toast('Unbound '+src); loadBindings();})
     .catch(e=>toast('Failed: '+e,true));
+}
+
+// ── Event Mix card UI (v5.0) ───────────────────────────────────────────────
+// The disclosure pulls the catalog lazily and renders one row per event
+// type (checkbox + weight slider + percentage label). Save persists the
+// caller's mix via PUT; Reset deletes it via DELETE so the source falls
+// back to its hard-coded defaults.
+
+async function toggleEventMix(src) {
+  var body = document.getElementById('emix-body-'+src);
+  var btn  = document.getElementById('emix-toggle-'+src);
+  if (!body || !btn) return;
+  var isOpen = body.style.display !== 'none';
+  if (isOpen) {
+    body.style.display = 'none';
+    btn.textContent = btn.textContent.replace('▾', '▸');
+    return;
+  }
+  if (!body.dataset.loaded) {
+    body.innerHTML = '<span style="color:rgba(224,170,255,.5);font-size:.7rem">loading…</span>';
+    try {
+      var r = await fetch('/admin/api/sources/'+encodeURIComponent(src)+'/event-catalog',
+                          {credentials:'same-origin'});
+      if (!r.ok) { body.innerHTML = '<span style="color:#ff8080;font-size:.7rem">load failed: HTTP '+r.status+'</span>'; }
+      else {
+        var d = await r.json();
+        body.innerHTML = renderEventMix(src, d);
+        body.dataset.loaded = '1';
+      }
+    } catch(e) {
+      body.innerHTML = '<span style="color:#ff8080;font-size:.7rem">load failed: '+escHtml(String(e))+'</span>';
+    }
+  }
+  body.style.display = '';
+  btn.textContent = btn.textContent.replace('▸', '▾');
+}
+
+function renderEventMix(src, payload) {
+  // payload: { source, catalog: [{id, label, default_weight, enabled, weight, docs_anchor?}], has_override, own }
+  var cat = payload.catalog || [];
+  var hasOv = !!payload.has_override;
+  var h = '';
+  h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">';
+  h += '<span style="font-size:.62rem;color:rgba(224,170,255,.55)">'+cat.length+' event '+(cat.length===1?'type':'types')+(hasOv?' · <em>custom mix active</em>':' · using defaults')+'</span>';
+  h += '<div style="display:flex;gap:4px">';
+  h += '<button class="btn-sm" onclick="saveEventMix(&apos;'+escHtml(src)+'&apos;)" style="padding:2px 8px;font-size:.62rem">Save mix</button>';
+  if (hasOv) h += '<button class="btn-sm btn-danger" onclick="resetEventMix(&apos;'+escHtml(src)+'&apos;)" style="padding:2px 8px;font-size:.62rem" title="Drop this override; falls back to defaults">Reset</button>';
+  h += '</div></div>';
+  // Per-event rows.
+  h += '<div id="emix-rows-'+escHtml(src)+'" style="display:flex;flex-direction:column;gap:3px;max-height:260px;overflow:auto;padding-right:4px">';
+  cat.forEach(function(e) {
+    var eid = e.id || '';
+    var enabled = e.enabled !== false;
+    var weight = (typeof e.weight === 'number') ? e.weight : (e.default_weight || 0);
+    var pct = Math.round(weight * 100);
+    var rowId = 'emix-row-'+src+'-'+eid;
+    h += '<div data-eid="'+escHtml(eid)+'" id="'+escHtml(rowId)+'" style="display:flex;gap:6px;align-items:center;font-size:.66rem">';
+    h += '<input type="checkbox" data-role="enabled"'+(enabled?' checked':'')+' style="margin:0"/>';
+    h += '<span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="'+escHtml(eid)+'">'+escHtml(e.label || eid)+'</span>';
+    h += '<input type="range" min="0" max="100" value="'+pct+'" data-role="weight" style="width:80px" oninput="this.parentElement.querySelector(&apos;[data-role=pct]&apos;).textContent=this.value+&apos;%&apos;"/>';
+    h += '<span data-role="pct" style="font-family:monospace;min-width:28px;text-align:right">'+pct+'%</span>';
+    h += '</div>';
+  });
+  h += '</div>';
+  // Footer hint about renormalisation (the resolver renormalises weights to
+  // sum to 1.0 at runtime, so users don't have to do percentage math).
+  h += '<div style="margin-top:4px;font-size:.58rem;color:rgba(224,170,255,.35)">Weights are renormalised at request time — sliders set relative proportions, the resolver handles the maths.</div>';
+  return h;
+}
+
+function _readEventMixForm(src) {
+  // Walk the rendered rows and pull {event_id, enabled, weight} per entry.
+  // Weight is in 0..1 (slider is 0..100; we divide here).
+  var box = document.getElementById('emix-rows-'+src);
+  if (!box) return null;
+  var out = [];
+  box.querySelectorAll('[data-eid]').forEach(function(row) {
+    var eid = row.getAttribute('data-eid');
+    var enabledEl = row.querySelector('[data-role=enabled]');
+    var weightEl = row.querySelector('[data-role=weight]');
+    if (!eid || !weightEl) return;
+    out.push({
+      event_id: eid,
+      enabled: !!(enabledEl && enabledEl.checked),
+      weight: Math.max(0, Math.min(1, (parseInt(weightEl.value, 10) || 0) / 100))
+    });
+  });
+  return out;
+}
+
+function saveEventMix(src) {
+  var mix = _readEventMixForm(src);
+  if (mix === null) return;
+  fetch('/admin/api/source-event-mix/'+encodeURIComponent(src), {
+    method:'PUT', credentials:'same-origin', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({mix: mix})
+  }).then(function(r) {
+    if (!r.ok) throw new Error('HTTP '+r.status);
+    return r.json();
+  }).then(function() {
+    toast('Saved '+src+' mix ('+mix.filter(function(e){return e.enabled;}).length+' enabled)');
+    // Force the next expand to refetch so the "custom mix active" pill flips.
+    var body = document.getElementById('emix-body-'+src);
+    if (body) { body.dataset.loaded = ''; body.style.display = 'none'; }
+    var btn = document.getElementById('emix-toggle-'+src);
+    if (btn) btn.textContent = btn.textContent.replace('▾', '▸');
+    toggleEventMix(src);
+  }).catch(function(e) { toast('Save failed: '+e, true); });
+}
+
+function resetEventMix(src) {
+  if (!confirm('Reset the '+src+' event mix to defaults? Your custom weights will be discarded.')) return;
+  fetch('/admin/api/source-event-mix/'+encodeURIComponent(src), {
+    method:'DELETE', credentials:'same-origin'
+  }).then(function(r) {
+    if (!r.ok && r.status !== 404) throw new Error('HTTP '+r.status);
+    toast('Reset '+src+' to defaults');
+    var body = document.getElementById('emix-body-'+src);
+    if (body) { body.dataset.loaded = ''; body.style.display = 'none'; }
+    var btn = document.getElementById('emix-toggle-'+src);
+    if (btn) btn.textContent = btn.textContent.replace('▾', '▸');
+    toggleEventMix(src);
+  }).catch(function(e) { toast('Reset failed: '+e, true); });
 }
 
 // ── Admin "Viewing as" user-switcher (RBAC Phase 2.4) ─────────────────────────
@@ -9904,6 +10046,25 @@ async def api_source_profiles_unbind(source: str, ag_session: str | None = Cooki
 # in ``event_mix.py`` and is already used by the cisco_duo pilot at request
 # time. These endpoints expose the storage layer to the admin UI so operators
 # can finally toggle / re-weight what every catalog-aware source emits.
+
+@router.get("/api/event-mix/sources")
+async def api_event_mix_sources(ag_session: str | None = Cookie(None)):
+    """List the source ids that have opted into the event-mix system.
+
+    The bindings UI uses this to decide whether to render the **Event mix**
+    disclosure on each card — a source without an ``EVENT_CATALOG`` simply
+    gets no toggles, so the UI hides that row entirely instead of showing
+    a misleading empty section.
+    """
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from sources import get_event_catalogs
+    catalogs = get_event_catalogs()
+    return JSONResponse({"sources": [
+        {"source": name, "event_count": len(cat)}
+        for name, cat in sorted(catalogs.items())
+    ]})
+
 
 @router.get("/api/sources/{source}/event-catalog")
 async def api_source_event_catalog(source: str,

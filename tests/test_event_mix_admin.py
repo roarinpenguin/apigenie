@@ -83,6 +83,28 @@ def test_sources_registry_get_existing_source_matches_catalogs():
     assert single == listed
 
 
+# ── /api/event-mix/sources (discovery) ───────────────────────────────────────
+
+
+def test_event_mix_sources_unauthenticated_is_401(client):
+    r = client.get("/admin/api/event-mix/sources")
+    assert r.status_code == 401
+
+
+def test_event_mix_sources_lists_cisco_duo_with_event_count(client):
+    """The discovery endpoint must surface cisco_duo so the UI can show
+    its Event Mix section. Event count must be > 0 (matches catalogue)."""
+    _login_admin(client)
+    r = client.get("/admin/api/event-mix/sources")
+    assert r.status_code == 200
+    body = r.json()
+    names = {s["source"]: s for s in body["sources"]}
+    assert "cisco_duo" in names
+    assert names["cisco_duo"]["event_count"] >= 1
+    # Output is sorted so the UI can iterate deterministically.
+    assert [s["source"] for s in body["sources"]] == sorted(s["source"] for s in body["sources"])
+
+
 # ── /api/sources/{source}/event-catalog ──────────────────────────────────────
 
 
