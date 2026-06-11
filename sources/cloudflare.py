@@ -9,8 +9,9 @@ from __future__ import annotations
 import random
 from datetime import datetime, timezone, timedelta
 from typing import Any
-from generators import generate_ip, generate_hostname, generate_uuid
+from generators import generate_ip, generate_hostname, generate_uuid, weighted_choice
 from detection_rules import inject_detection_events
+import event_mix
 import profiles
 
 _ZONES = [
@@ -256,18 +257,54 @@ def _audit_event(ctx=None) -> dict[str, Any]:
     }
 
 
-_GENERATORS = [
-    (_http_request_event, 25), (_firewall_event, 15), (_waf_event, 10),
-    (_dns_event, 12), (_bot_management_event, 8), (_access_event, 10),
-    (_gateway_event, 12), (_audit_event, 8),
+# ── Event catalog ──────────────────────────────────────────────────────
+# Eight top-level Cloudflare log streams exposed by Logpull / Logpush /
+# GraphQL Analytics. Each one corresponds to a distinct Logpush dataset.
+EVENT_CATALOG: list[dict[str, Any]] = [
+    {"id": "http_request", "label": "HTTP request log (edge access)",
+     "default_weight": 0.25,
+     "docs_anchor": "developers.cloudflare.com/logs/reference/log-fields/zone/http_requests"},
+    {"id": "firewall_event", "label": "Firewall event (IP / country / ASN rules)",
+     "default_weight": 0.15,
+     "docs_anchor": "developers.cloudflare.com/logs/reference/log-fields/zone/firewall_events"},
+    {"id": "waf_event", "label": "WAF event (managed / OWASP / custom rules)",
+     "default_weight": 0.10,
+     "docs_anchor": "developers.cloudflare.com/waf/"},
+    {"id": "dns_event", "label": "DNS query log",
+     "default_weight": 0.12,
+     "docs_anchor": "developers.cloudflare.com/logs/reference/log-fields/zone/dns_logs"},
+    {"id": "bot_management", "label": "Bot Management score",
+     "default_weight": 0.08,
+     "docs_anchor": "developers.cloudflare.com/bots/concepts/bot-score/"},
+    {"id": "access_event", "label": "Cloudflare Access (Zero Trust SSO)",
+     "default_weight": 0.10,
+     "docs_anchor": "developers.cloudflare.com/cloudflare-one/policies/access/"},
+    {"id": "gateway_event", "label": "Gateway DNS/HTTP/Network (Zero Trust SWG)",
+     "default_weight": 0.12,
+     "docs_anchor": "developers.cloudflare.com/cloudflare-one/policies/gateway/"},
+    {"id": "audit_event", "label": "Account audit log (admin actions)",
+     "default_weight": 0.08,
+     "docs_anchor": "developers.cloudflare.com/fundamentals/setup/account/account-security/review-audit-logs/"},
 ]
-_GEN_FUNCS = [g for g, _ in _GENERATORS]
-_GEN_WEIGHTS = [w for _, w in _GENERATORS]
+
+# Catalogue ids → (generator callable, default weight). Keys MUST match
+# EVENT_CATALOG ids exactly so admin overrides bind 1:1.
+_EVENT_TEMPLATES: dict[str, tuple[Any, float]] = {
+    "http_request":    (_http_request_event,    0.25),
+    "firewall_event":  (_firewall_event,        0.15),
+    "waf_event":       (_waf_event,             0.10),
+    "dns_event":       (_dns_event,             0.12),
+    "bot_management":  (_bot_management_event,  0.08),
+    "access_event":    (_access_event,          0.10),
+    "gateway_event":   (_gateway_event,         0.12),
+    "audit_event":     (_audit_event,           0.08),
+}
 
 
 def generate_events(count: int = 20) -> list[dict[str, Any]]:
     ctx = profiles.get_context("cloudflare")
     count = profiles.scale_count("cloudflare", count)
-    events = [random.choices(_GEN_FUNCS, weights=_GEN_WEIGHTS, k=1)[0](ctx) for _ in range(count)]
+    templates = event_mix.apply(_EVENT_TEMPLATES, "cloudflare")
+    events = [weighted_choice(templates)(ctx) for _ in range(count)]
     events = inject_detection_events("cloudflare", events)
     return events

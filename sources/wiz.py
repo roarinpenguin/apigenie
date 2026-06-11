@@ -4,6 +4,7 @@ import random
 from typing import Any
 
 import detection_rules
+import event_mix
 import profiles
 from generators import (
     generate_ip,
@@ -91,8 +92,37 @@ _ISSUE_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
 }
 
 
+# ── Event catalog ──────────────────────────────────────────────────────
+# Seven Wiz issue types from the GraphQL issuesV2 API, spanning toxic
+# combinations, vulnerabilities, misconfigurations, exposed secrets, and
+# IAM/Kubernetes posture findings.
+EVENT_CATALOG: list[dict[str, Any]] = [
+    {"id": "issue", "label": "Toxic combination (exposed service running as root)",
+     "default_weight": 0.40,
+     "docs_anchor": "docs.wiz.io/wiz-docs/docs/issues"},
+    {"id": "critical_vulnerability", "label": "Critical RCE vulnerability",
+     "default_weight": 0.20,
+     "docs_anchor": "docs.wiz.io/wiz-docs/docs/vulnerability-findings"},
+    {"id": "open_security_group", "label": "Open security group (0.0.0.0/0)",
+     "default_weight": 0.15,
+     "docs_anchor": "docs.wiz.io/wiz-docs/docs/cloud-misconfigurations"},
+    {"id": "exposed_secret", "label": "Exposed secret in code / config",
+     "default_weight": 0.10,
+     "docs_anchor": "docs.wiz.io/wiz-docs/docs/secret-scanning"},
+    {"id": "iam_misconfiguration", "label": "Overly permissive IAM role",
+     "default_weight": 0.08,
+     "docs_anchor": "docs.wiz.io/wiz-docs/docs/iam-findings"},
+    {"id": "container_vulnerability", "label": "Vulnerable container image in production",
+     "default_weight": 0.05,
+     "docs_anchor": "docs.wiz.io/wiz-docs/docs/container-image-scanning"},
+    {"id": "k8s_misconfiguration", "label": "Kubernetes pod running as root",
+     "default_weight": 0.02,
+     "docs_anchor": "docs.wiz.io/wiz-docs/docs/kubernetes-scanning"},
+]
+
+
 def _generate_issue(ctx: profiles.ProfileContext | None = None) -> dict[str, Any]:
-    template = weighted_choice(_ISSUE_TEMPLATES)
+    template = weighted_choice(event_mix.apply(_ISSUE_TEMPLATES, "wiz"))
     pm = ctx.pick_machine() if ctx else None
     resource_type = random.choice(_RESOURCE_TYPES)
     cloud = random.choice(_CLOUDS)

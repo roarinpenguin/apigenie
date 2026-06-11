@@ -60,6 +60,11 @@ _WIRED_SOURCES = (
     "gcp_audit",
     "netskope",
     "sentinelone",
+    "cloudflare",
+    "snyk",
+    "tenable",
+    "wiz",
+    "zscaler_zpa",
 )
 
 
@@ -297,6 +302,61 @@ def test_sentinelone_catalog_ids_match_classification_axis():
     assert cat_ids == expected, (
         f"sentinelone catalog/classification drift: "
         f"catalog-only={cat_ids - expected}, classifications-only={expected - cat_ids}"
+    )
+
+
+def test_cloudflare_catalog_ids_match_template_keys():
+    from sources import cloudflare
+
+    cat_ids = {e["id"] for e in cloudflare.EVENT_CATALOG}
+    tpl_ids = set(cloudflare._EVENT_TEMPLATES.keys())
+    assert cat_ids == tpl_ids, (
+        f"cloudflare catalog/template drift: "
+        f"catalog-only={cat_ids - tpl_ids}, template-only={tpl_ids - cat_ids}"
+    )
+
+
+def test_snyk_catalog_ids_match_template_keys():
+    from sources import snyk
+
+    cat_ids = {e["id"] for e in snyk.EVENT_CATALOG}
+    tpl_ids = set(snyk._ISSUE_TEMPLATES.keys())
+    assert cat_ids == tpl_ids, (
+        f"snyk catalog/template drift: "
+        f"catalog-only={cat_ids - tpl_ids}, template-only={tpl_ids - cat_ids}"
+    )
+
+
+def test_tenable_catalog_ids_match_template_keys():
+    from sources import tenable
+
+    cat_ids = {e["id"] for e in tenable.EVENT_CATALOG}
+    tpl_ids = set(tenable._VULN_TEMPLATES.keys())
+    assert cat_ids == tpl_ids, (
+        f"tenable catalog/template drift: "
+        f"catalog-only={cat_ids - tpl_ids}, template-only={tpl_ids - cat_ids}"
+    )
+
+
+def test_wiz_catalog_ids_match_template_keys():
+    from sources import wiz
+
+    cat_ids = {e["id"] for e in wiz.EVENT_CATALOG}
+    tpl_ids = set(wiz._ISSUE_TEMPLATES.keys())
+    assert cat_ids == tpl_ids, (
+        f"wiz catalog/template drift: "
+        f"catalog-only={cat_ids - tpl_ids}, template-only={tpl_ids - cat_ids}"
+    )
+
+
+def test_zscaler_zpa_catalog_ids_match_template_keys():
+    from sources import zscaler_zpa
+
+    cat_ids = {e["id"] for e in zscaler_zpa.EVENT_CATALOG}
+    tpl_ids = set(zscaler_zpa._EVENT_TEMPLATES.keys())
+    assert cat_ids == tpl_ids, (
+        f"zscaler_zpa catalog/template drift: "
+        f"catalog-only={cat_ids - tpl_ids}, template-only={tpl_ids - cat_ids}"
     )
 
 
@@ -583,4 +643,84 @@ def test_sentinelone_resolver_actually_disables_event(_isolate_data_root):
         1 for threat in resp["data"]
         if threat.get("threatInfo", {}).get("classification") == "Ransomware"
     )
+    assert hits == 0
+
+
+def test_cloudflare_resolver_actually_disables_event(_isolate_data_root):
+    """Disabling ``audit_event`` should drop events with event_type ==
+    'audit_event' from the unfiltered feed. That stamp is unique to the
+    _audit_event generator."""
+    em = _isolate_data_root
+    _apply_disable_mix(em, "cloudflare", ["audit_event"])
+    from sources import cloudflare
+
+    random.seed(42)
+    events = cloudflare.generate_events(count=100)
+    hits = sum(1 for ev in events if ev.get("event_type") == "audit_event")
+    assert hits == 0
+
+
+def test_snyk_resolver_actually_disables_event(_isolate_data_root):
+    """Disabling ``critical_log4shell`` should drop every issue whose CVE
+    is CVE-2021-44228 (Log4Shell). That CVE is unique to the critical_log4shell
+    template."""
+    em = _isolate_data_root
+    _apply_disable_mix(em, "snyk", ["critical_log4shell"])
+    from sources import snyk
+
+    random.seed(42)
+    hits = 0
+    for _ in range(200):
+        issue = snyk._generate_issue()
+        # The CVE list lives at issueData.identifiers.CVE in the Snyk schema;
+        # here we generate it via template and the easiest unique marker is
+        # the package name 'log4j-core'.
+        if issue.get("package") == "log4j-core":
+            hits += 1
+    assert hits == 0
+
+
+def test_tenable_resolver_actually_disables_event(_isolate_data_root):
+    """Disabling ``critical_log4shell`` should drop vulns with
+    plugin_id == 156032 (the Nessus plugin for Log4Shell)."""
+    em = _isolate_data_root
+    _apply_disable_mix(em, "tenable", ["critical_log4shell"])
+    from sources import tenable
+
+    random.seed(42)
+    hits = 0
+    for _ in range(200):
+        vuln = tenable._generate_vuln()
+        if vuln.get("plugin", {}).get("id") == 156032:
+            hits += 1
+    assert hits == 0
+
+
+def test_wiz_resolver_actually_disables_event(_isolate_data_root):
+    """Disabling ``exposed_secret`` should drop issues with type ==
+    'SECRET_IN_CODE'. That type is unique to the exposed_secret template."""
+    em = _isolate_data_root
+    _apply_disable_mix(em, "wiz", ["exposed_secret"])
+    from sources import wiz
+
+    random.seed(42)
+    hits = 0
+    for _ in range(200):
+        issue = wiz._generate_issue()
+        if issue.get("type") == "SECRET_IN_CODE":
+            hits += 1
+    assert hits == 0
+
+
+def test_zscaler_zpa_resolver_actually_disables_event(_isolate_data_root):
+    """Disabling ``health`` should drop events with event_type == 'health'
+    from the ZPA log stream. That stamp is unique to the _health_event
+    generator."""
+    em = _isolate_data_root
+    _apply_disable_mix(em, "zscaler_zpa", ["health"])
+    from sources import zscaler_zpa
+
+    random.seed(42)
+    events = zscaler_zpa.generate_events(count=100)
+    hits = sum(1 for ev in events if ev.get("event_type") == "health")
     assert hits == 0

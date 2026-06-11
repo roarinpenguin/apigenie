@@ -1,9 +1,16 @@
-"""Snyk mock data generator."""
+"""Snyk mock data generator.
+
+Event catalog grounded in the Snyk Issues API
+(``docs.snyk.io/snyk-api/reference/issues``). Four issue templates
+spanning critical / high / medium / low severities plus the license-issue
+type, weighted to match real-world OSS vulnerability distributions.
+"""
 
 import random
 from typing import Any
 
 import detection_rules
+import event_mix
 import profiles
 from generators import (
     generate_email,
@@ -111,8 +118,25 @@ _ISSUE_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
 }
 
 
+# ── Event catalog ──────────────────────────────────────────────────────
+EVENT_CATALOG: list[dict[str, Any]] = [
+    {"id": "high_prototype_pollution", "label": "High: Prototype Pollution (lodash)",
+     "default_weight": 0.40,
+     "docs_anchor": "snyk.io/vuln/SNYK-JS-LODASH-608086"},
+    {"id": "medium_license", "label": "Medium: License issue (MIT)",
+     "default_weight": 0.30,
+     "docs_anchor": "docs.snyk.io/scan-using-snyk/snyk-open-source/license-policy"},
+    {"id": "critical_log4shell", "label": "Critical: Log4Shell RCE (CVE-2021-44228)",
+     "default_weight": 0.20,
+     "docs_anchor": "snyk.io/vuln/SNYK-JAVA-ORGAPACHELOGGINGLOG4J-2314720"},
+    {"id": "low_informational", "label": "Low: Information Exposure (express)",
+     "default_weight": 0.10,
+     "docs_anchor": "snyk.io/vuln/SNYK-JS-EXPRESS-2963889"},
+]
+
+
 def _generate_issue() -> dict[str, Any]:
-    template = weighted_choice(_ISSUE_TEMPLATES)
+    template = weighted_choice(event_mix.apply(_ISSUE_TEMPLATES, "snyk"))
     project = random.choice(_PROJECTS)
     org = random.choice(_ORGS)
     issue_id = generate_uuid()

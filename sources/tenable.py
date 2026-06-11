@@ -4,6 +4,7 @@ import random
 from typing import Any
 
 import detection_rules
+import event_mix
 import profiles
 from generators import (
     epoch_to_iso,
@@ -68,8 +69,25 @@ _VULN_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
 }
 
 
+# ── Event catalog ──────────────────────────────────────────────────────
+EVENT_CATALOG: list[dict[str, Any]] = [
+    {"id": "critical_log4shell", "label": "Critical: Log4Shell (CVE-2021-44228)",
+     "default_weight": 0.40,
+     "docs_anchor": "www.tenable.com/plugins/nessus/156032"},
+    {"id": "high_apache", "label": "High: Apache HTTP Server vulnerabilities",
+     "default_weight": 0.35,
+     "docs_anchor": "www.tenable.com/plugins/nessus/173163"},
+    {"id": "medium_smb", "label": "Medium: SMB Signing Not Required",
+     "default_weight": 0.20,
+     "docs_anchor": "www.tenable.com/plugins/nessus/57608"},
+    {"id": "low_informational", "label": "Low: SSL Certificate Cannot Be Trusted",
+     "default_weight": 0.05,
+     "docs_anchor": "www.tenable.com/plugins/nessus/51192"},
+]
+
+
 def _generate_vuln(ctx: profiles.ProfileContext | None = None) -> dict[str, Any]:
-    template = weighted_choice(_VULN_TEMPLATES)
+    template = weighted_choice(event_mix.apply(_VULN_TEMPLATES, "tenable"))
     ts = now_epoch() - random.randint(0, 86400 * 30)
     pm = ctx.pick_machine() if ctx else None
     if pm:

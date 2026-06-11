@@ -8,8 +8,9 @@ from __future__ import annotations
 import random
 from datetime import datetime, timezone
 from typing import Any
-from generators import generate_ip, generate_hostname, generate_uuid
+from generators import generate_ip, generate_hostname, generate_uuid, weighted_choice
 from detection_rules import inject_detection_events
+import event_mix
 import profiles
 
 _CUSTOMER_IDS = ["12345678901234567", "98765432109876543"]
@@ -174,17 +175,43 @@ def _health_event(ctx=None) -> dict[str, Any]:
     }
 
 
-_GENERATORS = [
-    (_user_activity, 40), (_connector_status, 15), (_policy_event, 15),
-    (_audit_event, 15), (_health_event, 15),
+# ── Event catalog ──────────────────────────────────────────────────────
+# Five ZPA log streams (User Activity Logs API). Catalogue ids match the
+# stamped ``event_type`` field exactly so empirical disable checks are
+# trivial to write.
+EVENT_CATALOG: list[dict[str, Any]] = [
+    {"id": "user_activity", "label": "User activity (app session / policy decision)",
+     "default_weight": 0.40,
+     "docs_anchor": "help.zscaler.com/zpa/about-user-activity-logs"},
+    {"id": "connector_status", "label": "Connector status (App Connector lifecycle)",
+     "default_weight": 0.15,
+     "docs_anchor": "help.zscaler.com/zpa/about-app-connectors"},
+    {"id": "policy_event", "label": "Access policy change",
+     "default_weight": 0.15,
+     "docs_anchor": "help.zscaler.com/zpa/configuring-policies"},
+    {"id": "audit_event", "label": "Admin audit event (login / config change)",
+     "default_weight": 0.15,
+     "docs_anchor": "help.zscaler.com/zpa/about-admin-management-audit-logs"},
+    {"id": "health", "label": "Connector health (CPU / memory / status)",
+     "default_weight": 0.15,
+     "docs_anchor": "help.zscaler.com/zpa/about-app-connectors"},
 ]
-_GEN_FUNCS = [g for g, _ in _GENERATORS]
-_GEN_WEIGHTS = [w for _, w in _GENERATORS]
+
+# Catalogue ids → (generator callable, default weight). Keys MUST match
+# EVENT_CATALOG ids exactly so admin overrides bind 1:1.
+_EVENT_TEMPLATES: dict[str, tuple[Any, float]] = {
+    "user_activity":    (_user_activity,    0.40),
+    "connector_status": (_connector_status, 0.15),
+    "policy_event":     (_policy_event,     0.15),
+    "audit_event":      (_audit_event,      0.15),
+    "health":           (_health_event,     0.15),
+}
 
 
 def generate_events(count: int = 20) -> list[dict[str, Any]]:
     ctx = profiles.get_context("zscaler_zpa")
     count = profiles.scale_count("zscaler_zpa", count)
-    events = [random.choices(_GEN_FUNCS, weights=_GEN_WEIGHTS, k=1)[0](ctx) for _ in range(count)]
+    templates = event_mix.apply(_EVENT_TEMPLATES, "zscaler_zpa")
+    events = [weighted_choice(templates)(ctx) for _ in range(count)]
     events = inject_detection_events("zscaler_zpa", events)
     return events
