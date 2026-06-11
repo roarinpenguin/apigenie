@@ -1676,47 +1676,65 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
     <!-- ATTACK SCENARIOS TAB -->
     <div class="pane" id="pane-scenarios">
       <div class="card">
-        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
           <span>Attack Scenarios</span>
-          <button class="btn-sm" onclick="openScenarioCreator()">+ New Scenario</button>
+          <div style="display:flex;gap:6px">
+            <button class="btn-sm" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2)" onclick="document.getElementById('scenario-import-file').click()">&#x2191; Import</button>
+            <input type="file" id="scenario-import-file" accept="application/json,.json" style="display:none" onchange="importScenarioFromFile(this.files[0]);this.value=''"/>
+            <button class="btn-sm" onclick="openScenarioCreator()">+ New Scenario</button>
+          </div>
         </div>
         <p style="font-size:.78rem;color:rgba(224,170,255,.45);margin-bottom:14px">
           Simulate multi-source, multi-phase attack campaigns mapped to MITRE ATT&amp;CK. Each scenario injects
           attack-specific events into normal log flows across multiple sources. Every event carries <code>attack.id</code>
-          and <code>phase.id</code> for cross-source correlation.
+          and <code>phase.id</code> for cross-source correlation. Start from a built-in template, edit the phases,
+          or import a JSON scenario from another lab.
         </p>
         <div id="scenarios-list"><p class="empty">Loading&#8230;</p></div>
       </div>
     </div>
 
-    <!-- Scenario Creator Modal -->
+    <!-- Scenario Creator / Editor Modal -->
     <div class="modal-overlay hidden" id="scenario-modal">
-      <div class="modal" style="width:min(680px,94%)">
-        <div class="modal-head"><h3>Create Attack Scenario</h3></div>
-        <div class="modal-body" style="display:flex;flex-direction:column;gap:12px;max-height:70vh;overflow-y:auto">
-          <div><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Select Template</label>
+      <div class="modal" style="width:min(880px,96%)">
+        <div class="modal-head"><h3 id="scenario-modal-title">Create Attack Scenario</h3></div>
+        <div class="modal-body" style="display:flex;flex-direction:column;gap:12px;max-height:74vh;overflow-y:auto">
+          <div id="scenario-template-row"><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Start from template</label>
             <select id="scenario-template" onchange="onScenarioTemplateChange()" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
-              <option value="">Loading&#8230;</option>
+              <option value="">&#8212; Empty (build from scratch) &#8212;</option>
             </select>
           </div>
-          <div id="scenario-template-desc" style="font-size:.72rem;color:rgba(224,170,255,.4);min-height:20px"></div>
+          <div id="scenario-template-desc" style="font-size:.72rem;color:rgba(224,170,255,.4);min-height:18px"></div>
           <div style="display:flex;gap:10px">
             <div style="flex:1"><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Name</label>
               <input id="scenario-name" type="text" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/></div>
             <div><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Duration</label>
               <div style="display:flex;gap:4px">
-                <input id="scenario-dur-val" type="number" min="1" value="4" style="width:60px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/>
+                <input id="scenario-dur-val" type="number" min="1" value="4" style="width:64px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/>
                 <select id="scenario-dur-unit" style="background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
                   <option value="minutes">minutes</option><option value="hours" selected>hours</option><option value="days">days</option><option value="weeks">weeks</option>
                 </select>
               </div>
             </div>
           </div>
-          <div id="scenario-phases-preview" style="margin-top:4px"></div>
+          <div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+              <label style="font-size:.72rem;color:rgba(224,170,255,.5)">Phases <span id="scenario-phase-count" style="color:rgba(224,170,255,.35)"></span></label>
+              <button class="btn-sm" onclick="addScenarioPhase()" style="padding:3px 10px;font-size:.7rem">+ Add Phase</button>
+            </div>
+            <p style="font-size:.68rem;color:rgba(224,170,255,.35);margin:0 0 8px">
+              Each phase becomes a temporary detection rule on its <code>source</code> while the scenario runs.
+              <code>time_offset_pct</code> + <code>duration_pct</code> must total &le; 100. <code>field_overrides</code>
+              is an inline JSON object &#8212; see the built-in templates for examples.
+            </p>
+            <div id="scenario-phases-editor"></div>
+            <div id="scenario-validation-errors" style="font-size:.72rem;color:#ff8080;margin-top:6px"></div>
+          </div>
         </div>
         <div class="modal-foot"><div></div><div class="right">
           <button class="btn-sm" style="background:rgba(90,24,154,.3)" onclick="closeScenarioModal()">Cancel</button>
-          <button class="btn-sm" onclick="createScenario()">Create &amp; Start</button>
+          <button class="btn-sm" id="scenario-save-btn" onclick="saveScenarioFromEditor()">Save</button>
+          <button class="btn-sm" id="scenario-create-btn" onclick="createScenarioFromEditor()">Create &amp; Start</button>
         </div></div>
       </div>
     </div>
@@ -6605,7 +6623,10 @@ async function loadScenarios() {
       h += '<span style="font-weight:600;color:var(--mist);font-size:.88rem">' + escHtml(s.name) + '</span>';
       h += '<span class="pill" style="color:#c77dff;font-family:monospace">' + escHtml(s.attack_id || '') + '</span>';
       h += '</div>';
-      h += '<div style="display:flex;gap:4px">';
+      h += '<div style="display:flex;gap:4px;flex-wrap:wrap">';
+      // Export is always available — the export endpoint scrubs runtime state
+      // before serialising, so it\\u2019s safe to grab a snapshot mid-run.
+      h += '<button class="btn-sm" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2);padding:3px 10px;font-size:.68rem" onclick="exportScenario(\\'' + escHtml(s.id) + '\\')" title="Download scenario as JSON">&#x2193; Export</button>';
       if (s.status === 'running') {
         h += '<button class="btn-sm" style="background:rgba(243,156,18,.3);color:#f39c12;padding:3px 10px;font-size:.68rem" onclick="pauseScenario(\\'' + escHtml(s.id) + '\\')">Pause</button>';
         h += '<button class="btn-sm" style="background:rgba(120,30,40,.4);color:#ff8080;padding:3px 10px;font-size:.68rem" onclick="stopScenario(\\'' + escHtml(s.id) + '\\')">Stop</button>';
@@ -6613,6 +6634,8 @@ async function loadScenarios() {
         h += '<button class="btn-sm" style="background:rgba(30,120,40,.4);color:#80ff80;padding:3px 10px;font-size:.68rem" onclick="resumeScenario(\\'' + escHtml(s.id) + '\\')">Resume</button>';
         h += '<button class="btn-sm" style="background:rgba(120,30,40,.4);color:#ff8080;padding:3px 10px;font-size:.68rem" onclick="stopScenario(\\'' + escHtml(s.id) + '\\')">Stop</button>';
       } else {
+        // stopped / completed: full edit + lifecycle controls
+        h += '<button class="btn-sm" style="background:rgba(90,24,154,.35);color:#c77dff;padding:3px 10px;font-size:.68rem" onclick="openScenarioEditor(\\'' + escHtml(s.id) + '\\')">Edit</button>';
         h += '<button class="btn-sm" style="background:rgba(30,120,40,.4);color:#80ff80;padding:3px 10px;font-size:.68rem" onclick="startScenario(\\'' + escHtml(s.id) + '\\')">Start</button>';
         h += '<button class="btn-sm" style="background:rgba(120,30,40,.4);color:#ff5050;padding:3px 10px;font-size:.68rem" onclick="deleteScenario(\\'' + escHtml(s.id) + '\\')">Delete</button>';
       }
@@ -6653,67 +6676,390 @@ async function loadScenarios() {
   } catch(e) { box.innerHTML = '<p class="empty">Failed: ' + escHtml(String(e)) + '</p>'; }
 }
 
+// ── Scenario builder state (Phase 2) ────────────────────────────────────────
+// _scenarioPhases mirrors the modal\u2019s editable phase list. We refresh from
+// the DOM into this array before every mutation that triggers a re-render
+// (add / remove / move), so the user never loses an in-flight edit.
+// _scenarioEditingId is null in create mode and the scenario id in edit mode.
+var _scenarioPhases = [];
+var _scenarioEditingId = null;
+
+// MITRE ATT&CK enterprise tactics, in roughly kill-chain order. Used as the
+// dropdown options inside each phase row. The colour map (_MITRE_COLORS)
+// already lists the same set; keep them in sync if you extend either.
+var _MITRE_TACTICS_LIST = [
+  "Reconnaissance", "Initial Access", "Execution", "Persistence",
+  "Privilege Escalation", "Defense Evasion", "Credential Access",
+  "Discovery", "Lateral Movement", "Collection",
+  "Command and Control", "Exfiltration", "Impact"
+];
+
+function _blankPhase() {
+  return {
+    phase_id: "",
+    name: "",
+    source: "",
+    mitre_tactic: "Initial Access",
+    mitre_technique: "",
+    time_offset_pct: 0,
+    duration_pct: 10,
+    periodicity: 5,
+    field_overrides: {}
+  };
+}
+
 function openScenarioCreator() {
-  var modal = document.getElementById('scenario-modal');
-  modal.classList.remove('hidden');
+  // Create mode: blank state, template selector visible, both Save+Create buttons
+  // are shown but Save stays hidden until we actually have an id to PUT against.
+  _scenarioEditingId = null;
+  _scenarioPhases = [];
+  document.getElementById('scenario-modal-title').textContent = 'Create Attack Scenario';
+  document.getElementById('scenario-template-row').style.display = '';
+  document.getElementById('scenario-save-btn').style.display = 'none';
+  document.getElementById('scenario-create-btn').style.display = '';
+  document.getElementById('scenario-name').value = '';
+  document.getElementById('scenario-dur-val').value = '4';
+  document.getElementById('scenario-dur-unit').value = 'hours';
+  document.getElementById('scenario-validation-errors').textContent = '';
+  // Populate template dropdown.
   var sel = document.getElementById('scenario-template');
-  sel.innerHTML = '';
+  sel.innerHTML = '<option value="">&mdash; Empty (build from scratch) &mdash;</option>';
   _scenarioTemplates.forEach(function(t) {
-    sel.innerHTML += '<option value="' + escHtml(t.key) + '">' + escHtml(t.name) + ' (' + t.phase_count + ' phases, ' + t.sources.join(', ') + ')</option>';
+    sel.innerHTML += '<option value="' + escHtml(t.key) + '">'
+      + escHtml(t.name) + ' (' + t.phase_count + ' phases, ' + t.sources.join(', ') + ')</option>';
   });
-  onScenarioTemplateChange();
+  sel.value = '';
+  document.getElementById('scenario-template-desc').textContent = '';
+  renderScenarioPhasesEditor();
+  document.getElementById('scenario-modal').classList.remove('hidden');
+}
+
+async function openScenarioEditor(id) {
+  // Edit mode: load the scenario, hide the template selector (templates are
+  // a create-time convenience, not part of the saved scenario), show only Save.
+  try {
+    var r = await fetch('/admin/api/scenarios/' + id, {credentials:'same-origin'});
+    if (!r.ok) { alert('Failed to load scenario'); return; }
+    var s = await r.json();
+    _scenarioEditingId = id;
+    _scenarioPhases = (s.phases || []).map(function(p) {
+      return {
+        phase_id: p.phase_id || p.id || '',
+        name: p.name || '',
+        source: p.source || '',
+        mitre_tactic: p.mitre_tactic || 'Initial Access',
+        mitre_technique: p.mitre_technique || '',
+        time_offset_pct: p.time_offset_pct == null ? 0 : p.time_offset_pct,
+        duration_pct: p.duration_pct == null ? 10 : p.duration_pct,
+        periodicity: p.periodicity == null ? 5 : p.periodicity,
+        field_overrides: p.field_overrides || {}
+      };
+    });
+    document.getElementById('scenario-modal-title').textContent = 'Edit Attack Scenario';
+    document.getElementById('scenario-template-row').style.display = 'none';
+    document.getElementById('scenario-template-desc').textContent = '';
+    document.getElementById('scenario-save-btn').style.display = '';
+    document.getElementById('scenario-create-btn').style.display = 'none';
+    document.getElementById('scenario-name').value = s.name || '';
+    var dur = s.duration || {};
+    document.getElementById('scenario-dur-val').value = dur.value || 4;
+    document.getElementById('scenario-dur-unit').value = dur.unit || 'hours';
+    document.getElementById('scenario-validation-errors').textContent = '';
+    renderScenarioPhasesEditor();
+    document.getElementById('scenario-modal').classList.remove('hidden');
+  } catch(e) { alert('Failed: ' + e); }
 }
 
 function onScenarioTemplateChange() {
+  // In create mode only: picking a template replaces the editor contents with
+  // that template\u2019s phases. The user can then tweak / remove / extend them.
   var key = document.getElementById('scenario-template').value;
   var t = _scenarioTemplates.find(function(x) { return x.key === key; });
   document.getElementById('scenario-template-desc').textContent = t ? t.description : '';
-  document.getElementById('scenario-name').value = t ? t.name : '';
-  // Preview phases
-  if (t) {
-    fetch('/admin/api/scenarios/templates/' + key, {credentials:'same-origin'})
-      .then(function(r) { return r.json(); })
-      .then(function(d) {
-        var phases = d.phases || [];
-        var ph = '<div style="font-size:.72rem;color:rgba(224,170,255,.5);margin-bottom:6px">Phases (' + phases.length + '):</div>';
-        ph += '<div style="display:flex;gap:4px;flex-wrap:wrap">';
-        phases.forEach(function(p) {
-          var bg = _MITRE_COLORS[p.mitre_tactic] || '#555';
-          ph += '<div style="background:' + bg + ';border-radius:6px;padding:5px 8px;text-align:center;min-width:90px">';
-          ph += '<div style="font-size:.55rem;font-weight:700;color:#fff">' + escHtml(p.mitre_technique) + '</div>';
-          ph += '<div style="font-size:.6rem;color:rgba(255,255,255,.8)">' + escHtml(p.name) + '</div>';
-          ph += '<div style="font-size:.5rem;color:rgba(255,255,255,.5)">' + escHtml(p.source) + ' | ' + p.time_offset_pct + '-' + (p.time_offset_pct + p.duration_pct) + '%</div>';
-          ph += '</div>';
-        });
-        ph += '</div>';
-        document.getElementById('scenario-phases-preview').innerHTML = ph;
-      });
+  if (!key) {
+    // Empty template = blank scenario, single phase to get the user started.
+    _scenarioPhases = [_blankPhase()];
+    document.getElementById('scenario-name').value = '';
+    renderScenarioPhasesEditor();
+    return;
   }
+  document.getElementById('scenario-name').value = t ? t.name : '';
+  fetch('/admin/api/scenarios/templates/' + key, {credentials:'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      _scenarioPhases = (d.phases || []).map(function(p) {
+        return {
+          phase_id: p.phase_id || '',
+          name: p.name || '',
+          source: p.source || '',
+          mitre_tactic: p.mitre_tactic || 'Initial Access',
+          mitre_technique: p.mitre_technique || '',
+          time_offset_pct: p.time_offset_pct == null ? 0 : p.time_offset_pct,
+          duration_pct: p.duration_pct == null ? 10 : p.duration_pct,
+          periodicity: p.periodicity == null ? 5 : p.periodicity,
+          field_overrides: p.field_overrides || {}
+        };
+      });
+      renderScenarioPhasesEditor();
+    });
 }
 
 function closeScenarioModal() {
   document.getElementById('scenario-modal').classList.add('hidden');
+  _scenarioEditingId = null;
+  _scenarioPhases = [];
 }
 
-async function createScenario() {
-  var body = {
-    template: document.getElementById('scenario-template').value,
-    name: document.getElementById('scenario-name').value,
-    duration: {
-      value: parseInt(document.getElementById('scenario-dur-val').value) || 4,
-      unit: document.getElementById('scenario-dur-unit').value
+// ── Phase editor rendering / mutations ──────────────────────────────────────
+
+function renderScenarioPhasesEditor() {
+  var box = document.getElementById('scenario-phases-editor');
+  if (!box) return;
+  document.getElementById('scenario-phase-count').textContent =
+    _scenarioPhases.length ? '(' + _scenarioPhases.length + ')' : '';
+  if (!_scenarioPhases.length) {
+    box.innerHTML = '<p class="empty" style="margin:0;font-size:.78rem">No phases yet. Click "+ Add Phase" to start, or pick a template above.</p>';
+    return;
+  }
+  // Each row gets a stable index so the input handlers can write back into
+  // _scenarioPhases without us having to track per-row IDs separately.
+  var h = '';
+  _scenarioPhases.forEach(function(p, i) {
+    var tacticColor = _MITRE_COLORS[p.mitre_tactic] || '#555';
+    var fieldsJson = '';
+    try { fieldsJson = JSON.stringify(p.field_overrides || {}, null, 2); }
+    catch(e) { fieldsJson = '{}'; }
+    h += '<div style="background:rgba(36,0,70,.45);border-left:3px solid ' + tacticColor + ';border:1px solid rgba(199,125,255,.15);border-radius:8px;padding:10px;margin-bottom:8px">';
+    h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">';
+    h += '<span style="font-size:.74rem;color:rgba(224,170,255,.6);font-weight:600">Phase #' + (i + 1) + '</span>';
+    h += '<div style="display:flex;gap:4px">';
+    h += '<button class="btn-sm" style="padding:1px 7px;font-size:.65rem;background:rgba(90,24,154,.3)" onclick="moveScenarioPhase(' + i + ',-1)" title="Move up"' + (i === 0 ? ' disabled' : '') + '>&uarr;</button>';
+    h += '<button class="btn-sm" style="padding:1px 7px;font-size:.65rem;background:rgba(90,24,154,.3)" onclick="moveScenarioPhase(' + i + ',1)" title="Move down"' + (i === _scenarioPhases.length - 1 ? ' disabled' : '') + '>&darr;</button>';
+    h += '<button class="btn-sm" style="padding:1px 7px;font-size:.65rem;background:rgba(120,30,40,.4);color:#ff9c9c" onclick="removeScenarioPhase(' + i + ')" title="Remove">&times;</button>';
+    h += '</div></div>';
+    // Row 1: name + source
+    h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">';
+    h += '<div><label style="font-size:.62rem;color:rgba(224,170,255,.4)">Phase name</label>'
+       + '<input type="text" data-phase-field="name" data-phase-i="' + i + '" value="' + escHtml(p.name) + '" placeholder="e.g. Phishing email delivered" style="width:100%;background:rgba(90,24,154,.18);border:1px solid rgba(199,125,255,.3);border-radius:6px;padding:5px 8px;color:var(--mist);font-size:.75rem"/></div>';
+    h += '<div><label style="font-size:.62rem;color:rgba(224,170,255,.4)">Source</label>'
+       + '<input type="text" data-phase-field="source" data-phase-i="' + i + '" value="' + escHtml(p.source) + '" placeholder="e.g. proofpoint, sentinelone, okta" style="width:100%;background:rgba(90,24,154,.18);border:1px solid rgba(199,125,255,.3);border-radius:6px;padding:5px 8px;color:var(--mist);font-size:.75rem"/></div>';
+    h += '</div>';
+    // Row 2: MITRE tactic + technique + phase_id
+    h += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:6px">';
+    h += '<div><label style="font-size:.62rem;color:rgba(224,170,255,.4)">MITRE tactic</label>'
+       + '<select data-phase-field="mitre_tactic" data-phase-i="' + i + '" style="width:100%;background:rgba(90,24,154,.18);border:1px solid rgba(199,125,255,.3);border-radius:6px;padding:5px 8px;color:var(--mist);font-size:.75rem">';
+    _MITRE_TACTICS_LIST.forEach(function(t) {
+      h += '<option value="' + escHtml(t) + '"' + (t === p.mitre_tactic ? ' selected' : '') + '>' + escHtml(t) + '</option>';
+    });
+    h += '</select></div>';
+    h += '<div><label style="font-size:.62rem;color:rgba(224,170,255,.4)">MITRE technique</label>'
+       + '<input type="text" data-phase-field="mitre_technique" data-phase-i="' + i + '" value="' + escHtml(p.mitre_technique) + '" placeholder="e.g. T1566.001" style="width:100%;background:rgba(90,24,154,.18);border:1px solid rgba(199,125,255,.3);border-radius:6px;padding:5px 8px;color:var(--mist);font-size:.75rem"/></div>';
+    h += '<div><label style="font-size:.62rem;color:rgba(224,170,255,.4)">Phase ID (slug)</label>'
+       + '<input type="text" data-phase-field="phase_id" data-phase-i="' + i + '" value="' + escHtml(p.phase_id || '') + '" placeholder="auto" style="width:100%;background:rgba(90,24,154,.18);border:1px solid rgba(199,125,255,.3);border-radius:6px;padding:5px 8px;color:var(--mist);font-size:.75rem"/></div>';
+    h += '</div>';
+    // Row 3: time_offset_pct + duration_pct + periodicity
+    h += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:6px">';
+    h += '<div><label style="font-size:.62rem;color:rgba(224,170,255,.4)">time_offset_pct (0\u201390)</label>'
+       + '<input type="number" min="0" max="100" data-phase-field="time_offset_pct" data-phase-i="' + i + '" value="' + p.time_offset_pct + '" style="width:100%;background:rgba(90,24,154,.18);border:1px solid rgba(199,125,255,.3);border-radius:6px;padding:5px 8px;color:var(--mist);font-size:.75rem"/></div>';
+    h += '<div><label style="font-size:.62rem;color:rgba(224,170,255,.4)">duration_pct (1\u2013100)</label>'
+       + '<input type="number" min="1" max="100" data-phase-field="duration_pct" data-phase-i="' + i + '" value="' + p.duration_pct + '" style="width:100%;background:rgba(90,24,154,.18);border:1px solid rgba(199,125,255,.3);border-radius:6px;padding:5px 8px;color:var(--mist);font-size:.75rem"/></div>';
+    h += '<div><label style="font-size:.62rem;color:rgba(224,170,255,.4)">periodicity (seconds)</label>'
+       + '<input type="number" min="1" data-phase-field="periodicity" data-phase-i="' + i + '" value="' + p.periodicity + '" style="width:100%;background:rgba(90,24,154,.18);border:1px solid rgba(199,125,255,.3);border-radius:6px;padding:5px 8px;color:var(--mist);font-size:.75rem"/></div>';
+    h += '</div>';
+    // Row 4: field_overrides JSON
+    h += '<div><label style="font-size:.62rem;color:rgba(224,170,255,.4)">field_overrides (JSON object)</label>'
+       + '<textarea data-phase-field="field_overrides" data-phase-i="' + i + '" rows="4" style="width:100%;background:rgba(90,24,154,.18);border:1px solid rgba(199,125,255,.3);border-radius:6px;padding:5px 8px;color:var(--mist);font-size:.7rem;font-family:monospace;resize:vertical">' + escHtml(fieldsJson) + '</textarea></div>';
+    h += '</div>';
+  });
+  box.innerHTML = h;
+}
+
+function _syncPhasesFromUi() {
+  // Pull live values out of the DOM into _scenarioPhases. Called before every
+  // mutation that triggers a re-render so users don\u2019t lose unsaved typing.
+  var rows = document.querySelectorAll('#scenario-phases-editor [data-phase-i]');
+  var errors = [];
+  rows.forEach(function(el) {
+    var i = parseInt(el.getAttribute('data-phase-i'), 10);
+    var k = el.getAttribute('data-phase-field');
+    if (!_scenarioPhases[i]) return;
+    if (k === 'time_offset_pct' || k === 'duration_pct' || k === 'periodicity') {
+      var n = parseFloat(el.value);
+      _scenarioPhases[i][k] = isNaN(n) ? 0 : n;
+    } else if (k === 'field_overrides') {
+      var raw = el.value.trim() || '{}';
+      try {
+        var obj = JSON.parse(raw);
+        if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+          _scenarioPhases[i][k] = obj;
+        } else {
+          errors.push('Phase #' + (i + 1) + ' field_overrides must be a JSON object.');
+        }
+      } catch(e) {
+        errors.push('Phase #' + (i + 1) + ' field_overrides: invalid JSON (' + e.message + ').');
+      }
+    } else {
+      _scenarioPhases[i][k] = el.value;
     }
+  });
+  return errors;
+}
+
+function addScenarioPhase() {
+  _syncPhasesFromUi();  // keep current edits before re-render
+  _scenarioPhases.push(_blankPhase());
+  renderScenarioPhasesEditor();
+}
+
+function removeScenarioPhase(i) {
+  _syncPhasesFromUi();
+  _scenarioPhases.splice(i, 1);
+  renderScenarioPhasesEditor();
+}
+
+function moveScenarioPhase(i, delta) {
+  _syncPhasesFromUi();
+  var j = i + delta;
+  if (j < 0 || j >= _scenarioPhases.length) return;
+  var tmp = _scenarioPhases[i];
+  _scenarioPhases[i] = _scenarioPhases[j];
+  _scenarioPhases[j] = tmp;
+  renderScenarioPhasesEditor();
+}
+
+// ── Save / create / import / export ─────────────────────────────────────────
+
+function _collectScenarioPayload() {
+  // Build the JSON body for POST/PUT from the modal\u2019s current state.
+  // Surfaces any JSON parse errors found by _syncPhasesFromUi to the UI.
+  var jsonErrors = _syncPhasesFromUi();
+  var errBox = document.getElementById('scenario-validation-errors');
+  if (jsonErrors.length) {
+    errBox.innerHTML = jsonErrors.map(escHtml).join('<br/>');
+    return null;
+  }
+  errBox.textContent = '';
+  return {
+    name: document.getElementById('scenario-name').value.trim(),
+    duration: {
+      value: parseFloat(document.getElementById('scenario-dur-val').value) || 4,
+      unit: document.getElementById('scenario-dur-unit').value
+    },
+    phases: _scenarioPhases.map(function(p) {
+      var out = {
+        name: p.name, source: p.source,
+        mitre_tactic: p.mitre_tactic, mitre_technique: p.mitre_technique,
+        time_offset_pct: p.time_offset_pct, duration_pct: p.duration_pct,
+        periodicity: p.periodicity, field_overrides: p.field_overrides || {}
+      };
+      // Only send phase_id if the user supplied one; otherwise the server
+      // assigns "phase-<index>" automatically (preserves the existing
+      // convention in create_scenario()).
+      if (p.phase_id && p.phase_id.trim()) out.phase_id = p.phase_id.trim();
+      return out;
+    })
   };
+}
+
+function _showValidationErrorList(errBox, errors) {
+  errBox.innerHTML = (errors || []).map(escHtml).join('<br/>')
+    || '<span style="color:#ff8080">Save failed.</span>';
+}
+
+async function createScenarioFromEditor() {
+  var payload = _collectScenarioPayload();
+  if (!payload) return;
+  var errBox = document.getElementById('scenario-validation-errors');
+  if (!payload.name) { errBox.textContent = 'Name is required.'; return; }
+  if (!payload.phases.length) { errBox.textContent = 'Add at least one phase.'; return; }
   try {
-    var r = await fetch('/admin/api/scenarios', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    var r = await fetch('/admin/api/scenarios', {
+      method:'POST', credentials:'same-origin',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
     var d = await r.json();
-    if (!r.ok) { alert('Error: ' + (d.error || r.status)); return; }
-    // Auto-start
-    await fetch('/admin/api/scenarios/' + d.id + '/start', {method:'POST', credentials:'same-origin'});
+    if (!r.ok) {
+      _showValidationErrorList(errBox, d.errors || [d.error || ('HTTP ' + r.status)]);
+      return;
+    }
+    // Auto-start matches the v1 flow (Create & Start button).
+    await fetch('/admin/api/scenarios/' + d.id + '/start',
+                {method:'POST', credentials:'same-origin'});
     closeScenarioModal();
-    toast('Scenario started: ' + body.name);
+    toast('Scenario started: ' + payload.name);
     loadScenarios();
-  } catch(e) { alert('Failed: ' + e); }
+  } catch(e) { _showValidationErrorList(errBox, ['Failed: ' + e]); }
+}
+
+async function saveScenarioFromEditor() {
+  // Edit mode: PUT to /api/scenarios/{id}. Server refuses with 409 if the
+  // scenario is currently running, which we surface verbatim.
+  if (!_scenarioEditingId) { createScenarioFromEditor(); return; }
+  var payload = _collectScenarioPayload();
+  if (!payload) return;
+  var errBox = document.getElementById('scenario-validation-errors');
+  try {
+    var r = await fetch('/admin/api/scenarios/' + _scenarioEditingId, {
+      method:'PUT', credentials:'same-origin',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    var d = await r.json();
+    if (!r.ok) {
+      _showValidationErrorList(errBox, d.errors || [d.error || ('HTTP ' + r.status)]);
+      return;
+    }
+    closeScenarioModal();
+    toast('Scenario saved');
+    loadScenarios();
+  } catch(e) { _showValidationErrorList(errBox, ['Failed: ' + e]); }
+}
+
+async function exportScenario(id) {
+  // Fetch the portable JSON and trigger a browser download. Using a Blob
+  // URL keeps the file fully client-side so the export endpoint can stay a
+  // plain JSON response (handy for curl / scripting too).
+  try {
+    var r = await fetch('/admin/api/scenarios/' + id + '/export',
+                        {credentials:'same-origin'});
+    if (!r.ok) { alert('Export failed: HTTP ' + r.status); return; }
+    var d = await r.json();
+    var blob = new Blob([JSON.stringify(d, null, 2)], {type: 'application/json'});
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    var safeName = (d.name || 'scenario').replace(/[^A-Za-z0-9_\-]+/g, '-').slice(0, 60) || 'scenario';
+    a.href = url;
+    a.download = safeName + '.scenario.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast('Exported ' + safeName);
+  } catch(e) { alert('Export failed: ' + e); }
+}
+
+async function importScenarioFromFile(file) {
+  if (!file) return;
+  try {
+    var text = await file.text();
+    var data;
+    try { data = JSON.parse(text); }
+    catch(e) { alert('Not valid JSON: ' + e.message); return; }
+    var r = await fetch('/admin/api/scenarios/import', {
+      method:'POST', credentials:'same-origin',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(data)
+    });
+    var d = await r.json();
+    if (!r.ok) {
+      var msg = (d.errors || [d.error || ('HTTP ' + r.status)]).join('\\n');
+      alert('Import rejected:\\n' + msg);
+      return;
+    }
+    toast('Imported "' + (d.name || 'scenario') + '"');
+    loadScenarios();
+  } catch(e) { alert('Import failed: ' + e); }
 }
 
 async function startScenario(id) {
@@ -10117,6 +10463,86 @@ async def api_scenario_status(scenario_id: str, ag_session: str | None = Cookie(
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     import attack_scenarios
     return JSONResponse(attack_scenarios.get_scenario_status(scenario_id))
+
+
+# ── Scenario builder: update / export / import (Phase 2) ─────────────────────
+# These three endpoints make scenarios fully user-authorable. PUT mutates only
+# stopped scenarios so the running scheduler never sees a phase list it didn't
+# start with. Export strips runtime identifiers (attack.id, started_at, …) so
+# the JSON round-trips cleanly across deployments. Import re-uses the same
+# validator the REST layer calls on PUT, so behaviour is consistent.
+
+@router.put("/api/scenarios/{scenario_id}")
+async def api_scenario_update(scenario_id: str, request: Request,
+                              ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import attack_scenarios
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "payload must be an object"}, status_code=400)
+    existing = attack_scenarios.get_scenario(scenario_id)
+    if not existing:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if existing.get("status") in ("running", "paused"):
+        return JSONResponse(
+            {"error": "cannot edit a running or paused scenario — stop it first"},
+            status_code=409)
+    # Build the "merged" payload (existing + patch) so partial updates pass
+    # the full-shape validator without forcing the UI to resend everything.
+    merged = {**existing, **{k: v for k, v in body.items() if k != "id"}}
+    errors = attack_scenarios.validate_scenario_payload(merged)
+    if errors:
+        return JSONResponse({"error": "validation failed", "errors": errors},
+                            status_code=400)
+    updated = attack_scenarios.update_scenario(scenario_id, body)
+    if not updated:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return JSONResponse(updated)
+
+
+@router.get("/api/scenarios/{scenario_id}/export")
+async def api_scenario_export(scenario_id: str,
+                              ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import attack_scenarios
+    exported = attack_scenarios.export_scenario(scenario_id)
+    if exported is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    # Browsers honour Content-Disposition to trigger a Save-As dialog; we use
+    # a slug derived from the scenario name so the file is recognisable.
+    safe_name = "".join(c if c.isalnum() or c in "-_" else "-"
+                        for c in exported.get("name", "scenario"))[:60] or "scenario"
+    return JSONResponse(
+        exported,
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}.scenario.json"'}
+    )
+
+
+@router.post("/api/scenarios/import")
+async def api_scenario_import(request: Request,
+                              ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import attack_scenarios
+    try:
+        body = await request.json()
+    except Exception as exc:
+        return JSONResponse({"error": f"invalid JSON body: {exc}"}, status_code=400)
+    try:
+        created = attack_scenarios.import_scenario(body)
+    except ValueError as exc:
+        # Validator collects all problems first and joins with newlines so
+        # the UI can list them one-per-line; we split back to a clean array
+        # in the response.
+        return JSONResponse(
+            {"error": "validation failed", "errors": str(exc).split("\n")},
+            status_code=400)
+    return JSONResponse(created, status_code=201)
 
 
 # ── Webhooks API (v5.0) ──────────────────────────────────────────────────────

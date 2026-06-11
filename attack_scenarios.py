@@ -150,6 +150,110 @@ def list_scenarios() -> list[dict[str, Any]]:
     return scenarios
 
 
+# ── Validation, export, import (Phase 2 — custom scenario builder) ───────────
+
+# Fields that exist only at runtime — they're regenerated whenever a scenario
+# is started and must NOT round-trip through export/import (would otherwise
+# leak attack IDs from one operator's lab into another's).
+_RUNTIME_FIELDS: tuple[str, ...] = (
+    "id", "attack_id", "status", "events_injected", "started_at",
+    "paused_at", "elapsed_seconds", "error", "created", "template",
+)
+
+# Per-phase keys to keep in the exported JSON. Runtime status fields
+# (status, events_count) are excluded — they're populated by the scheduler
+# and have no meaning in a portable template.
+_EXPORT_PHASE_KEYS: tuple[str, ...] = (
+    "phase_id", "name", "source", "mitre_tactic", "mitre_technique",
+    "time_offset_pct", "duration_pct", "periodicity", "field_overrides",
+)
+
+
+def validate_scenario_payload(data: Any) -> list[str]:
+    """Return a list of human-readable validation errors. Empty list means
+    the payload is acceptable for create / import / update. Designed to be
+    strict enough to keep a malformed phase from crashing the scheduler at
+    runtime, but lenient about optional fields (description, sources can
+    differ across deployments)."""
+    errors: list[str] = []
+    if not isinstance(data, dict):
+        return ["payload must be a JSON object"]
+    name = data.get("name")
+    if not isinstance(name, str) or not name.strip():
+        errors.append("'name' is required and must be a non-empty string")
+    duration = data.get("duration") or {}
+    if not isinstance(duration, dict):
+        errors.append("'duration' must be an object {value, unit}")
+    else:
+        if not isinstance(duration.get("value"), (int, float)) or duration.get("value", 0) <= 0:
+            errors.append("'duration.value' must be a positive number")
+        if duration.get("unit") not in ("seconds", "minutes", "hours", "days", "weeks"):
+            errors.append("'duration.unit' must be one of seconds|minutes|hours|days|weeks")
+    phases = data.get("phases")
+    if not isinstance(phases, list) or not phases:
+        errors.append("'phases' must be a non-empty array")
+        return errors
+    for i, p in enumerate(phases):
+        if not isinstance(p, dict):
+            errors.append(f"phase #{i}: must be an object")
+            continue
+        for k in ("name", "source", "mitre_tactic", "mitre_technique"):
+            if not isinstance(p.get(k), str) or not p.get(k, "").strip():
+                errors.append(f"phase #{i}: '{k}' is required and must be a non-empty string")
+        for k in ("time_offset_pct", "duration_pct"):
+            v = p.get(k)
+            if not isinstance(v, (int, float)) or not 0 <= v <= 100:
+                errors.append(f"phase #{i}: '{k}' must be a number in [0, 100]")
+        if p.get("time_offset_pct", 0) + p.get("duration_pct", 0) > 100:
+            errors.append(
+                f"phase #{i}: time_offset_pct + duration_pct exceeds 100 "
+                f"(phase would end after the scenario does)")
+        per = p.get("periodicity", 5)
+        if not isinstance(per, (int, float)) or per <= 0:
+            errors.append(f"phase #{i}: 'periodicity' must be a positive number")
+        fo = p.get("field_overrides", {})
+        if fo is not None and not isinstance(fo, dict):
+            errors.append(f"phase #{i}: 'field_overrides' must be an object")
+    return errors
+
+
+def export_scenario(scenario_id: str) -> dict[str, Any] | None:
+    """Return a portable JSON-serialisable copy of the scenario, stripped
+    of runtime / instance-specific fields. ``None`` if no such scenario.
+
+    The export format is intentionally a strict subset of what
+    ``create_scenario`` accepts, so a round-trip is lossless for the
+    fields a user can edit in the builder UI.
+    """
+    s = get_scenario(scenario_id)
+    if not s:
+        return None
+    out: dict[str, Any] = {
+        "name": s.get("name", ""),
+        "description": s.get("description", ""),
+        "duration": s.get("duration", {"value": 4, "unit": "hours"}),
+        "profile_id": s.get("profile_id"),
+        "phases": [],
+        "_apigenie_schema": "attack_scenario/v1",
+    }
+    for p in s.get("phases", []):
+        out["phases"].append({k: p[k] for k in _EXPORT_PHASE_KEYS if k in p})
+    return out
+
+
+def import_scenario(data: Any) -> dict[str, Any]:
+    """Validate ``data`` (as returned by ``export_scenario`` or hand-written)
+    and persist it as a new scenario. Raises ``ValueError`` on failure with
+    a multi-line message so the REST handler can return a 400 carrying the
+    full list of problems."""
+    errors = validate_scenario_payload(data)
+    if errors:
+        raise ValueError("\n".join(errors))
+    # Strip the schema marker if present — it's metadata, not a scenario field.
+    payload = {k: v for k, v in data.items() if k != "_apigenie_schema"}
+    return create_scenario(payload)
+
+
 # ── Phase timing ─────────────────────────────────────────────────────────────
 
 def _duration_to_seconds(duration: dict) -> int:

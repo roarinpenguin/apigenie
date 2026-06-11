@@ -36,6 +36,10 @@ docker cp accounts.py                              "$C":/app/accounts.py
 docker cp webhooks.py                              "$C":/app/webhooks.py
 docker cp tests/conftest.py                        "$C":/app/tests/conftest.py
 docker cp tests/test_webhooks.py                   "$C":/app/tests/test_webhooks.py
+# Attack Scenarios Phase 2 — custom builder + import/export (v5.0)
+docker cp attack_scenarios.py                      "$C":/app/attack_scenarios.py
+docker cp attack_scenarios_library.py              "$C":/app/attack_scenarios_library.py
+docker cp tests/test_attack_scenarios.py           "$C":/app/tests/test_attack_scenarios.py
 
 echo "[2/3] restarting container..."
 docker restart "$C" > /dev/null

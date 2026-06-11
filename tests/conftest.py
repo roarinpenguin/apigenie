@@ -109,6 +109,15 @@ def _isolated_state(tmp_path, monkeypatch):
         # webhooks lands in v5.0; older test suites can skip the isolation.
         pass
 
+    # --- attack scenarios: per-test JSON file (v5.0 Phase 2) ---
+    try:
+        import attack_scenarios
+        monkeypatch.setattr(attack_scenarios, "_DATA_ROOT", tmp_path)
+        monkeypatch.setattr(attack_scenarios, "_SCENARIOS_FILE",
+                            tmp_path / "attack_scenarios.json")
+    except ImportError:
+        pass
+
     yield
 
     if accounts._conn is not None:

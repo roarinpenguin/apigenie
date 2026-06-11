@@ -390,6 +390,103 @@ For a 4-hour BEC scenario:
 | POST | `/admin/api/scenarios/{id}/pause` | Pause (freeze scheduler, disable rules) |
 | POST | `/admin/api/scenarios/{id}/resume` | Resume from where it paused |
 
+## API Endpoints (Phase 2 — custom builder, shipped in v5.0)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| PUT | `/admin/api/scenarios/{id}` | Update a scenario (name, duration, phases). Refused with 409 while running/paused. |
+| GET | `/admin/api/scenarios/{id}/export` | Download the scenario as portable JSON (runtime fields stripped). |
+| POST | `/admin/api/scenarios/import` | Validate + create a new scenario from JSON (round-trip with `/export`). |
+
+All three reuse `attack_scenarios.validate_scenario_payload()`, which returns a list of human-readable errors. The REST layer surfaces them as `{"error": "validation failed", "errors": [...]}` with HTTP 400 so the UI can list every problem at once instead of forcing a fix-and-retry loop.
+
+---
+
+## Phase 2 — Custom scenario builder (shipped)
+
+Phase 2 makes scenarios fully user-authorable. The 5 built-in templates from Phase 1 stay, but now they're seeds for editing rather than fixed campaigns.
+
+### What the UI does
+
+The **Attack Scenarios** tab gained two new controls:
+
+| Control | Behaviour |
+|---------|-----------|
+| `↑ Import` (top-right) | Opens a file picker for a `*.scenario.json` file, validates it via `POST /admin/api/scenarios/import`, and adds it to the list. |
+| `+ New Scenario` (top-right) | Opens the builder modal in **create mode**. Template dropdown now has an "Empty (build from scratch)" option above the 5 built-ins. |
+| `Edit` (per-card, when stopped/completed) | Opens the same modal in **edit mode**: template selector hidden, Save button visible instead of Create & Start. PUTs the scenario on save. |
+| `↓ Export` (per-card, always) | Downloads the current scenario as JSON via the browser. Safe to call mid-run — the export endpoint strips runtime fields. |
+
+### The phase editor
+
+Inside the modal, the read-only phase preview from v1 is replaced with an editable list. Each phase row exposes:
+
+- **Phase name** and **Source** — free-text, both required.
+- **MITRE tactic** — dropdown over the 13 enterprise tactics (`Reconnaissance` through `Impact`).
+- **MITRE technique** — free-text (`T1566.001`, `T1078`, …).
+- **Phase ID slug** — optional; the server assigns `phase-<index>` when blank.
+- **`time_offset_pct`** + **`duration_pct`** — when the phase starts and how long it runs, as percentages of the scenario duration. Their sum must be ≤ 100; the validator rejects anything that would end after the scenario does.
+- **`periodicity`** — how often the temporary detection rule fires, in seconds.
+- **`field_overrides`** — a JSON object pasted inline (e.g. `{"severity": "Critical"}`). The UI parses it on save and surfaces JSON errors per phase.
+
+Phases can be added (`+ Add Phase`), removed (`×`), or reordered (`↑` / `↓`). The in-flight DOM state is synced back into the JS phase array before every re-render, so reordering doesn't drop unsaved edits.
+
+### Validation
+
+`attack_scenarios.validate_scenario_payload()` checks:
+
+1. `name` is a non-empty string.
+2. `duration.value > 0`, `duration.unit ∈ {seconds, minutes, hours, days, weeks}`.
+3. `phases` is a non-empty array.
+4. For each phase: `name`, `source`, `mitre_tactic`, `mitre_technique` are non-empty strings.
+5. `time_offset_pct` and `duration_pct` are numbers in `[0, 100]` and their sum is `≤ 100`.
+6. `periodicity > 0`.
+7. `field_overrides` is an object (or missing).
+
+It collects **every** problem before returning — the UI lists them all so users fix the scenario in one pass.
+
+### Export / import JSON format
+
+`GET /admin/api/scenarios/{id}/export` returns:
+
+```json
+{
+  "_apigenie_schema": "attack_scenario/v1",
+  "name": "Business Email Compromise (BEC)",
+  "description": "",
+  "duration": {"value": 4, "unit": "hours"},
+  "profile_id": null,
+  "phases": [
+    {
+      "phase_id": "initial-access",
+      "name": "Phishing email delivered",
+      "source": "proofpoint",
+      "mitre_tactic": "Initial Access",
+      "mitre_technique": "T1566.001",
+      "time_offset_pct": 0,
+      "duration_pct": 10,
+      "periodicity": 3,
+      "field_overrides": {
+        "subject": "Urgent: Review Shared Document",
+        "phishScore": 95
+      }
+    }
+  ]
+}
+```
+
+**Stripped on export** (regenerated at scenario create / start): `id`, `attack_id`, `status`, `events_injected`, `started_at`, `paused_at`, `elapsed_seconds`, `error`, `created`, `template`, plus per-phase `status` and `events_count`.
+
+**Import** (`POST /admin/api/scenarios/import`) accepts the same shape, drops the `_apigenie_schema` marker, runs the validator, and persists it as a brand-new scenario with a fresh `id` + `attack_id`. Round-trip is lossless for everything the builder can edit.
+
+### Why "stopped only" for PUT
+
+The scheduler holds a `_calculate_phase_windows()` snapshot when it starts. Mutating phases mid-run would either be ignored (silently wrong) or require tearing down + recreating detection rules with the new windows (complex, racy). Phase 2 takes the simpler stance: editing a running scenario returns HTTP 409 with `{"error": "cannot edit a running or paused scenario — stop it first"}`. Stop → Edit → Start is two extra clicks but never produces a half-mutated run.
+
+### What's still in Phase 3
+
+The original plan (line 369 above) holds: per-scenario event log, `attack.id` search in the Request Inspector, and exportable attack timelines remain for Phase 3.
+
 ## Storage
 
 | Item | Path |
