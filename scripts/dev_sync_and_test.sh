@@ -48,6 +48,10 @@ docker cp tests/test_phase33_timeline.py           "$C":/app/tests/test_phase33_
 docker cp event_mix.py                             "$C":/app/event_mix.py
 docker cp sources/__init__.py                      "$C":/app/sources/__init__.py
 docker cp tests/test_event_mix_admin.py            "$C":/app/tests/test_event_mix_admin.py
+# Event Mix per-source rollout (v5.0)
+docker cp sources/okta.py                          "$C":/app/sources/okta.py
+docker cp sources/proofpoint.py                    "$C":/app/sources/proofpoint.py
+docker cp tests/test_event_mix_sources.py          "$C":/app/tests/test_event_mix_sources.py
 
 echo "[2/3] restarting container..."
 docker restart "$C" > /dev/null

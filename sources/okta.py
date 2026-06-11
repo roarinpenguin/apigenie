@@ -1,9 +1,17 @@
-"""Okta System Log mock data generator."""
+"""Okta System Log mock data generator.
+
+Event catalog grounded in the Okta System Log API event-type taxonomy
+(``developer.okta.com/docs/reference/api/event-types``). The ids in
+``EVENT_CATALOG`` and ``_LOG_TEMPLATES`` match exactly so an admin's
+event-mix override binds 1:1 — changing one side without the other will
+fail the catalog-coverage test in ``tests/test_event_mix_sources.py``.
+"""
 
 import random
 from typing import Any
 
 import detection_rules
+import event_mix
 import profiles
 from generators import (
     generate_country_code,
@@ -25,6 +33,28 @@ _ACTORS = [
 ]
 
 _APPS = ["Salesforce", "Slack", "GitHub", "AWS Console", "Okta Dashboard", "Zoom", "Jira"]
+
+# ── Event catalog ──────────────────────────────────────────────────────
+# Sourced from the Okta System Log event-type catalog. Default weights mirror
+# the historical ones so existing callers see no behaviour change until an
+# admin opts in to a custom mix.
+EVENT_CATALOG: list[dict[str, Any]] = [
+    {"id": "raw_log", "label": "User session start (login)",
+     "default_weight": 0.70,
+     "docs_anchor": "developer.okta.com/docs/reference/api/event-types/#user-session-start"},
+    {"id": "mfa_failure", "label": "MFA factor activation failure",
+     "default_weight": 0.10,
+     "docs_anchor": "developer.okta.com/docs/reference/api/event-types/#user-mfa-factor-activate"},
+    {"id": "rate_limited", "label": "API token rate-limit hit",
+     "default_weight": 0.10,
+     "docs_anchor": "developer.okta.com/docs/reference/api/event-types/#system-api-token-create"},
+    {"id": "suspicious_activity", "label": "Suspicious password change",
+     "default_weight": 0.05,
+     "docs_anchor": "developer.okta.com/docs/reference/api/event-types/#user-account-update-password"},
+    {"id": "account_lockout", "label": "Account locked (repeated failed logins)",
+     "default_weight": 0.05,
+     "docs_anchor": "developer.okta.com/docs/reference/api/event-types/#user-account-lock"},
+]
 
 _LOG_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
     "raw_log": (
@@ -76,7 +106,7 @@ _LOG_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
 
 
 def _generate_log(ctx: profiles.ProfileContext | None = None) -> dict[str, Any]:
-    template = weighted_choice(_LOG_TEMPLATES)
+    template = weighted_choice(event_mix.apply(_LOG_TEMPLATES, "okta"))
     pu = ctx.pick_user() if ctx else None
     if pu:
         actor_login = pu.get("email") or f"{pu.get('username', 'user')}@{pu.get('domain', 'example.com').lower()}.com"

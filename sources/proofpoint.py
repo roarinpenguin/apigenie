@@ -1,9 +1,17 @@
-"""Proofpoint TAP (Targeted Attack Protection) mock data generator."""
+"""Proofpoint TAP (Targeted Attack Protection) mock data generator.
+
+Event catalog grounded in the Proofpoint TAP SIEM API
+(``help.proofpoint.com/Threat_Insight_Dashboard/API_Documentation/SIEM_API``).
+``EVENT_CATALOG`` ids match ``_LOG_TEMPLATES`` keys exactly so an admin's
+event-mix override binds 1:1 — the catalog-coverage test will fail on any
+drift.
+"""
 
 import random
 from typing import Any
 
 import detection_rules
+import event_mix
 import profiles
 from generators import (
     generate_email,
@@ -32,6 +40,31 @@ _THREATS = [
     ("Credential Harvester", "url"),
 ]
 _MALWARE_FAMILIES = ["Emotet", "TrickBot", "QakBot", "Dridex", "AgentTesla", "FormBook"]
+
+# ── Event catalog ──────────────────────────────────────────────────────
+# Six message-disposition templates exposed by the TAP SIEM API. Defaults
+# mirror the historical weights so existing callers see no behaviour change
+# until an admin opts in.
+EVENT_CATALOG: list[dict[str, Any]] = [
+    {"id": "raw_log", "label": "Message delivered (clean)",
+     "default_weight": 0.60,
+     "docs_anchor": "help.proofpoint.com/Threat_Insight_Dashboard/API_Documentation/SIEM_API#messages-delivered"},
+    {"id": "ransomware_retro", "label": "Ransomware retro-quarantine",
+     "default_weight": 0.15,
+     "docs_anchor": "help.proofpoint.com/Threat_Insight_Dashboard/API_Documentation/SIEM_API#messages-blocked"},
+    {"id": "double_wrapped_url", "label": "Double-wrapped URL (blocked)",
+     "default_weight": 0.10,
+     "docs_anchor": "help.proofpoint.com/Threat_Insight_Dashboard/API_Documentation/SIEM_API#clicks-blocked"},
+    {"id": "blocked_but_clicked", "label": "Blocked URL that user still clicked",
+     "default_weight": 0.08,
+     "docs_anchor": "help.proofpoint.com/Threat_Insight_Dashboard/API_Documentation/SIEM_API#clicks-permitted"},
+    {"id": "false_positive", "label": "False-positive delivery",
+     "default_weight": 0.05,
+     "docs_anchor": "help.proofpoint.com/Threat_Insight_Dashboard/API_Documentation/SIEM_API#messages-delivered"},
+    {"id": "polymorphic", "label": "Polymorphic malware (high-score quarantine)",
+     "default_weight": 0.02,
+     "docs_anchor": "help.proofpoint.com/Threat_Insight_Dashboard/API_Documentation/SIEM_API#messages-blocked"},
+]
 
 _LOG_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
     "raw_log": (
@@ -62,7 +95,7 @@ _LOG_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
 
 
 def _generate_message(since_seconds: int = 3600, ctx: profiles.ProfileContext | None = None) -> dict[str, Any]:
-    template = weighted_choice(_LOG_TEMPLATES)
+    template = weighted_choice(event_mix.apply(_LOG_TEMPLATES, "proofpoint"))
     threat_name, threat_type = random.choice(_THREATS)
     pms = ctx.pick_mail_sender() if ctx else None
     pmal = ctx.pick_malware() if ctx else None

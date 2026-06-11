@@ -167,12 +167,18 @@ def _make_auth_log(...):
 `apply()` returns the input dict unchanged when no override is configured,
 so wiring a source up is **zero-cost** when no admin has touched it.
 
-### Pilot sources
+### Wired sources
 
 | Source | Status | Notes |
 |--------|--------|-------|
 | `cisco_duo` | **wired** | 9 event types across `/admin/v1/logs/authentication` and `/admin/v1/logs/administrator`. |
-| Everyone else | pending | 13 other sources still hard-code their weights; subsequent commits will add `EVENT_CATALOG` per vendor (`okta`, `proofpoint`, `aws_*`, `azure_ad`, `microsoft_defender`, …). |
+| `okta` | **wired** | 5 event types from the System Log API (`user.session.start`, `user.mfa.factor.activate`, `system.api_token.create`, `user.account.update_password`, `user.account.lock`). |
+| `proofpoint` | **wired** | 6 message dispositions from the TAP SIEM API (delivered, ransomware retro, double-wrapped URL, blocked-but-clicked, false positive, polymorphic). |
+| Everyone else | pending | 11 sources still hard-code their weights (`aws_*`, `azure_ad`, `microsoft_defender`, `m365`, `mimecast`, `cloudflare`, `netskope`, `snyk`, `tenable`, `wiz`, `darktrace`, …). |
+
+When adding a new source, the catalog-coverage test
+(`tests/test_event_mix_sources.py`) parametrises over a `_WIRED_SOURCES`
+tuple — add the new id there to keep the safety net exhaustive.
 
 ---
 
@@ -237,3 +243,4 @@ per-user overrides. The resolver picks the right one at request time via
 |-------|------|----------------|
 | Core resolver | `tests/test_event_mix.py` | Storage CRUD, per-user override shadowing, `apply()` math, empirical distribution at 2000 samples, `merge_catalog_with_mix`. |
 | Admin REST | `tests/test_event_mix_admin.py` | Source registry, all five endpoints, 401/404/400 paths, persistence round-trip. |
+| Per-source wiring | `tests/test_event_mix_sources.py` | For every wired source: catalog id ↔ template key alignment, default weights sum ≈ 1.0 per endpoint family, empirical disable at 200 samples (proves `apply()` is actually threaded through the source's call site). |
