@@ -734,6 +734,65 @@ With periodicity 5 and a batch of 50 Okta logs, this injects ~10 failed-login ev
 
 ---
 
+## Event Mix
+
+**New in v5.0.** Every simulated source publishes an **event catalog** — the set of event types it can emit (an authentication success, a failure, a fraud-marked attempt, a policy update, an Entra ID risky sign-in, …) along with a **default weight** per type. The **Event Mix** admin surface lets an operator re-weight those choices — or disable specific event types entirely — without editing source code.
+
+Think of it as a third reshape layer that sits *between* the binding (which pool of entities the source draws from) and Detection Rules (which fields a specific rule overrides):
+
+```
+Profile binding ──→ which entities exist          (users, hosts, IPs, …)
+Event Mix      ──→ which event_ids are picked     (and at what proportion)
+Detection Rules ──→ which fields are overridden    (when a rule periodically fires)
+```
+
+### Where to use it
+
+- **Bindings page** (`/admin/source-bindings`): every mix-aware source card exposes an **Event mix (N types)** disclosure. Open it, drag the sliders, toggle types on/off, **Save** persists. **Reset** drops your override back to the source's hard-coded defaults.
+- **Acting-as**: an admin acting as a real user writes a private override that only shadows that user's mix. The built-in admin (no acting-as) writes the global mix.
+
+### Rollout
+
+**21 / 21** mix-aware sources in v5.0:
+
+`cisco_duo` · `okta` · `proofpoint` · `aws_cloudtrail` · `aws_guardduty` · `aws_waf` · `azure_ad` (alias `entra_id`) · `microsoft_defender` (alias `defender`) · `m365` · `mimecast` · `cato` · `darktrace` · `gcp_audit` · `netskope` · `sentinelone` · `cloudflare` · `snyk` · `tenable` · `wiz` · `zscaler_zpa` · `azure_platform` (Event Hubs / Kafka).
+
+Two bindings UI ids are aliases for the Python module filenames (`entra_id → azure_ad`, `defender → microsoft_defender`). The alias system canonicalises ids at every storage boundary so a save against the Entra ID card persists under `azure_ad` and the source-side resolver sees it.
+
+### RBAC
+
+Event Mix reuses the **`source_bindings`** entitlement category — anyone with `source_bindings:modify` automatically gets event-mix management ("I can shape what this source sends to my collector"). No new entitlement to wire.
+
+### Full guide
+
+The mental model, the REST surface (`/admin/api/event-mix/sources`, `/admin/api/sources/{src}/event-catalog`, `/admin/api/source-event-mix/{src}` PUT/DELETE), and the `EVENT_CATALOG` contract for adding a new mix-aware source all live in [`docs/EVENT_MIX.md`](docs/EVENT_MIX.md).
+
+---
+
+## Webhooks
+
+**New in v5.0.** Webhooks let any signed-in user (with the `Webhooks` RBAC capability) compose, save, and fire **templated outbound HTTP requests** directly from ApiGenie — purpose-built for two recurring SecOps demos:
+
+1. **Light up a third-party SIEM/SOAR with a synthetic alert** — build a JSON body that references a log profile, click *Send*, and the bound profile's users / machines / C2 servers / malware / mail-senders are substituted at send-time.
+2. **Drive an arbitrary HTTPS endpoint with shaped events** — write a `{{custom.<key>}}`-driven body, paste send-time variables in the bottom pane, and trigger from the admin panel or via REST.
+
+Full reference: [`docs/WEBHOOKS.md`](docs/WEBHOOKS.md).
+
+---
+
+## Attack Scenarios
+
+**Phase 2 + 3 land in v5.0.** The Attack Scenario Builder simulates **multi-source, multi-phase attack campaigns** mapped to the MITRE ATT&CK kill chain. Each scenario is a sequence of phases that generate specific log events across different sources, timed to create a realistic attack progression.
+
+- **Phase 2 — Custom scenario builder + import/export.** Operators can compose new scenarios in the admin UI (add phases, pick sources, set fan-out and timing) and export / re-import them as JSON. The shipped scenario library doubles as starter templates.
+- **Phase 3.1 — Per-scenario event log.** Every event the scenario emitted (with its `attack.id` + `phase.id`) shows up in a dedicated event log panel scoped to that scenario run.
+- **Phase 3.2 — Cross-source `attack.id` search + reveal nav.** Search by an `attack.id` anywhere and the UI jumps to the originating scenario / phase, with deep-links into the source's hit pane.
+- **Phase 3.3 — Exportable attack timeline.** A chronological timeline export (JSON) that joins every emitted event with its phase metadata, ready to drop into a post-mortem deck or a SIEM hunt.
+
+Full guide: [`docs/ATTACK_SCENARIOS.md`](docs/ATTACK_SCENARIOS.md).
+
+---
+
 ## Log Push
 
 Log Push actively **sends** generated logs from ApiGenie to external destinations — the reverse of the pull model used by the HTTP sources. This is how real firewalls, EDRs, and email gateways deliver telemetry.

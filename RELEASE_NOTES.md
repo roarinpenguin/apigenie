@@ -2,6 +2,123 @@
 
 ---
 
+## v5.0 — *Reshape every source, fire from any pane*
+
+> *Released June 2026.* Four bodies of work land in one release, all under a consistent theme: **giving operators control over what the platform emits and where it lands**, without editing source code.
+>
+> 1. **Webhooks** — a templated outbound HTTP request composer that lets any signed-in user fire shaped JSON payloads at third-party SIEM / SOAR / arbitrary HTTPS endpoints, with profile-aware substitution (users / machines / C2 / malware / mail senders) and `{{custom.<key>}}` send-time variables.
+> 2. **Attack Scenarios — Phase 2 + 3.** Multi-source MITRE-mapped campaigns gain a custom builder + import/export, a per-scenario event log, a cross-source `attack.id` search with reveal nav, and an exportable timeline.
+> 3. **Event Mix** — a new admin surface (REST + UI disclosure on every bindings card) that re-weights or disables individual event types per source, with per-user override scoping and a `source_bindings`-piggybacked RBAC model.
+> 4. **Event Mix per-source rollout — 21 / 21 sources.** Every catalog-aware source ships with an `EVENT_CATALOG` and threads `event_mix.apply()` through its generator. Includes a source-id alias layer (`entra_id → azure_ad`, `defender → microsoft_defender`) and the relocation of `azure_platform` (Event Hubs / Kafka) from `publishers/kafka_publisher.py` into a proper `sources/azure_platform.py` module so the Kafka producer participates in the mix surface too.
+
+### At a glance
+
+- **Webhooks composer.** New `Webhooks` RBAC category × 5 permissions. Templated body editor with profile substitution (`{{profile.user.username}}`, `{{profile.machine.hostname}}`, `{{profile.c2.fqdn}}`, …) and free-form `{{custom.<key>}}` variables resolved at send-time. Saved profiles, send history, retry, and a "Send & inspect" debug mode with full request + response capture. Full reference: [`docs/WEBHOOKS.md`](docs/WEBHOOKS.md).
+- **Custom Attack Scenarios.** Build scenarios in the admin UI (add phases, pick sources, set fan-out and timing), export them as JSON, re-import them on another instance. The shipped library doubles as starter templates.
+- **Per-scenario event log + cross-source search + timeline export.** A dedicated event-log panel scoped to each scenario run; an `attack.id` search anywhere in the admin / portal that jumps to the originating scenario / phase with deep-links into the source's hit pane; a chronological timeline export (JSON) that joins every emitted event with its phase metadata for post-mortem decks or SIEM hunts.
+- **Event Mix admin surface.** New REST endpoints (`/admin/api/event-mix/sources`, `/admin/api/sources/{src}/event-catalog`, `/admin/api/source-event-mix/{src}` PUT/DELETE) plus an inline disclosure card on every mix-aware source on the bindings page. Sliders + per-id toggles + Save / Reset. RBAC piggy-backs `source_bindings:modify` so users who can shape what a source emits also get the mix.
+- **Per-user override scoping.** Admin without acting-as → writes the global mix. Real user (or admin acting-as) → writes a private override that only shadows the mix for that user. The same pattern already used by source profiles, identifiers, and bindings.
+- **21 / 21 sources wired.** Every source listed in the v4.1 Phase 5 catalog ships with an `EVENT_CATALOG` and threads through `event_mix.apply()`. Last batch: `cloudflare`, `snyk`, `tenable`, `wiz`, `zscaler_zpa`, plus the relocation of `azure_platform`.
+- **Source-id alias layer.** The bindings UI uses Microsoft's marketing names for two sources (`entra_id`, `defender`) but the Python modules live under `azure_ad` and `microsoft_defender`. `sources/__init__.py` exposes `SOURCE_ID_ALIASES` + `canonical_source_id()`; every event-mix endpoint canonicalises before touching storage so a save against the Entra ID card persists under the canonical key. The catalog endpoint dual-emits each aliased catalog so the UI lookup hits either way.
+- **`azure_platform` relocated.** The Kafka producer for Event Hubs previously inlined its templates + generator in `publishers/kafka_publisher.py`. Moving it into `sources/azure_platform.py` (with a 14-entry `EVENT_CATALOG` spanning Azure Monitor diagnostic settings + Entra ID activity logs) lets it participate in the mix surface without touching the Kafka batch loop.
+- **~30 new regression tests across the four bodies of work.** Webhooks endpoints + substitution + RBAC; scenario builder validation + import/export round-trip; per-scenario event log + timeline export shape; the full Event Mix story (catalog presence + default-weight sums for all 21 sources, alias resolution, alignment between `EVENT_CATALOG` and internal templates, empirical disable proofs that actually generate events and assert the disabled markers are gone). Total regression: **595 passing.**
+
+### What's new in detail
+
+#### Webhooks
+
+A new top-level admin feature with its own RBAC category (`Webhooks` × `view`, `create`, `modify`, `delete`, `send`). The composer renders a profile-aware editor: the bound log profile's entities (`users`, `machines`, `c2_servers`, `malware_samples`, `mail_senders`) are exposed as template variables and substituted into the request URL, headers, and body at send-time. A `{{custom.<key>}}` namespace lets the operator stash one-off values (a JIRA ticket id, a Slack channel name, a specific IP) in a bottom pane and reference them from the same template.
+
+Saved webhook profiles are scoped by `owner_id` + visibility (`private` / `public`) using the same model as Log Push profiles. Send history and request-response inspection ride on the existing `REQUEST_TRACE` plumbing. See [`docs/WEBHOOKS.md`](docs/WEBHOOKS.md) for the template language, the substitution rules, and the REST surface.
+
+#### Attack Scenarios — Phase 2 (custom builder + import/export)
+
+Operators can compose new scenarios end-to-end in the admin UI: add phases, pick which sources each phase emits to, set fan-out (events per source per phase), set inter-phase timing (immediate / fixed delay / jittered range), and preview the resulting `attack.id` / `phase.id` stamping before running. The result is a JSON document with the same schema as the shipped library scenarios, so import is a drag-and-drop of an exported file. A round-trip test ensures the export → import path preserves every field.
+
+#### Attack Scenarios — Phase 3 (event log + cross-source search + timeline)
+
+| Phase | What it does | Where it lives |
+|-------|--------------|----------------|
+| **3.1 — Per-scenario event log** | A new panel on each scenario detail page that shows every emitted event (with `attack.id`, `phase.id`, source, timestamp). Same renderer as the source hit panes, scoped to the scenario run. | `attack_scenarios.py`, admin UI tab |
+| **3.2 — Cross-source `attack.id` search** | A search box anywhere in the admin / portal that takes an `attack.id` and jumps directly to the originating scenario, with deep-links into every source's hit pane filtered to that id. | `attack_scenarios.py` resolver + admin UI reveal nav |
+| **3.3 — Exportable attack timeline** | A chronological JSON timeline that joins every emitted event with its phase metadata, ready to drop into a post-mortem deck or a SIEM hunt. | `attack_scenarios.py` exporter |
+
+Design doc: [`docs/ATTACK_SCENARIOS.md`](docs/ATTACK_SCENARIOS.md).
+
+#### Event Mix — admin surface
+
+The full design lives in [`docs/EVENT_MIX.md`](docs/EVENT_MIX.md). The storage layer (`event_mix.py`) writes overrides under the same per-user JSON pattern as `source_profiles.py`. The source registry (`sources/__init__.py`) discovers every module that declares an `EVENT_CATALOG` at module scope and exposes them through three lookup helpers used by both the admin API and the test suite.
+
+| Component | Where it lives | What it does |
+|-----------|----------------|--------------|
+| **Storage** | `event_mix.py` (`set_mix`, `get_mix`, `reset_mix`, `list_mixes`, `list_mixes_for_user`, `merge_catalog_with_mix`, `apply`) | Per-user JSON overrides; default-weight resolution; "all disabled → fall back to defaults" guard so an overzealous disable never produces an empty response. |
+| **Source registry** | `sources/__init__.py` (`iter_source_modules`, `get_event_catalog`, `get_event_catalogs`, `SOURCE_ID_ALIASES`, `canonical_source_id`) | Lazy module iteration, alias layer for bindings-UI ids that differ from Python module filenames, dual-emit so the bindings UI lookup always hits. |
+| **Admin REST** | `admin.py` (`/admin/api/event-mix/sources`, `/admin/api/sources/{src}/event-catalog`, `/admin/api/source-event-mix` × `GET/PUT/DELETE`) | Canonicalises every path-param `source` before touching storage, returns enriched catalog (default + effective weight + `enabled`), surfaces `own` flag so UI knows which overrides are editable. |
+| **Admin UI** | `admin.py` bindings page | Inline disclosure on every mix-aware source card; slider + toggle per id; Save / Reset; shows "(global, read-only)" tag when the effective mix is inherited from the admin global. |
+
+#### Event Mix — per-source rollout
+
+| Source | Mix-axis | Entries |
+|--------|----------|---------|
+| `cisco_duo` | Authentication outcome × reason | 5 |
+| `okta` | User event type | 7 |
+| `proofpoint` | Mail event type | 4 |
+| `aws_cloudtrail` | Action category | 6 |
+| `aws_guardduty` | Finding category | 7 |
+| `aws_waf` | Action × terminating rule | 7 |
+| `azure_ad` (UI: `entra_id`) | Two endpoint families — `directoryAudits` (6) + `signIns` (5) | 11 |
+| `microsoft_defender` (UI: `defender`) | MITRE-anchored alert | 5 |
+| `m365` | Top-level event category | 14 |
+| `mimecast` | SIEM API log type | 8 |
+| `cato` | GraphQL eventsFeed + auditFeed category | 4 |
+| `darktrace` | Two endpoint families — `/modelbreaches` (6) + `/aianalyst/incidentevents` (4) | 10 |
+| `gcp_audit` | Cloud Audit Logs category | 4 |
+| `netskope` | v2 alerts API alert_type | 11 |
+| `sentinelone` | Threat classification | 9 |
+| `cloudflare` | Logpush dataset family | 8 |
+| `snyk` | Issue severity × type | 4 |
+| `tenable` | Vuln plugin | 4 |
+| `wiz` | Issue type | 7 |
+| `zscaler_zpa` | ZPA log stream | 5 |
+| `azure_platform` | Event Hubs category × operation | 14 |
+
+**Total: 21 / 21 sources, 150 event types under operator control.**
+
+#### Source-id alias layer
+
+The bindings UI uses Microsoft's marketing names for two sources but the Python modules kept their original filenames:
+
+| UI binding id | Canonical module | Reason |
+|---|---|---|
+| `entra_id` | `sources/azure_ad.py` | Microsoft renamed Azure AD to Entra ID (2023). |
+| `defender` | `sources/microsoft_defender.py` | Defender XDR (Endpoint + Identity + Cloud Apps). |
+
+Without an alias layer the bindings page's `_mixAwareSources[src]` lookup would never hit for these two cards. `sources/__init__.py` exposes `SOURCE_ID_ALIASES` and `canonical_source_id()`; every event-mix endpoint canonicalises before touching storage so the override key matches the source-side resolver. The catalog endpoint dual-emits each aliased catalog under both ids so the UI lookup succeeds with either label.
+
+#### `azure_platform` relocation
+
+The Kafka producer for Event Hubs lived in `publishers/kafka_publisher.py` with an inline 15-template list and an inline `_generate_azure_event` function. v5.0 relocates the templates + generator into `sources/azure_platform.py` (with a 14-entry `EVENT_CATALOG`, a `_AZURE_TEMPLATES` dict keyed by catalog id, and the same `event_mix.apply()` → `weighted_choice` pipeline used by every other catalog-aware source). The publisher imports `generate_azure_event` from there; the batch loop and the Kafka topic creation are untouched.
+
+### RBAC
+
+| Category | New in v5.0 | Permissions used |
+|---|---|---|
+| **Webhooks** | ✅ | `view`, `create`, `modify`, `delete`, `send` |
+| **Source Bindings** | ↺ extended | `source_bindings:modify` now also gates Event Mix overrides — "I can shape what this source sends to my collector". |
+| **Attack Scenarios** | ↺ extended | Phase 2 custom builder + phase 3 timeline export use the existing `attack_scenarios:create` / `:modify` / `:view` permissions; no new entitlement keys. |
+
+### Migration
+
+- **Existing v4.1 deployments**: zero data migration. Event Mix storage is opt-in per user; the first save creates the file. The alias layer is read-only and applied at runtime.
+- **`azure_platform` consumers**: the Kafka topic, the published JSON shape, and the legacy uniform distribution are byte-identical to v4.1. The relocation is internal.
+- **Custom sources**: if you maintain a fork with a private source, declare `EVENT_CATALOG` at module scope to opt into the mix surface. No registration call needed — `sources/__init__.py` discovers it via `pkgutil.iter_modules`. See [`docs/EVENT_MIX.md`](docs/EVENT_MIX.md) §"Adding a mix-aware source".
+
+### Acknowledgements
+
+Track B (per-source rollout) batches landed in 6 increments — every commit is a green-CI snapshot of the rollout state. The empirical disable tests in `tests/test_event_mix_sources.py` pick a unique marker per source (`event_type == 'health'` for ZPA, `category == 'RiskyUsers'` for Azure Platform, `outcome.result == 'FAILURE'` for Okta brute-force markers, …) and assert that disabling the catalog id actually drops every event carrying that marker — the resolver is wired end-to-end, not just at the storage layer.
+
+---
+
 ## v4.1 — *OpenTelemetry, both directions*
 
 > *Released June 2026.* Symmetric OpenTelemetry support lands in apigenie: a new **OTLP push-sink listener** that accepts exports *into* apigenie over OTLP/HTTP (port 443) and OTLP/gRPC (port 4317), and an **OTLP push-egress transport** in the Log Push framework that streams synthetic topics or uploaded replay files *out* to any OTLP collector. Together they let apigenie sit anywhere in a telemetry pipeline — as a collector, as a producer, or both at once (a single instance can even round-trip its own exports for smoke / demos).

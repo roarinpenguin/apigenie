@@ -1,7 +1,7 @@
 [project]
 name = "apigenie"
-version = "4.1.0"
-description = "Multi-user, self-contained mock server for 19 security platform APIs + Azure Event Hubs (Kafka) + GCP Cloud Logging (Pub/Sub)"
+version = "5.0.0"
+description = "Multi-user, self-contained mock server for 19 security platform APIs + Azure Event Hubs (Kafka) + GCP Cloud Logging (Pub/Sub). Operators reshape what every source emits (Event Mix), fire shaped HTTPS payloads at any endpoint (Webhooks), and run multi-source MITRE-mapped attack campaigns (Attack Scenarios)."
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115.0",
