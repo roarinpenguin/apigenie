@@ -487,6 +487,63 @@ The scheduler holds a `_calculate_phase_windows()` snapshot when it starts. Muta
 
 The original plan (line 369 above) holds: per-scenario event log, `attack.id` search in the Request Inspector, and exportable attack timelines remain for Phase 3.
 
+---
+
+## Phase 3.1 — Per-scenario event log (shipped)
+
+The first slice of Phase 3 lights up the "what just happened?" view. Every time the scenario engine's temporary detection rule fires an event into a source, the engine captures a slim record of it into a per-scenario ring buffer.
+
+### REST endpoint
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/admin/api/scenarios/{id}/events` | Return the per-scenario event log. Query params: `limit` (1-1000, default 200), `phase_id`, `source`. Empty buffer is HTTP 200 with `count=0`; unknown scenario id is 404. |
+
+### How it captures
+
+`detection_rules.inject_detection_events()` is the single chokepoint where every detection rule fires. It now checks each rule for a `_scenario_id` (set by the scenario scheduler) and, if present, calls `attack_scenarios._record_event_safe(...)` for each injected event. Plain user-defined rules carry no `_scenario_id` and skip the hook entirely — the per-scenario log only ever sees scenario-driven events.
+
+The recorder swallows every exception so a logging-side bug can never break event injection. `_record_event_safe` wraps `record_event()` and downgrades errors to `log.warning`.
+
+### What's stored
+
+Each entry is intentionally slim:
+
+```json
+{
+  "ts": "2026-05-26T14:32:01+00:00",
+  "scenario_id": "scn-...",
+  "phase_id": "initial-access",
+  "attack_id": "att-20260526-0001",
+  "source": "proofpoint",
+  "preview": {
+    "type": "phish",
+    "subject": "Urgent: Review Shared Document",
+    "_detection_rule": "[SCENARIO] Phishing email delivered"
+  }
+}
+```
+
+The full event still flows to the configured sinks via the normal HTTP / push pipelines. The buffer only keeps a small preview (whitelisted keys in `attack_scenarios._EVENT_PREVIEW_KEYS`) so it's cheap enough to keep 500 entries per scenario in memory without bloat.
+
+### Retention
+
+- **Cap:** `_MAX_SCENARIO_EVENT_LOG = 500` events per scenario, newest-first. Older events are evicted automatically by `collections.deque(maxlen=…)`.
+- **Lifetime:** in-memory only. A container restart wipes the log — which matches the engine, since temporary scenario rules don't survive restarts either.
+- **Cleanup:** `delete_scenario()` calls `clear_events()` so a re-created scenario with a new id starts with a clean slate. The persisted `events_injected` counter on the scenario object stays incremented on `record_event` so the card UI shows a meaningful total even after a restart wipes the live buffer.
+
+### UI surface
+
+Each scenario card gets an **Events (N)** button next to **Export**. Clicking it expands an inline log table beneath the MITRE timeline showing timestamp, phase id, source, and the top three preview fields per event. The 8-second card auto-refresh repopulates expanded panels so a running scenario streams new events without losing scroll position.
+
+### What's still pending in Phase 3
+
+| # | Task | Status |
+|---|------|--------|
+| 3.1 | Per-scenario event log + REST + card UI | **Shipped (v5.0)** |
+| 3.2 | `attack.id` search in Request Inspector — filter events by attack.id across all sources | Pending |
+| 3.3 | Exportable attack timeline (JSON / PDF) for demo handoff | Pending |
+
 ## Storage
 
 | Item | Path |

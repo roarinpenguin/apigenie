@@ -192,6 +192,11 @@ def inject_detection_events(source: str, logs: list[dict[str, Any]]) -> list[dic
     result = list(logs)
     injected_count = 0
 
+    # Lazy-imported recorder; only used for rules created by the attack
+    # scenario engine (those carry ``_scenario_id``). Plain user-defined rules
+    # bypass this path completely.
+    _scn_record = None
+
     for rule in rules:
         rule_id = rule["id"]
         periodicity = rule.get("periodicity", 10)
@@ -199,6 +204,17 @@ def inject_detection_events(source: str, logs: list[dict[str, Any]]) -> list[dic
 
         if not overrides:
             continue
+
+        # Per-scenario log hook (v5.0 Phase 3): if this is a scenario temp
+        # rule, every successful injection gets recorded into the scenario's
+        # ring buffer. Resolve the recorder once per call to keep the cost
+        # off the normal-rule path.
+        rule_scenario_id = rule.get("_scenario_id")
+        if rule_scenario_id and _scn_record is None:
+            try:
+                from attack_scenarios import _record_event_safe as _scn_record  # noqa: F401
+            except Exception:
+                _scn_record = lambda *a, **k: None  # noqa: E731
 
         if periodicity > 100:
             # Time-based: fire if enough seconds have passed since last fire
@@ -213,6 +229,11 @@ def inject_detection_events(source: str, logs: list[dict[str, Any]]) -> list[dic
             result.insert(pos, detection_event)
             _last_fired[rule_id] = now
             injected_count += 1
+            if rule_scenario_id:
+                _scn_record(rule_scenario_id,
+                            overrides.get("phase.id", ""),
+                            rule.get("_attack_id", ""),
+                            source, detection_event)
         else:
             # Count-based: inject 1 event per N logs
             count = max(1, len(logs) // periodicity)
@@ -223,6 +244,11 @@ def inject_detection_events(source: str, logs: list[dict[str, Any]]) -> list[dic
                 pos = random.randint(0, len(result))
                 result.insert(pos, detection_event)
                 injected_count += 1
+                if rule_scenario_id:
+                    _scn_record(rule_scenario_id,
+                                overrides.get("phase.id", ""),
+                                rule.get("_attack_id", ""),
+                                source, detection_event)
 
     if injected_count:
         log.debug("Injected %d detection events into %s batch (%d→%d)",

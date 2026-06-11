@@ -11,6 +11,7 @@ Every injected event carries:
 
 from __future__ import annotations
 
+import collections
 import copy
 import json
 import logging
@@ -133,6 +134,8 @@ def delete_scenario(scenario_id: str) -> bool:
         if len(scenarios) == before:
             return False
         _save_scenarios(scenarios)
+    # Drop any captured events so a re-created scenario doesn't inherit them.
+    clear_events(scenario_id)
     return True
 
 
@@ -252,6 +255,117 @@ def import_scenario(data: Any) -> dict[str, Any]:
     # Strip the schema marker if present — it's metadata, not a scenario field.
     payload = {k: v for k, v in data.items() if k != "_apigenie_schema"}
     return create_scenario(payload)
+
+
+# ── Per-scenario event log (Phase 3 — reporting + correlation) ───────────────
+# Every time ``detection_rules.inject_detection_events`` fires a rule that
+# carries a ``_scenario_id`` (i.e. a temporary rule the scheduler created for
+# a phase), it calls ``record_event`` here so the operator can audit exactly
+# what landed in their lab during a campaign. The log is purely in-memory
+# (same model as ``log_pusher._event_logs``): cheap, bounded, and wiped on
+# restart — which matches the engine since temp rules don't survive restarts
+# anyway. Each ring buffer is capped at _MAX_SCENARIO_EVENT_LOG entries so a
+# multi-day scenario at high periodicity can't grow without bound.
+
+_MAX_SCENARIO_EVENT_LOG = 500
+
+# Keys we keep from the injected event for the preview. Anything else is
+# dropped — the goal is "what attack signal landed where + when", not full
+# event archival (the actual events are still sent to the configured sinks
+# via the normal HTTP / push pipelines).
+_EVENT_PREVIEW_KEYS: tuple[str, ...] = (
+    "type", "subtype", "severity", "Operation", "Workload", "operationName",
+    "threatInfo.threatName", "threatInfo.classification",
+    "mitre.tactic.name", "mitre.technique.id",
+    "eventType", "category", "action", "subject", "_detection_rule",
+)
+
+_scenario_event_logs: dict[str, collections.deque] = {}
+_event_log_lock = threading.Lock()
+
+
+def _build_event_preview(event: dict) -> dict:
+    """Pull a small set of well-known signal fields out of a fired event so
+    the UI can render a one-line summary without storing the entire payload.
+    Unknown fields are dropped; nothing in ``event`` is mutated."""
+    preview: dict[str, Any] = {}
+    for k in _EVENT_PREVIEW_KEYS:
+        if k in event:
+            preview[k] = event[k]
+    return preview
+
+
+def record_event(scenario_id: str, phase_id: str, attack_id: str,
+                 source: str, event: dict) -> None:
+    """Append a fired-event record to the scenario's ring buffer.
+    Also bumps the persisted ``events_injected`` counter on the scenario so
+    the card UI shows progress even after a container restart wipes the
+    in-memory log."""
+    with _event_log_lock:
+        buf = _scenario_event_logs.get(scenario_id)
+        if buf is None:
+            buf = collections.deque(maxlen=_MAX_SCENARIO_EVENT_LOG)
+            _scenario_event_logs[scenario_id] = buf
+        buf.appendleft({
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "scenario_id": scenario_id,
+            "phase_id": phase_id or "",
+            "attack_id": attack_id or "",
+            "source": source or "",
+            "preview": _build_event_preview(event or {}),
+        })
+    # Bump the persisted counter on a best-effort basis. We grab the same
+    # _lock the CRUD helpers use, so this stays serialised with create /
+    # update / delete and won't race the scheduler's status writes.
+    try:
+        with _lock:
+            scenarios = _load_scenarios()
+            s = _find(scenarios, scenario_id)
+            if s is not None:
+                s["events_injected"] = s.get("events_injected", 0) + 1
+                _save_scenarios(scenarios)
+    except Exception:
+        # Persistence is a "nice to have" — never let it break injection.
+        pass
+
+
+def _record_event_safe(scenario_id: str, phase_id: str, attack_id: str,
+                       source: str, event: dict) -> None:
+    """Exception-swallowing wrapper called from detection_rules so a bug in
+    the event-log path can never break the actual event injection pipeline.
+    Detection-rule firing is the hot path; logging is supporting telemetry."""
+    try:
+        record_event(scenario_id, phase_id, attack_id, source, event)
+    except Exception as exc:
+        log.warning("attack scenario event log: drop event (%s)", exc)
+
+
+def get_events(scenario_id: str, limit: int = 200,
+               phase_id: str | None = None,
+               source: str | None = None) -> list[dict]:
+    """Return up to ``limit`` most-recent events, newest first. Optional
+    filters narrow by phase or source — applied in Python (the ring buffer
+    is small enough that scanning costs less than maintaining indexes)."""
+    with _event_log_lock:
+        items = list(_scenario_event_logs.get(scenario_id, ()))
+    if phase_id:
+        items = [e for e in items if e.get("phase_id") == phase_id]
+    if source:
+        items = [e for e in items if e.get("source") == source]
+    return items[:max(0, int(limit))]
+
+
+def clear_events(scenario_id: str) -> None:
+    """Drop all recorded events for a scenario. Called from delete_scenario
+    so a re-created scenario with the same name starts with a clean slate."""
+    with _event_log_lock:
+        _scenario_event_logs.pop(scenario_id, None)
+
+
+def _reset_event_logs_for_tests() -> None:
+    """Clear every per-scenario buffer. Used by the test fixture only."""
+    with _event_log_lock:
+        _scenario_event_logs.clear()
 
 
 # ── Phase timing ─────────────────────────────────────────────────────────────

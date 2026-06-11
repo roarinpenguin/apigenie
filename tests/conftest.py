@@ -115,6 +115,11 @@ def _isolated_state(tmp_path, monkeypatch):
         monkeypatch.setattr(attack_scenarios, "_DATA_ROOT", tmp_path)
         monkeypatch.setattr(attack_scenarios, "_SCENARIOS_FILE",
                             tmp_path / "attack_scenarios.json")
+        # The per-scenario event log (Phase 3.1) is an in-memory ring
+        # buffer at module scope; clear it so test ordering doesn't leak
+        # state. _reset_event_logs_for_tests is defined on the module.
+        if hasattr(attack_scenarios, "_reset_event_logs_for_tests"):
+            attack_scenarios._reset_event_logs_for_tests()
     except ImportError:
         pass
 

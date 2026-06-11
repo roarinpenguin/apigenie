@@ -6624,6 +6624,11 @@ async function loadScenarios() {
       h += '<span class="pill" style="color:#c77dff;font-family:monospace">' + escHtml(s.attack_id || '') + '</span>';
       h += '</div>';
       h += '<div style="display:flex;gap:4px;flex-wrap:wrap">';
+      // Events toggle (Phase 3.1) — always available; expands a per-scenario
+      // log of injected events. The counter comes from the persisted
+      // events_injected field so it stays accurate across container restarts.
+      var evtLabel = _scenarioEventsOpen[s.id] ? "Hide Events" : ("Events (" + (s.events_injected || 0) + ")");
+      h += '<button class="btn-sm" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2);padding:3px 10px;font-size:.68rem" onclick="toggleScenarioEvents(\\'' + escHtml(s.id) + '\\')">' + evtLabel + '</button>';
       // Export is always available — the export endpoint scrubs runtime state
       // before serialising, so it\\u2019s safe to grab a snapshot mid-run.
       h += '<button class="btn-sm" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2);padding:3px 10px;font-size:.68rem" onclick="exportScenario(\\'' + escHtml(s.id) + '\\')" title="Download scenario as JSON">&#x2193; Export</button>';
@@ -6664,9 +6669,23 @@ async function loadScenarios() {
       h += '<span>' + (phases.length) + ' phases</span>';
       if (s.elapsed_seconds > 0) h += '<span>elapsed: ' + Math.floor(s.elapsed_seconds/60) + 'm</span>';
       if (s.started_at) h += '<span>started: ' + escHtml(s.started_at).replace('T',' ') + '</span>';
-      h += '</div></div>';
+      h += '</div>';
+      // Per-scenario event log container (Phase 3.1). Initial display state
+      // tracks _scenarioEventsOpen so the 8s auto-refresh keeps expanded
+      // panels expanded instead of forcing the user to re-click.
+      var evtDisplay = _scenarioEventsOpen[s.id] ? 'block' : 'none';
+      h += '<div id="scenario-events-' + escHtml(s.id) + '" style="display:' + evtDisplay + ';margin-top:10px;border-top:1px solid rgba(199,125,255,.15);padding-top:8px">';
+      h += '<div style="font-size:.68rem;color:rgba(224,170,255,.4)">Loading events&hellip;</div>';
+      h += '</div>';
+      h += '</div>';
     });
     box.innerHTML = h;
+    // After the DOM rebuild, repopulate any event panels that were open
+    // before the refresh so the user doesn't lose their place. Each request
+    // is independent so failures on one scenario don't stall the others.
+    Object.keys(_scenarioEventsOpen).forEach(function(id) {
+      if (_scenarioEventsOpen[id]) _loadScenarioEvents(id);
+    });
     // Auto-refresh if any running
     if (scenarios.some(function(s) { return s.status === 'running' || s.status === 'paused'; })) {
       if (!_scenarioRefreshTimer) _scenarioRefreshTimer = setInterval(loadScenarios, 8000);
@@ -6683,6 +6702,10 @@ async function loadScenarios() {
 // _scenarioEditingId is null in create mode and the scenario id in edit mode.
 var _scenarioPhases = [];
 var _scenarioEditingId = null;
+// Tracks which scenario cards currently have the event log panel expanded so
+// the 8s scenarios auto-refresh can repopulate them instead of forcing the
+// user to re-click. Keyed by scenario id; values are truthy when open.
+var _scenarioEventsOpen = {};
 
 // MITRE ATT&CK enterprise tactics, in roughly kill-chain order. Used as the
 // dropdown options inside each phase row. The colour map (_MITRE_COLORS)
@@ -7060,6 +7083,64 @@ async function importScenarioFromFile(file) {
     toast('Imported "' + (d.name || 'scenario') + '"');
     loadScenarios();
   } catch(e) { alert('Import failed: ' + e); }
+}
+
+// ── Per-scenario event log (Phase 3.1) ──────────────────────────────────────
+
+function toggleScenarioEvents(id) {
+  // Flip the open-state for this card. We rebuild the cards on toggle so the
+  // button label (Events (N) <-> Hide Events) updates with one source of
+  // truth, then _loadScenarioEvents fetches the live buffer.
+  _scenarioEventsOpen[id] = !_scenarioEventsOpen[id];
+  loadScenarios();
+}
+
+async function _loadScenarioEvents(id) {
+  // Fetch the per-scenario ring buffer and render the rows. Called both on
+  // explicit expand and from inside loadScenarios() after a DOM rebuild so
+  // open panels survive the 8-second auto-refresh.
+  var box = document.getElementById('scenario-events-' + id);
+  if (!box) return;
+  try {
+    var r = await fetch('/admin/api/scenarios/' + id + '/events?limit=100',
+                        {credentials:'same-origin'});
+    if (!r.ok) {
+      box.innerHTML = '<div style="font-size:.68rem;color:#ff9c9c">Failed to load events (HTTP ' + r.status + ')</div>';
+      return;
+    }
+    var data = await r.json();
+    var events = data.events || [];
+    if (!events.length) {
+      box.innerHTML = '<div style="font-size:.68rem;color:rgba(224,170,255,.5);font-style:italic">No events captured yet. Events appear here as scenario phases fire.</div>';
+      return;
+    }
+    var h = '<div style="font-size:.68rem;color:rgba(224,170,255,.5);margin-bottom:6px">Last ' + events.length + ' event' + (events.length === 1 ? '' : 's') + ' (newest first)</div>';
+    h += '<div style="max-height:280px;overflow-y:auto;font-family:monospace;font-size:.66rem">';
+    events.forEach(function(e) {
+      var phaseColor = _MITRE_COLORS[e.preview && e.preview.mitre_tactic] || '#5a189a';
+      // Pick one or two interesting preview fields to render inline so the
+      // user gets a "what fired" without expanding anything.
+      var p = e.preview || {};
+      var keyBits = [];
+      ['type','subtype','severity','operationName','Operation',
+       'threatInfo.threatName','subject','action','_detection_rule']
+        .forEach(function(k) {
+          if (p[k] !== undefined && p[k] !== '' && keyBits.length < 3) {
+            keyBits.push('<span style="color:#e0aaff">' + escHtml(k) + '</span>=<span style="color:#fff">' + escHtml(String(p[k])) + '</span>');
+          }
+        });
+      h += '<div style="display:grid;grid-template-columns:130px 110px 110px 1fr;gap:8px;padding:3px 6px;border-bottom:1px solid rgba(199,125,255,.08);align-items:center">';
+      h += '<span style="color:rgba(224,170,255,.55)">' + escHtml((e.ts || '').replace('T',' ').replace('+00:00','Z')) + '</span>';
+      h += '<span style="color:#c77dff">' + escHtml(e.phase_id || '?') + '</span>';
+      h += '<span style="color:rgba(255,255,255,.7)">' + escHtml(e.source || '?') + '</span>';
+      h += '<span style="color:rgba(255,255,255,.85)">' + (keyBits.join(' &middot; ') || '<em style="color:rgba(255,255,255,.3)">no preview fields</em>') + '</span>';
+      h += '</div>';
+    });
+    h += '</div>';
+    box.innerHTML = h;
+  } catch(e) {
+    box.innerHTML = '<div style="font-size:.68rem;color:#ff9c9c">Failed: ' + escHtml(String(e)) + '</div>';
+  }
 }
 
 async function startScenario(id) {
@@ -10543,6 +10624,33 @@ async def api_scenario_import(request: Request,
             {"error": "validation failed", "errors": str(exc).split("\n")},
             status_code=400)
     return JSONResponse(created, status_code=201)
+
+
+@router.get("/api/scenarios/{scenario_id}/events")
+async def api_scenario_events(scenario_id: str,
+                              limit: int = 200,
+                              phase_id: str | None = None,
+                              source: str | None = None,
+                              ag_session: str | None = Cookie(None)):
+    """Return the per-scenario event log (Phase 3.1).
+
+    Captures every event injected by a temporary scenario rule, ordered
+    newest-first. The buffer is in-memory and bounded — see the doc-comment
+    on ``attack_scenarios._scenario_event_logs`` for retention semantics.
+    """
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import attack_scenarios
+    # 404 only if the scenario itself is unknown — an empty buffer for a
+    # known scenario is a valid state (e.g. just started, no firings yet).
+    if not attack_scenarios.get_scenario(scenario_id):
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    # Clamp the limit so a misbehaving client can't ask for millions.
+    limit = max(1, min(int(limit or 200), 1000))
+    events = attack_scenarios.get_events(scenario_id, limit=limit,
+                                         phase_id=phase_id, source=source)
+    return JSONResponse({"scenario_id": scenario_id, "events": events,
+                         "count": len(events)})
 
 
 # ── Webhooks API (v5.0) ──────────────────────────────────────────────────────

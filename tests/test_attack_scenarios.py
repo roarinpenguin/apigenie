@@ -275,3 +275,198 @@ def test_api_import_rejects_non_json_body(client):
                     content=b"not json at all",
                     headers={"Content-Type": "application/json"})
     assert r.status_code == 400
+
+
+# ── Per-scenario event log (Phase 3.1) ──────────────────────────────────────
+
+def test_record_and_get_event():
+    """record_event lands in the per-scenario ring buffer and get_events
+    returns it newest-first with the slim preview."""
+    import attack_scenarios
+    s = attack_scenarios.create_scenario(_minimum_scenario())
+    sid = s["id"]
+    attack_scenarios.record_event(
+        scenario_id=sid, phase_id="initial-access",
+        attack_id=s["attack_id"], source="proofpoint",
+        event={"type": "phish", "subject": "Urgent",
+               "threatInfo.threatName": "EvilDoc",
+               # Unknown keys should be dropped from the preview.
+               "noise": "should not be kept"})
+    events = attack_scenarios.get_events(sid)
+    assert len(events) == 1
+    e = events[0]
+    assert e["scenario_id"] == sid
+    assert e["phase_id"] == "initial-access"
+    assert e["source"] == "proofpoint"
+    assert e["preview"]["type"] == "phish"
+    assert e["preview"]["threatInfo.threatName"] == "EvilDoc"
+    assert "noise" not in e["preview"]
+
+
+def test_get_events_filters():
+    """phase_id / source filters narrow the buffer in-Python; the limit
+    clamps post-filter, not pre-filter."""
+    import attack_scenarios
+    s = attack_scenarios.create_scenario(_minimum_scenario())
+    sid = s["id"]
+    for i in range(5):
+        attack_scenarios.record_event(sid, "initial-access", s["attack_id"],
+                                      "proofpoint", {"type": "phish"})
+    for i in range(3):
+        attack_scenarios.record_event(sid, "impact", s["attack_id"],
+                                      "sentinelone", {"type": "threat"})
+    assert len(attack_scenarios.get_events(sid)) == 8
+    assert len(attack_scenarios.get_events(sid, phase_id="initial-access")) == 5
+    assert len(attack_scenarios.get_events(sid, phase_id="impact")) == 3
+    assert len(attack_scenarios.get_events(sid, source="sentinelone")) == 3
+    assert len(attack_scenarios.get_events(sid, limit=2)) == 2
+
+
+def test_event_buffer_evicts_at_cap(monkeypatch):
+    """Once the ring buffer is full, the oldest events drop. We shrink the
+    cap to keep the test fast (the production value is 500)."""
+    import attack_scenarios
+    monkeypatch.setattr(attack_scenarios, "_MAX_SCENARIO_EVENT_LOG", 5)
+    # Manually drop the existing deque so the new cap takes effect on
+    # next allocation (production code only checks the cap when creating
+    # a fresh deque).
+    with attack_scenarios._event_log_lock:
+        attack_scenarios._scenario_event_logs.clear()
+    s = attack_scenarios.create_scenario(_minimum_scenario())
+    sid = s["id"]
+    for i in range(20):
+        attack_scenarios.record_event(sid, "p", s["attack_id"], "src",
+                                      {"type": f"event-{i}"})
+    events = attack_scenarios.get_events(sid)
+    assert len(events) == 5
+    # newest-first means the highest-numbered event survives
+    assert events[0]["preview"]["type"] == "event-19"
+
+
+def test_delete_scenario_clears_event_buffer():
+    """Recreating a scenario with a new id must start with a clean buffer."""
+    import attack_scenarios
+    s = attack_scenarios.create_scenario(_minimum_scenario(name="Stale"))
+    sid = s["id"]
+    attack_scenarios.record_event(sid, "p", s["attack_id"], "src",
+                                  {"type": "ghost"})
+    assert attack_scenarios.get_events(sid)
+    attack_scenarios.delete_scenario(sid)
+    assert attack_scenarios.get_events(sid) == []
+
+
+def test_record_event_bumps_events_injected_counter():
+    """The persisted counter is what the card UI reads when the in-memory
+    log is empty (e.g. after a restart)."""
+    import attack_scenarios
+    s = attack_scenarios.create_scenario(_minimum_scenario())
+    sid = s["id"]
+    assert attack_scenarios.get_scenario(sid)["events_injected"] == 0
+    attack_scenarios.record_event(sid, "p", s["attack_id"], "src", {"type": "x"})
+    attack_scenarios.record_event(sid, "p", s["attack_id"], "src", {"type": "y"})
+    assert attack_scenarios.get_scenario(sid)["events_injected"] == 2
+
+
+def test_inject_detection_events_records_into_scenario_buffer(monkeypatch, tmp_path):
+    """End-to-end: a scenario-temp rule that fires through
+    inject_detection_events must show up in the per-scenario buffer.
+    This is the integration that lets the UI prove "events arrived"."""
+    import attack_scenarios
+    import detection_rules
+    # Detection rules persist alongside scenarios; isolate to tmp_path.
+    monkeypatch.setattr(detection_rules, "_DATA_ROOT", tmp_path)
+    monkeypatch.setattr(detection_rules, "_RULES_FILE",
+                        tmp_path / "detection_rules.json")
+
+    s = attack_scenarios.create_scenario(_minimum_scenario())
+    sid, aid = s["id"], s["attack_id"]
+    # Build a rule shaped like the scheduler builds them.
+    detection_rules.create_rule({
+        "name": "[SCENARIO] test phase",
+        "source": "proofpoint",
+        "enabled": True,
+        "periodicity": 1,  # 1 = fire on every log
+        "field_overrides": {"attack.id": aid, "phase.id": "initial-access",
+                            "subject": "Urgent: Review"},
+        "_scenario_id": sid,
+        "_attack_id": aid,
+    })
+    # Feed a batch of normal logs and see what gets injected.
+    base_logs = [{"type": "mail", "subject": f"normal-{i}"} for i in range(10)]
+    result = detection_rules.inject_detection_events("proofpoint", base_logs)
+    assert len(result) > len(base_logs), "no events were injected at all"
+    events = attack_scenarios.get_events(sid)
+    assert events, "scenario buffer never captured the injection"
+    # Every captured event carries the phase + attack ids the scheduler set.
+    for e in events:
+        assert e["phase_id"] == "initial-access"
+        assert e["attack_id"] == aid
+        assert e["source"] == "proofpoint"
+
+
+def test_inject_for_normal_rule_does_not_touch_scenario_buffer(monkeypatch, tmp_path):
+    """User-defined rules (no _scenario_id) must NOT write into any
+    scenario buffer — that path is reserved for the scheduler."""
+    import attack_scenarios
+    import detection_rules
+    monkeypatch.setattr(detection_rules, "_DATA_ROOT", tmp_path)
+    monkeypatch.setattr(detection_rules, "_RULES_FILE",
+                        tmp_path / "detection_rules.json")
+    s = attack_scenarios.create_scenario(_minimum_scenario())
+    detection_rules.create_rule({
+        "name": "normal user rule",
+        "source": "proofpoint",
+        "enabled": True,
+        "periodicity": 1,
+        "field_overrides": {"subject": "boring"},
+        # No _scenario_id, no _attack_id.
+    })
+    detection_rules.inject_detection_events(
+        "proofpoint", [{"type": "mail", "subject": "x"} for _ in range(5)])
+    assert attack_scenarios.get_events(s["id"]) == []
+
+
+# ── REST API for events ──────────────────────────────────────────────────────
+
+def test_api_events_returns_buffer(client):
+    _login_admin(client)
+    r = client.post("/admin/api/scenarios", json=_minimum_scenario())
+    sid = r.json()["id"]
+    aid = r.json()["attack_id"]
+    import attack_scenarios
+    attack_scenarios.record_event(sid, "initial-access", aid, "proofpoint",
+                                  {"type": "phish"})
+    attack_scenarios.record_event(sid, "impact", aid, "sentinelone",
+                                  {"type": "threat"})
+    r = client.get(f"/admin/api/scenarios/{sid}/events")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["scenario_id"] == sid
+    assert body["count"] == 2
+    assert len(body["events"]) == 2
+
+
+def test_api_events_supports_filters(client):
+    _login_admin(client)
+    r = client.post("/admin/api/scenarios", json=_minimum_scenario())
+    sid = r.json()["id"]
+    aid = r.json()["attack_id"]
+    import attack_scenarios
+    for _ in range(4):
+        attack_scenarios.record_event(sid, "initial-access", aid,
+                                      "proofpoint", {"type": "phish"})
+    for _ in range(2):
+        attack_scenarios.record_event(sid, "impact", aid, "sentinelone",
+                                      {"type": "threat"})
+    r = client.get(f"/admin/api/scenarios/{sid}/events?phase_id=impact")
+    assert r.status_code == 200 and r.json()["count"] == 2
+    r = client.get(f"/admin/api/scenarios/{sid}/events?source=proofpoint")
+    assert r.status_code == 200 and r.json()["count"] == 4
+    r = client.get(f"/admin/api/scenarios/{sid}/events?limit=1")
+    assert r.status_code == 200 and r.json()["count"] == 1
+
+
+def test_api_events_unknown_scenario_404(client):
+    _login_admin(client)
+    r = client.get("/admin/api/scenarios/scn-does-not-exist/events")
+    assert r.status_code == 404
