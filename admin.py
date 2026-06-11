@@ -15,7 +15,7 @@ from typing import Any
 from fastapi import APIRouter, Cookie, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 
-from trace import AGG, REQUEST_TRACE
+from trace import AGG, REQUEST_TRACE, find_by_attack
 import bans
 import geoip
 import listeners as _listeners
@@ -1143,7 +1143,7 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
   <a class="nav-item" data-portal="user" onclick="showTab('alert-push', this); loadAlertProfiles()"><span class="nav-icon">🚨</span> Alert Push</a>
   <a class="nav-item" data-portal="user" onclick="showTab('webhooks', this); loadWebhooks()"><span class="nav-icon">🪝</span> Webhooks</a>
   <a class="nav-item" data-portal="user" onclick="showTab('identifiers', this); loadIdentifiers()"><span class="nav-icon">🔑</span> Source Identifiers</a>
-  <a class="nav-item" data-portal="user" style="display:none" onclick="showTab('scenarios', this); loadScenarios()"><span class="nav-icon">⚔</span> Attack Scenarios</a>
+  <a class="nav-item" data-portal="user" onclick="showTab('scenarios', this); loadScenarios()"><span class="nav-icon">⚔</span> Attack Scenarios</a>
   <a class="nav-item" data-portal="user" onclick="showTab('config', this)"><span class="nav-icon">🔧</span> Source Details</a>
   <a class="nav-item" data-portal="user" onclick="showTab('account', this); loadAccount()"><span class="nav-icon">👤</span> My Account</a>
   <span class="nav-section" data-portal="admin">System</span>
@@ -1185,6 +1185,17 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
       <div class="card">
         <div class="card-title">Source</div>
         <div class="source-chips" id="source-chips"></div>
+        <!-- Attack.id cross-source filter (Phase 3.2). When set, the Recent
+             calls table pivots to a merged view across every source's trace
+             buffer. Clearing the filter restores the per-source view. -->
+        <div style="display:flex;align-items:center;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid rgba(199,125,255,.15);font-size:.78rem">
+          <span style="color:rgba(224,170,255,.55)">&#x2694; Filter by</span>
+          <code style="color:#c77dff">attack.id</code>
+          <input id="attack-filter-input" type="text" placeholder="att-YYYYMMDD-NNNN" style="flex:1;max-width:260px;background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.25);border-radius:6px;padding:4px 8px;color:var(--mist);font-family:monospace;font-size:.76rem" onkeydown="if(event.key==='Enter')applyAttackFilter()"/>
+          <button class="btn-sm" style="padding:3px 12px;font-size:.72rem" onclick="applyAttackFilter()">Apply</button>
+          <button id="attack-filter-clear" class="btn-sm" style="display:none;padding:3px 10px;font-size:.72rem;background:rgba(120,30,40,.4);color:#ff8080" onclick="clearAttackFilter()">&#x2715; Clear</button>
+          <span id="attack-filter-status" style="color:rgba(224,170,255,.5);font-style:italic"></span>
+        </div>
       </div>
       <div class="card">
         <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
@@ -2448,16 +2459,30 @@ async function banFromIntrusions(ip) {
 }
 
 // ── Requests ──────────────────────────────────────────────────────────────────
+// Phase 3.2: when set, loadRequests() switches from per-source to cross-source
+// mode and renders every trace entry tagged with this attack.id. Null/empty
+// means the classic per-source view driven by activeSource.
+var _activeAttackFilter = null;
+
 function selectSource(id) {
   activeSource = id;
   // sync chips in both tabs if somehow both are rendered
   document.querySelectorAll('[data-id="' + id + '"]').forEach(c => c.classList.add('active'));
-  loadRequests();
+  // Selecting a source switches off the cross-source attack filter so the
+  // user isn't left wondering why the source chip choice "did nothing".
+  if (_activeAttackFilter) clearAttackFilter();
+  else loadRequests();
 }
 
 async function loadRequests() {
-  if (!activeSource) return;
   const wrap = document.getElementById('req-table-wrap');
+  // Attack-id cross-source branch (Phase 3.2). Runs before the activeSource
+  // guard so the filter works even before the user clicks a source chip
+  // (typical entry point: clicking "View in Inspector" on a scenario card).
+  if (_activeAttackFilter) {
+    return _loadRequestsByAttack(wrap);
+  }
+  if (!activeSource) return;
   wrap.innerHTML = '<p class="empty">Loading…</p>';
 
   // Show consumer status panel for bus sources
@@ -2544,6 +2569,123 @@ async function loadRequests() {
     html += '</tbody></table>';
     wrap.innerHTML = busHtml + html;
   } catch(err) { wrap.innerHTML = '<p class="empty">Error: ' + err + '</p>'; }
+}
+
+// ── Phase 3.2: attack.id cross-source filter ─────────────────────────────────
+
+function applyAttackFilter() {
+  // "Apply" button handler. Reads the input field and pivots the Recent calls
+  // table to cross-source mode. Empty input means clear the filter.
+  var input = document.getElementById('attack-filter-input');
+  var v = (input && input.value || '').trim();
+  if (!v) { clearAttackFilter(); return; }
+  _activeAttackFilter = v;
+  var clearBtn = document.getElementById('attack-filter-clear');
+  if (clearBtn) clearBtn.style.display = 'inline-block';
+  loadRequests();
+}
+
+function clearAttackFilter() {
+  // Reset state and re-render in per-source mode if a source is selected.
+  _activeAttackFilter = null;
+  var input = document.getElementById('attack-filter-input');
+  if (input) input.value = '';
+  var clearBtn = document.getElementById('attack-filter-clear');
+  if (clearBtn) clearBtn.style.display = 'none';
+  var statusEl = document.getElementById('attack-filter-status');
+  if (statusEl) statusEl.textContent = '';
+  var wrap = document.getElementById('req-table-wrap');
+  if (activeSource) { loadRequests(); }
+  else if (wrap) { wrap.innerHTML = '<p class="empty">Select a source above</p>'; }
+}
+
+function searchByAttackId(attackId) {
+  // Entry-point used by the "View in Inspector" link on scenario cards.
+  // Jumps to the Requests tab, pre-populates the filter input, runs the
+  // cross-source query.
+  if (!attackId) return;
+  _activeAttackFilter = attackId;
+  var navEl = document.querySelector('a[onclick*="showTab(\\'requests\\'"]');
+  showTab('requests', navEl);
+  var input = document.getElementById('attack-filter-input');
+  if (input) input.value = attackId;
+  var clearBtn = document.getElementById('attack-filter-clear');
+  if (clearBtn) clearBtn.style.display = 'inline-block';
+  loadRequests();
+}
+
+async function _loadRequestsByAttack(wrap) {
+  // Cross-source render. Shape mirrors the per-source table but adds a
+  // leading Source column so the user can tell which collector each row
+  // came from. resp_preview is scanned for the attack.id by the backend,
+  // so we highlight the matching substring inline to make verification easy.
+  var statusEl = document.getElementById('attack-filter-status');
+  if (statusEl) statusEl.textContent = 'searching all sources…';
+  wrap.innerHTML = '<p class="empty">Loading attack.id matches…</p>';
+  try {
+    var r = await fetch('/admin/api/requests/by-attack/' +
+                        encodeURIComponent(_activeAttackFilter) + '?limit=500',
+                        {credentials:'same-origin'});
+    if (!r.ok) {
+      wrap.innerHTML = '<p class="empty">Error: HTTP ' + r.status + '</p>';
+      if (statusEl) statusEl.textContent = '';
+      return;
+    }
+    var data = await r.json();
+    var rows = data.results || [];
+    if (statusEl) {
+      statusEl.textContent = rows.length
+        ? rows.length + ' match' + (rows.length === 1 ? '' : 'es') + ' across all sources'
+        : 'no matches in the in-memory trace buffers';
+    }
+    if (!rows.length) {
+      wrap.innerHTML = '<p class="empty">No requests in the trace buffer contain <code>' + escHtml(_activeAttackFilter) + '</code>. The buffer keeps the last 100 calls per source; push-source events do not flow through here.</p>';
+      return;
+    }
+    var needle = _activeAttackFilter;
+    var html = '<table><thead><tr>' +
+      '<th>Time</th><th>Source</th><th>Method</th><th>Path</th>' +
+      '<th>Status</th><th>ms</th><th>Client</th><th>Detail</th>' +
+      '</tr></thead><tbody>';
+    rows.forEach(function(e) {
+      var bc = e.status < 300 ? 'b200' : e.status < 500 ? 'b4xx' : 'b5xx';
+      var q = e.query ? '?' + e.query : '';
+      var hdr = JSON.stringify(e.req_headers, null, 2);
+      var body = e.req_body || '';
+      var rSize = e.resp_size != null ? e.resp_size : '';
+      var rPrev = e.resp_preview || '';
+      var rSizeKb = typeof rSize === 'number' ? (rSize > 1024 ? (rSize/1024).toFixed(1)+'KB' : rSize+'B') : '';
+      // Highlight the attack.id substring everywhere it appears so the user
+      // can verify the match without scanning the whole payload by eye.
+      function hi(s) {
+        if (!s) return '';
+        var safe = escHtml(s);
+        var safeNeedle = escHtml(needle).replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');
+        return safe.replace(new RegExp(safeNeedle, 'g'),
+          '<mark style="background:rgba(199,125,255,.4);color:#fff;padding:0 2px;border-radius:2px">' + escHtml(needle) + '</mark>');
+      }
+      var detail = escHtml(hdr);
+      if (body) detail += '\\n\\n── Request Body ──\\n' + hi(body.substring(0,800));
+      if (rPrev) detail += '\\n\\n── Response (' + rSizeKb + ') ──\\n' + hi(rPrev.substring(0,500)) + (rPrev.length >= 500 ? '\\n…truncated' : '');
+      html += '<tr>' +
+        '<td class="ts">' + escHtml((e.ts || '').replace('T',' ')) + '</td>' +
+        '<td><span class="pill" style="background:rgba(199,125,255,.18);color:#e0aaff">' + escHtml(e.source || '?') + '</span></td>' +
+        '<td class="method">' + escHtml(e.method || '') + '</td>' +
+        '<td style="font-family:monospace;font-size:.78rem">' + escHtml((e.path || '') + q) + '</td>' +
+        '<td><span class="badge ' + bc + '">' + escHtml(String(e.status)) + '</span></td>' +
+        '<td class="dur">' + escHtml(String(e.duration_ms)) + '</td>' +
+        '<td class="ts">' + escHtml(e.client || '') + '</td>' +
+        '<td><details><summary>&#9654; req' + (body ? '+body' : '') + (rSizeKb ? ' &middot; resp ' + rSizeKb : '') + '</summary>' +
+        '<pre style="color:rgba(224,170,255,.7);white-space:pre-wrap">' + detail + '</pre>' +
+        '</details></td>' +
+        '</tr>';
+    });
+    html += '</tbody></table>';
+    wrap.innerHTML = html;
+  } catch(err) {
+    wrap.innerHTML = '<p class="empty">Error: ' + escHtml(String(err)) + '</p>';
+    if (statusEl) statusEl.textContent = '';
+  }
 }
 
 // ── Logs ──────────────────────────────────────────────────────────────────────
@@ -6621,7 +6763,14 @@ async function loadScenarios() {
       h += '<div style="display:flex;align-items:center;gap:8px">';
       h += '<span style="color:' + statusColor + ';font-size:.8rem">' + (s.status === 'running' ? '\\u25cf' : s.status === 'paused' ? '\\u25cf' : '\\u25cb') + '</span>';
       h += '<span style="font-weight:600;color:var(--mist);font-size:.88rem">' + escHtml(s.name) + '</span>';
-      h += '<span class="pill" style="color:#c77dff;font-family:monospace">' + escHtml(s.attack_id || '') + '</span>';
+      // Clicking the attack.id pill jumps to the Request Inspector with the
+      // cross-source filter applied (Phase 3.2). Empty attack.id (not started
+      // yet) stays inert.
+      if (s.attack_id) {
+        h += '<span class="pill" title="View in Request Inspector — every call carrying this attack.id" style="color:#c77dff;font-family:monospace;cursor:pointer;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px" onclick="searchByAttackId(\\'' + escHtml(s.attack_id) + '\\')">' + escHtml(s.attack_id) + '</span>';
+      } else {
+        h += '<span class="pill" style="color:rgba(199,125,255,.4);font-family:monospace">—</span>';
+      }
       h += '</div>';
       h += '<div style="display:flex;gap:4px;flex-wrap:wrap">';
       // Events toggle (Phase 3.1) — always available; expands a per-scenario
@@ -8066,6 +8215,25 @@ async def api_requests(source: str, ag_session: str | None = Cookie(None)):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     data = list(REQUEST_TRACE.get(source, []))
     return JSONResponse(data)
+
+
+@router.get("/api/requests/by-attack/{attack_id}")
+async def api_requests_by_attack(attack_id: str, limit: int = 200,
+                                  ag_session: str | None = Cookie(None)):
+    """Cross-source attack.id lookup (Phase 3.2).
+
+    Scans every per-source request trace for entries that carry the given
+    attack.id in either the request body or the response preview. Returns a
+    merged, newest-first list with the ``source`` field injected onto each
+    row so the UI can render a sortable table that spans every collector
+    that observed an event from this scenario.
+    """
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    limit = max(1, min(int(limit or 200), 1000))
+    results = find_by_attack(attack_id, limit=limit)
+    return JSONResponse({"attack_id": attack_id, "results": results,
+                         "count": len(results)})
 
 
 # ── Intrusion tracking API ──────────────────────────────────────────────────

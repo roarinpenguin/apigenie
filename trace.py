@@ -31,6 +31,44 @@ REQUEST_TRACE: dict[str, collections.deque] = collections.defaultdict(
     lambda: collections.deque(maxlen=100)
 )
 
+
+def find_by_attack(attack_id: str, limit: int = 200) -> list[dict[str, Any]]:
+    """Scan every per-source request trace for entries whose request or
+    response payload contains ``attack_id``.
+
+    This is the cross-source view that powers Phase 3.2 of Attack Scenarios:
+    given an ``attack.id`` from a scenario card, surface every HTTP call
+    that delivered an event tagged with it, regardless of which source
+    handled the call. The result merges every source's ring buffer, adds
+    the ``source`` key (REQUEST_TRACE uses the source as the dict key, not
+    as a field on each entry), and sorts globally newest-first.
+
+    Match is a plain substring scan over ``req_body`` + ``resp_preview``.
+    attack.ids have the form ``att-YYYYMMDD-NNNN`` — distinctive enough
+    that this is faster and simpler than parsing every JSON payload. The
+    only payload bytes we have are ``resp_preview`` (first 500 chars), so
+    callers should treat the result as best-effort for very large responses.
+
+    Push-source events do not flow through TraceMiddleware (they are
+    outbound), so attack-tagged events pushed via log_pusher are NOT
+    visible here. The per-scenario event log (Phase 3.1) catches those.
+    """
+    if not attack_id:
+        return []
+    results: list[dict[str, Any]] = []
+    needle = attack_id
+    # Snapshot the items() so a concurrent middleware write doesn't trip
+    # the iteration; the inner buffers are deques (thread-safe append).
+    for source, buf in list(REQUEST_TRACE.items()):
+        for entry in list(buf):
+            hay = (entry.get("resp_preview") or "") + (entry.get("req_body") or "")
+            if needle in hay:
+                row = dict(entry)
+                row["source"] = source
+                results.append(row)
+    results.sort(key=lambda e: e.get("ts", ""), reverse=True)
+    return results[:max(0, int(limit))]
+
 # (client_ip, source_id) → {"count","first_ts","last_ts","statuses":{code:int}}
 # OrderedDict gives O(1) LRU behaviour: move_to_end() on update, popitem(last=False)
 # on overflow. Cap is generous for a mock server but bounded so a malicious or

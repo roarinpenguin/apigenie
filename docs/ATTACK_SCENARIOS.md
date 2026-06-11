@@ -541,8 +541,85 @@ Each scenario card gets an **Events (N)** button next to **Export**. Clicking it
 | # | Task | Status |
 |---|------|--------|
 | 3.1 | Per-scenario event log + REST + card UI | **Shipped (v5.0)** |
-| 3.2 | `attack.id` search in Request Inspector — filter events by attack.id across all sources | Pending |
+| 3.2 | `attack.id` search in Request Inspector — filter events by attack.id across all sources | **Shipped (v5.0)** |
 | 3.3 | Exportable attack timeline (JSON / PDF) for demo handoff | Pending |
+
+---
+
+## Phase 3.2 — Cross-source attack.id search (shipped)
+
+Phase 3.1 answered _"what events did this scenario fire?"_. Phase 3.2 answers the inverse: _"every HTTP call that delivered an event tagged with this attack.id, across every source."_ That's the lens an analyst uses to correlate a multi-source campaign — phish lands on Proofpoint, lateral movement shows up on Okta, ransomware encryption appears on SentinelOne, all wearing the same `attack.id`.
+
+### REST endpoint
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/admin/api/requests/by-attack/{attack_id}` | Scan every per-source request trace buffer for entries whose request body or response preview contains `attack_id`. Returns merged, newest-first results with the `source` field injected onto each row. Query param: `limit` (1-1000, default 200). |
+
+Response shape:
+
+```json
+{
+  "attack_id": "att-20260526-4242",
+  "count": 12,
+  "results": [
+    {
+      "ts": "2026-05-26T14:32:01+00:00",
+      "source": "proofpoint",
+      "method": "GET",
+      "path": "/v2/siem/all",
+      "status": 200,
+      "duration_ms": 7,
+      "client": "10.0.0.42",
+      "req_headers": {"...": "..."},
+      "req_body": "",
+      "resp_size": 2841,
+      "resp_preview": "{\"events\":[{\"attack.id\":\"att-20260526-4242\",..."
+    },
+    ...
+  ]
+}
+```
+
+### How it scans
+
+`trace.find_by_attack(attack_id, limit=200)` is a plain in-memory scan over `REQUEST_TRACE`:
+
+- For each per-source ring buffer (`REQUEST_TRACE[source]`), iterate every entry.
+- Hay = `resp_preview` (first 500 chars of the response) + `req_body` (first 2000 chars of the request).
+- Needle = the raw `attack_id` string. attack.ids have the form `att-YYYYMMDD-NNNN` — distinctive enough that a substring match is faster than parsing every JSON payload.
+- A matched entry is **copied** before adding the `source` key, so the per-source view's data is never mutated.
+- Results are merged, sorted by `ts` newest-first, then truncated to `limit`.
+
+The scan is O(sources × 100). With ~25 sources and 100 entries each, that's at most 2,500 substring checks — sub-millisecond on any modern CPU.
+
+### What it does NOT see
+
+- **Push-source events** — events that ApiGenie pushes _out_ to a sink (Log Push profiles, OTLP egress) bypass `TraceMiddleware` entirely (they're outbound, not inbound). The per-scenario event log (Phase 3.1) catches those, so the Events panel on each scenario card is the source of truth for push-only scenarios.
+- **Old events past the 100-entry per-source window** — `REQUEST_TRACE[source]` is a `deque(maxlen=100)`. A high-volume source can roll old hits out of the buffer before you search.
+
+The UI calls these limitations out inline when the result set is empty: _"No requests in the trace buffer contain `att-…`. The buffer keeps the last 100 calls per source; push-source events do not flow through here."_
+
+### UI surface
+
+Two entry points:
+
+1. **Scenario card** — the `attack.id` pill on each running / completed scenario card is now a clickable affordance (dotted underline, pointer cursor). Click it → jumps to the Request Inspector with the cross-source filter pre-applied. One click from "this scenario" to "every request this scenario produced".
+
+2. **Request Inspector** — a new filter row below the Source chips: an `attack.id` text input, an **Apply** button, and a **✕ Clear** button. When the filter is active, the Recent calls table pivots to cross-source mode: an extra **Source** column appears, each row tags the originating source as a chip, and every match of the `attack.id` in the response body is highlighted in `<mark>` so you can verify the hit at a glance.
+
+Clicking a Source chip while the filter is active automatically clears the filter (so the chip selection feels responsive instead of silently ignored).
+
+### Backend module touched
+
+- `@/Users/marco.rottigni/Library/CloudStorage/GoogleDrive-marco.rottigni@sentinelone.com/My Drive/Solutions Architect SecOps/GitHub Projects/apigenie/trace.py:35` — `find_by_attack()` helper
+- `@/Users/marco.rottigni/Library/CloudStorage/GoogleDrive-marco.rottigni@sentinelone.com/My Drive/Solutions Architect SecOps/GitHub Projects/apigenie/admin.py` — `GET /admin/api/requests/by-attack/{attack_id}` endpoint + Requests pane filter UI + scenario-card pill onclick
+
+### What's still pending in Phase 3
+
+| # | Task | Status |
+|---|------|--------|
+| 3.3 | Exportable attack timeline — `GET /admin/api/scenarios/{id}/timeline` returning a chronologically ordered JSON list of phases + events for demo handoff | Pending |
 
 ## Storage
 
