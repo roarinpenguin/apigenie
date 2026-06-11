@@ -1,9 +1,17 @@
-"""Microsoft Entra ID (Azure AD) mock data generator."""
+"""Microsoft Entra ID (Azure AD) mock data generator.
+
+Event catalog grounded in the Microsoft Graph audit + signin schemas
+(``learn.microsoft.com/en-us/graph/api/resources/directoryaudit`` and
+``learn.microsoft.com/en-us/graph/api/resources/signin``). Like cisco_duo,
+the catalogue spans two endpoint families — each entry carries an
+``endpoint`` key so the catalog-coverage test sums weights per family.
+"""
 
 import random
 from typing import Any
 
 import detection_rules
+import event_mix
 import profiles
 from generators import (
     generate_country_code,
@@ -20,6 +28,45 @@ _USERS = [
     ("admin", "Global Administrator"),
     ("svc-account", "Service Account"),
     ("mike.jones", "Mike Jones"),
+]
+
+# ── Event catalog ──────────────────────────────────────────────────────
+EVENT_CATALOG: list[dict[str, Any]] = [
+    # /v1.0/auditLogs/directoryAudits
+    {"id": "audit", "label": "User update (directory audit)",
+     "endpoint": "directoryAudits", "default_weight": 0.40,
+     "docs_anchor": "learn.microsoft.com/en-us/graph/api/resources/directoryaudit"},
+    {"id": "mfa_required", "label": "MFA registration",
+     "endpoint": "directoryAudits", "default_weight": 0.20,
+     "docs_anchor": "learn.microsoft.com/en-us/graph/api/resources/directoryaudit"},
+    {"id": "conditional_access_block", "label": "Conditional Access block (add member to role)",
+     "endpoint": "directoryAudits", "default_weight": 0.15,
+     "docs_anchor": "learn.microsoft.com/en-us/azure/active-directory/conditional-access/concept-conditional-access-policies"},
+    {"id": "risky_signin", "label": "Risky user confirmed safe (Identity Protection)",
+     "endpoint": "directoryAudits", "default_weight": 0.10,
+     "docs_anchor": "learn.microsoft.com/en-us/azure/active-directory/identity-protection/concept-identity-protection-risks"},
+    {"id": "service_principal_auth", "label": "Service principal added",
+     "endpoint": "directoryAudits", "default_weight": 0.10,
+     "docs_anchor": "learn.microsoft.com/en-us/graph/api/resources/serviceprincipal"},
+    {"id": "impossible_travel", "label": "Impossible travel detected",
+     "endpoint": "directoryAudits", "default_weight": 0.05,
+     "docs_anchor": "learn.microsoft.com/en-us/azure/active-directory/identity-protection/concept-identity-protection-risks#impossible-travel"},
+    # /v1.0/auditLogs/signIns
+    {"id": "success", "label": "Sign-in success",
+     "endpoint": "signIns", "default_weight": 0.65,
+     "docs_anchor": "learn.microsoft.com/en-us/graph/api/resources/signin"},
+    {"id": "mfa_interrupted", "label": "Sign-in interrupted by MFA (errorCode 50074)",
+     "endpoint": "signIns", "default_weight": 0.15,
+     "docs_anchor": "learn.microsoft.com/en-us/azure/active-directory/develop/reference-aadsts-error-codes"},
+    {"id": "ca_block", "label": "Sign-in blocked by Conditional Access (53003)",
+     "endpoint": "signIns", "default_weight": 0.10,
+     "docs_anchor": "learn.microsoft.com/en-us/azure/active-directory/develop/reference-aadsts-error-codes"},
+    {"id": "invalid_password", "label": "Invalid username or password (50126)",
+     "endpoint": "signIns", "default_weight": 0.07,
+     "docs_anchor": "learn.microsoft.com/en-us/azure/active-directory/develop/reference-aadsts-error-codes"},
+    {"id": "risky", "label": "Risky sign-in (atRisk)",
+     "endpoint": "signIns", "default_weight": 0.03,
+     "docs_anchor": "learn.microsoft.com/en-us/azure/active-directory/identity-protection/concept-identity-protection-risks"},
 ]
 
 _AUDIT_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
@@ -115,8 +162,9 @@ def get_audit_logs_response(limit: int = 50, skip: int = 0) -> dict[str, Any]:
     ctx = profiles.get_context("azure_ad")
     count = profiles.scale_count("azure_ad", min(limit, 50))
     logs = []
+    audit_templates = event_mix.apply(_AUDIT_TEMPLATES, "azure_ad")
     for _ in range(count):
-        template = weighted_choice(_AUDIT_TEMPLATES)
+        template = weighted_choice(audit_templates)
         pu = ctx.pick_user() if ctx else None
         if pu:
             user_login = pu.get("username", "user")
@@ -163,8 +211,9 @@ def get_signin_logs_response(limit: int = 50, skip: int = 0) -> dict[str, Any]:
     ctx = profiles.get_context("azure_ad")
     count = min(limit, 50)
     logs = []
+    signin_templates = event_mix.apply(_SIGNIN_TEMPLATES, "azure_ad")
     for _ in range(count):
-        template = weighted_choice(_SIGNIN_TEMPLATES)
+        template = weighted_choice(signin_templates)
         pu = ctx.pick_user() if ctx else None
         if pu:
             user_login = pu.get("username", "user")

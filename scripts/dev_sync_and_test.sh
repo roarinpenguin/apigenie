@@ -54,6 +54,8 @@ docker cp sources/proofpoint.py                    "$C":/app/sources/proofpoint.
 docker cp sources/aws_cloudtrail.py                "$C":/app/sources/aws_cloudtrail.py
 docker cp sources/aws_guardduty.py                 "$C":/app/sources/aws_guardduty.py
 docker cp sources/aws_waf.py                       "$C":/app/sources/aws_waf.py
+docker cp sources/azure_ad.py                      "$C":/app/sources/azure_ad.py
+docker cp sources/microsoft_defender.py            "$C":/app/sources/microsoft_defender.py
 docker cp tests/test_event_mix_sources.py          "$C":/app/tests/test_event_mix_sources.py
 
 echo "[2/3] restarting container..."

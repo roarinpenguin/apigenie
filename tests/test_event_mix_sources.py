@@ -51,6 +51,8 @@ _WIRED_SOURCES = (
     "aws_cloudtrail",
     "aws_guardduty",
     "aws_waf",
+    "azure_ad",
+    "microsoft_defender",
 )
 
 
@@ -160,6 +162,34 @@ def test_aws_waf_catalog_ids_match_template_keys():
     )
 
 
+def test_azure_ad_catalog_ids_match_template_keys():
+    """azure_ad spans two endpoint families like cisco_duo. The catalogue
+    must cover BOTH _AUDIT_TEMPLATES and _SIGNIN_TEMPLATES key sets — a
+    rename in either silently breaks overrides for that endpoint."""
+    from sources import azure_ad
+
+    cat_ids = {e["id"] for e in azure_ad.EVENT_CATALOG}
+    tpl_ids = (
+        set(azure_ad._AUDIT_TEMPLATES.keys())
+        | set(azure_ad._SIGNIN_TEMPLATES.keys())
+    )
+    assert cat_ids == tpl_ids, (
+        f"azure_ad catalog/template drift: "
+        f"catalog-only={cat_ids - tpl_ids}, template-only={tpl_ids - cat_ids}"
+    )
+
+
+def test_microsoft_defender_catalog_ids_match_template_keys():
+    from sources import microsoft_defender
+
+    cat_ids = {e["id"] for e in microsoft_defender.EVENT_CATALOG}
+    tpl_ids = set(microsoft_defender._ALERT_TEMPLATES.keys())
+    assert cat_ids == tpl_ids, (
+        f"microsoft_defender catalog/template drift: "
+        f"catalog-only={cat_ids - tpl_ids}, template-only={tpl_ids - cat_ids}"
+    )
+
+
 # ── Empirical override at scale (resolver actually wired through) ───────────
 
 
@@ -250,3 +280,54 @@ def test_aws_waf_resolver_actually_disables_event(_isolate_data_root):
         if log["terminatingRuleId"] == "SQLi_BODY":
             sqli += 1
     assert sqli == 0
+
+
+def test_azure_ad_audit_resolver_actually_disables_event(_isolate_data_root):
+    """Disabling ``impossible_travel`` should drop that activity display
+    name from the directoryAudits output. The string is unique to that
+    template."""
+    em = _isolate_data_root
+    _apply_disable_mix(em, "azure_ad", ["impossible_travel"])
+    from sources import azure_ad
+
+    random.seed(42)
+    resp = azure_ad.get_audit_logs_response(limit=50)
+    hits = sum(
+        1 for log in resp["value"]
+        if log["activityDisplayName"] == "Impossible travel detected"
+    )
+    assert hits == 0
+
+
+def test_azure_ad_signin_resolver_actually_disables_event(_isolate_data_root):
+    """Disabling ``ca_block`` should drop sign-ins with errorCode 53003.
+    That code is unique to the Conditional Access block template and
+    proves the resolver is threaded through the signIns code path as
+    well as the directoryAudits one."""
+    em = _isolate_data_root
+    _apply_disable_mix(em, "azure_ad", ["ca_block"])
+    from sources import azure_ad
+
+    random.seed(42)
+    resp = azure_ad.get_signin_logs_response(limit=50)
+    hits = sum(
+        1 for log in resp["value"]
+        if log["status"].get("errorCode") == 53003
+    )
+    assert hits == 0
+
+
+def test_microsoft_defender_resolver_actually_disables_event(_isolate_data_root):
+    """Disabling ``lsass_dump`` should drop ``Suspicious LSASS Memory
+    Access`` alerts. That display name is unique to the lsass template."""
+    em = _isolate_data_root
+    _apply_disable_mix(em, "microsoft_defender", ["lsass_dump"])
+    from sources import microsoft_defender
+
+    random.seed(42)
+    resp = microsoft_defender.get_alerts_response(limit=50)
+    hits = sum(
+        1 for alert in resp["value"]
+        if alert["properties"]["alertDisplayName"] == "Suspicious LSASS Memory Access"
+    )
+    assert hits == 0

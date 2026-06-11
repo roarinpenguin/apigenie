@@ -1,9 +1,17 @@
-"""Microsoft Defender for Cloud mock data generator."""
+"""Microsoft Defender for Cloud mock data generator.
+
+Event catalog grounded in the Defender XDR ``alertsAndIncidents`` schema
+(``learn.microsoft.com/en-us/microsoft-365/security/defender/api-overview``).
+Five alert templates anchored to common MITRE intents. Recommendations
+(``get_recommendations_response``) don't go through ``weighted_choice``
+so they don't participate in event-mix — only the alert path does.
+"""
 
 import random
 from typing import Any
 
 import detection_rules
+import event_mix
 import profiles
 from generators import (
     generate_hostname,
@@ -12,6 +20,25 @@ from generators import (
     now_iso,
     weighted_choice,
 )
+
+# ── Event catalog ──────────────────────────────────────────────────────
+EVENT_CATALOG: list[dict[str, Any]] = [
+    {"id": "security_alert", "label": "Suspicious process executed (Execution)",
+     "default_weight": 0.40,
+     "docs_anchor": "learn.microsoft.com/en-us/azure/defender-for-cloud/alerts-reference"},
+    {"id": "brute_force_rdp", "label": "Brute-force RDP (PreAttack)",
+     "default_weight": 0.25,
+     "docs_anchor": "learn.microsoft.com/en-us/azure/defender-for-cloud/alerts-reference#brute-force-attempt"},
+    {"id": "suspicious_powershell", "label": "Suspicious encoded PowerShell (Execution)",
+     "default_weight": 0.20,
+     "docs_anchor": "learn.microsoft.com/en-us/azure/defender-for-cloud/alerts-reference#suspicious-powershell"},
+    {"id": "lsass_dump", "label": "LSASS memory access (CredentialAccess)",
+     "default_weight": 0.10,
+     "docs_anchor": "learn.microsoft.com/en-us/azure/defender-for-cloud/alerts-reference#suspicious-lsass-access"},
+    {"id": "cryptominer", "label": "Crypto-mining activity (Impact)",
+     "default_weight": 0.05,
+     "docs_anchor": "learn.microsoft.com/en-us/azure/defender-for-cloud/alerts-reference#crypto-mining"},
+]
 
 _ALERT_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
     "security_alert": (
@@ -74,8 +101,9 @@ def get_alerts_response(limit: int = 50) -> dict[str, Any]:
     ctx = profiles.get_context("microsoft_defender")
     count = profiles.scale_count("microsoft_defender", min(limit, 50))
     alerts = []
+    alert_templates = event_mix.apply(_ALERT_TEMPLATES, "microsoft_defender")
     for _ in range(count):
-        template = weighted_choice(_ALERT_TEMPLATES)
+        template = weighted_choice(alert_templates)
         sub = random.choice(_SUBSCRIPTIONS)
         rg = random.choice(_RESOURCE_GROUPS)
         pm = ctx.pick_machine() if ctx else None
