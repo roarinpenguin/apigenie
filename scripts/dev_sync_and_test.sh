@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Dev-loop helper for the OTLP egress work.
+#
+# Copies the modified / new Python files into the running apigenie
+# container, restarts it, and runs the full pytest suite. Lives in
+# scripts/ so it's tracked, and exits non-zero on any failure so we can
+# tell green from red at a glance.
+#
+# Usage:
+#   bash scripts/dev_sync_and_test.sh                 # full regression
+#   bash scripts/dev_sync_and_test.sh tests/test_otel_pusher.py
+#                                                      # narrow run
+#
+# Designed to be runnable WITHOUT special-character escaping pitfalls.
+# Plain single-line invocation, no multi-line continuations to mangle.
+
+set -euo pipefail
+
+C=apigenie
+
+echo "[1/3] copying source files into the container..."
+docker cp admin.py                                 "$C":/app/admin.py
+docker cp log_pusher.py                            "$C":/app/log_pusher.py
+docker cp otlp_pusher.py                           "$C":/app/otlp_pusher.py
+docker cp push_sources/__init__.py                 "$C":/app/push_sources/__init__.py
+docker cp push_sources/synthetic_endpoint.py       "$C":/app/push_sources/synthetic_endpoint.py
+docker cp push_sources/synthetic_identity.py       "$C":/app/push_sources/synthetic_identity.py
+docker cp push_sources/synthetic_cloud.py          "$C":/app/push_sources/synthetic_cloud.py
+docker cp push_sources/synthetic_network.py        "$C":/app/push_sources/synthetic_network.py
+docker cp push_sources/replay_file.py              "$C":/app/push_sources/replay_file.py
+docker cp tests/test_otel_pusher.py                "$C":/app/tests/test_otel_pusher.py
+docker cp scripts/smoke_otlp_egress.py             "$C":/app/scripts/smoke_otlp_egress.py
+
+echo "[2/3] restarting container..."
+docker restart "$C" > /dev/null
+sleep 5
+
+echo "[3/3] running pytest..."
+if [[ $# -gt 0 ]]; then
+  docker exec "$C" python -m pytest -q --no-header "$@"
+else
+  docker exec "$C" python -m pytest -q --no-header
+fi

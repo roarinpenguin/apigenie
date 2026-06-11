@@ -1,6 +1,6 @@
 [project]
 name = "apigenie"
-version = "4.0.0"
+version = "4.1.0"
 description = "Multi-user, self-contained mock server for 19 security platform APIs + Azure Event Hubs (Kafka) + GCP Cloud Logging (Pub/Sub)"
 requires-python = ">=3.12"
 dependencies = [
@@ -12,6 +12,9 @@ dependencies = [
     "pydantic>=2.10.0",
     "maxminddb>=2.6.0",
     "pillow>=11.0.0",
+    # OpenTelemetry Custom Listener (push sink) — see docs/OTEL_LISTENER.md
+    "opentelemetry-proto>=1.27.0",
+    "grpcio>=1.65.0",
 ]
 
 [project.optional-dependencies]

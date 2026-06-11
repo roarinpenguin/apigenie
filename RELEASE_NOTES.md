@@ -2,6 +2,107 @@
 
 ---
 
+## v4.1 — *OpenTelemetry, both directions*
+
+> *Released June 2026.* Symmetric OpenTelemetry support lands in apigenie: a new **OTLP push-sink listener** that accepts exports *into* apigenie over OTLP/HTTP (port 443) and OTLP/gRPC (port 4317), and an **OTLP push-egress transport** in the Log Push framework that streams synthetic topics or uploaded replay files *out* to any OTLP collector. Together they let apigenie sit anywhere in a telemetry pipeline — as a collector, as a producer, or both at once (a single instance can even round-trip its own exports for smoke / demos).
+>
+> This release also fixes a **silent admin/portal nav leak** caused by a Python-vs-JS string-escape bug in the listener hit pane (a runaway `<script>` that killed `gatePortalRole()` and left every `data-portal="admin"` item visible in `/portal`). The companion fix — installing `node` in the production image — turns `tests/test_admin_js_syntax.py` from a silently-skipped no-op into a real CI gate that catches this entire bug class going forward.
+
+### At a glance
+
+- **OTLP/HTTP push sink** — `POST /listener/<id>/v1/{logs,metrics,traces}` with `application/x-protobuf` *or* `application/json`, returning spec-compliant `{"partialSuccess": {}}` 200 acks.
+- **OTLP/gRPC push sink** — `grpc://<host>:4317` (TLS-terminated by nginx, plaintext h2c upstream) speaking `opentelemetry.proto.collector.{logs,metrics,trace}.v1.*.Export`. Multi-tenant routing via metadata: `x-apigenie-listener-id`, the Grafana-compatible `x-scope-orgid`, a unique bearer token, or sole-sink fallback.
+- **OTLP push-egress transport.** Two new transports on the Log Push framework — `otlp_http` and `otlp_grpc` — that marshal any push source into an `ExportLogsServiceRequest` and ship it to an external collector (or to apigenie's own push-sink listener for a self-round-trip). Five new push sources land alongside: `synthetic_endpoint`, `synthetic_identity`, `synthetic_cloud`, `synthetic_network` (each reusing the listener's synthetic generators byte-for-byte), and `replay_file` (streams an uploaded log file via the existing replay engine with time-shift anchoring).
+- **Decoded hit preview.** Every accepted export records a `otlp_preview` block on the hit (resource attributes as KV chips + first N records as a JSON-ish list), rendered inline in the existing **📜 Hits** pane. Use `decode_preview: false` to opt out for high-volume streams.
+- **Wizard tiles, both sides.** The Listeners wizard step 3 adds an **OTLP push sink** radio next to *Synthetic* and *Replay*; the Log Push wizard adds **OTLP/HTTP** and **OTLP/gRPC** transports plus the 5 new sources with smart defaults (auto port 4317 for gRPC, auto `/v1/logs` for HTTP, replay-file picker reuses the existing `/admin/api/replays` endpoint).
+- **~70 new regression tests.** `tests/test_otel_listener.py` (47) covers the inbound half — data-model validation, codec wiring, decoder paths (logs/metrics/traces, malformed, oversize, truncation), HTTP dispatch (auth, path mismatch, decode opt-out), and the full gRPC server (routing tiers, bearer auth, signal mismatch, `NOT_FOUND` on ambiguity). `tests/test_otel_pusher.py` (~22) covers the outbound half — registry, profile model, source modules, request builder (severity / timestamp / whitelist mapping), HTTP transport (stub server), gRPC transport (real listeners_grpc server on an ephemeral port), and end-to-end dispatcher routing.
+- **Two live smoke scripts.** `scripts/smoke_otlp.py` covers inbound: creates a push-sink listener, pushes one OTLP/HTTP and one OTLP/gRPC export, asserts both decoded previews land, cleans up. `scripts/smoke_otlp_egress.py` covers outbound + round-trip: creates a push-sink listener, runs an OTLP/gRPC push profile against it, then an OTLP/HTTP push profile against it, asserts at least 10 decoded events land on the listener hit pane, cleans up. Both run via `docker exec apigenie python /app/scripts/smoke_otlp{,_egress}.py`.
+
+### What's new in detail
+
+#### OpenTelemetry listener kind
+
+The full design lives in [`docs/OTEL_LISTENER.md`](docs/OTEL_LISTENER.md). The data model adds one new optional field to the `Listener` dataclass (`push_sink: PushSinkSpec | None`) which is mutually exclusive with `synthetic` and `replay` — validated server-side. Two new codecs land at the same time: `otlp_proto` and `otlp_json`.
+
+| Component | Where it lives | What it does |
+|-----------|----------------|--------------|
+| **Data model + validation** | `listeners.py` (`PushSinkSpec`, `ALLOWED_CODECS_V1`, `validate_listener_payload`, `make_hit`) | Three-way XOR between data-source kinds, OTLP-specific constraints (gRPC ⇒ `otlp_proto`, `path` must start `/v1/<signal>`), `otlp_preview` field on hits. |
+| **Decoder** | `listeners_otlp.py` | Lazy-loaded protobuf classes, best-effort decode of the body into a compact preview dict (resources × records), 4 MB body cap, structured `decode_error` reporting (truncation, malformed, oversize). |
+| **HTTP dispatch** | `app.py` `listener_dispatch` (push_sink branch) | Routes `POST /listener/<id>/v1/<signal>` to the OTLP path, runs the existing auth / chaos / rate-limit pipeline, acks with the spec-compliant empty `Export*ServiceResponse`. |
+| **gRPC server** | `listeners_grpc.py` (new) | `grpc.aio.Server` on its own thread + event loop. Three `Export` servicers (Logs / Metrics / Trace). Routing precedence: explicit listener id → Grafana `x-scope-orgid` → bearer-token-unique → sole-sink. Mirrors the HTTP path for auth + chaos + hit recording. |
+| **FastAPI lifespan** | `app.py` (lifespan hook) | Starts the gRPC server on app startup (gated by `APIGENIE_OTLP_GRPC_ENABLED`, default `true`), stops it on shutdown. Failure is logged but non-fatal — apigenie keeps running with the HTTP half operational. |
+| **nginx TLS terminator** | `nginx/nginx.conf.template` | New `server { listen 4317 ssl; http2 on; grpc_pass grpc://apigenie:4317; }` block, modelled on the existing Pub/Sub-emulator 8443 pattern. Uses the same Let's Encrypt cert as 443 / 8443. |
+| **Admin UI wizard tile** | `admin.py` | Step-3 radio + signal/protocol/decode-preview/max-records fields. Codec dropdown gains `otlp_proto` / `otlp_json`. Hit pane renders a 📡 OTLP pill + collapsible decoded preview with resource attributes and records. |
+| **Tests + smoke** | `tests/test_otel_listener.py`, `scripts/smoke_otlp.py` | 47 unit + integration tests. End-to-end smoke against a live container. |
+
+The push-sink ingest path is **not** behind RBAC — the listener's own `auth` spec (none / bearer / basic / x_api_key) decides who can push, exactly like synthetic and replay listeners. Listener *configuration* (create / edit / delete / clone) reuses the existing `Category.LISTENERS` × `Permission.{CREATE,MODIFY,DELETE,VIEW}` model with `owner_id` + `visibility` scoping. No new admin endpoints were introduced.
+
+#### RBAC regression fix
+
+A Python `'\n'` (real newline) was emitted inside a JS string literal in `admin.py`'s `_renderOtlpPreview` helper, producing an unterminated string at JS parse time. The whole `<script>` block aborted, taking with it the IIFE that hides `data-portal="admin"` nav items in `/portal`. Visible symptom: Troubleshooting (Intrusions, Investigations, Container Logs) and System (System Settings) sections rendered for non-admin users — despite the server-side HTML being correct and `_portal_role_guard` still rejecting any admin API call from a user session. Fixed by replacing `'\n'` with `'\\n'` (the convention every other JS string in `admin.py` already used).
+
+#### OpenTelemetry push-egress transport
+
+The outbound mirror of the listener feature — documented in [`docs/OTEL_LISTENER.md` §15](docs/OTEL_LISTENER.md). The Log Push framework (`log_pusher.py`) gains two new transports without disturbing the existing JSON / HEC / Syslog hot paths:
+
+| Component | Where it lives | What it does |
+|-----------|----------------|--------------|
+| **OTLP marshaller** | `otlp_pusher.py` (new) | Dict→LogRecord mapping with severity normalisation (OTel spec bands), timestamp unit autodetect (s / ms / us / ns), whitelisted scalar attribute promotion, JSON body fallback for nested structures, and per-record truncation. |
+| **HTTP transport** | `otlp_pusher._send_http` | POSTs `application/x-protobuf` to `/v1/<signal>` with optional Bearer auth and `X-Apigenie-Listener-Id` / `X-Scope-Orgid` routing headers for in-cluster delivery. |
+| **gRPC transport** | `otlp_pusher._send_grpc` | Unary `LogsService/Export` call with the same routing metadata. `grpc.insecure_channel` for plaintext h2c (the in-cluster default), `grpc.secure_channel` for external TLS. |
+| **Push framework wiring** | `log_pusher.send_event` | Lazy-imports `otlp_pusher` and dispatches `otlp_*` transports to it; everything else (JSON/Syslog/CEF) is unchanged. New profile fields: `replay_file_id`, `otlp_signal`, `otlp_listener_id`. Stateful source contract via `make_iterator(profile)` so the replay source can stream a file across calls without per-event re-parsing. |
+| **5 new sources** | `push_sources/synthetic_*.py`, `push_sources/replay_file.py` | The 4 synthetic topics reuse `sources.synthetic.{endpoint,identity,cloud,network}.generate(1)` directly so a record emitted from a listener-side synthetic topic is byte-identical to the same topic streamed via the push side. The replay source streams an admin-uploaded file through `replay.stream()` with time-shift anchoring. |
+| **Wizard** | `admin.py` push profile editor | New transport dropdown options, OTLP-only field group (signal + listener id), replay-file picker (shown only when source_type=replay_file, lazy-loads via `/admin/api/replays`), and smart defaults per transport. |
+
+The egress half is **opt-in per push profile** — no new global env vars, no new sockets opened by apigenie itself (it's a client of the destination). Existing push profiles keep working unchanged because the new fields default to safe values (`otlp_signal="logs"`, `replay_file_id=None`, `otlp_listener_id=None`).
+
+#### CI hardening — no more silent skips
+
+- **`nodejs` in the Docker image** so `tests/test_admin_js_syntax.py` (a `node --check` lint of every embedded `<script>` block) actually runs in CI. It had been silently skipping for the entire v4.0 lifetime — long enough for the v4.1 JS bug above to slip in undetected. Future bugs of the same shape will fail this test loudly.
+- **`pytest` + `pytest-asyncio` in the Docker image** so `docker exec apigenie python -m pytest tests/` works in a freshly-built image without an extra install step. The previous Dockerfile installed runtime deps only.
+- **Stale `tests/test_alerts_phase4.py::TestEgressWireContract` assertions aligned** with the deliberate `alerts.build_scope` clamp to `account:site` (introduced in P4.x; the `/v1/alerts` gateway on `usea1-purple` 2026-06-10 was found to silently drop group-scoped sends — see `alerts.build_scope` docstring). The tests still asserted the old `A:S:G` shape; updated to match the new contract.
+
+### Breaking changes & migration (v4.0 → v4.1)
+
+The upgrade is **container-only** — no schema migration, no env-var changes, no breaking surface changes. Two operational items to know:
+
+1. **New host port: 4317 / TCP.** OTLP/gRPC ingress. Open it in your firewall / cloud SG if you want collectors to push over gRPC. If you only need OTLP/HTTP, port 443 keeps working with no extra config.
+2. **`docker compose up -d --build` is required** (not just `restart`). The new gRPC port mapping on the nginx service and the new `nodejs` + `pytest` packages in the apigenie image need a real image rebuild.
+
+Two **non-breaking but worth knowing** items:
+
+- The Custom Listeners tab still lives in the user portal (`data-portal="user"`) and the wizard reuses the existing `POST /admin/api/listeners` endpoint — so push-sink listeners inherit the same RBAC entitlements (`listeners:create / modify / delete`) and owner/visibility scoping as synthetic and replay listeners. No new permissions.
+- `APIGENIE_OTLP_GRPC_ENABLED` (default `true`) opts the gRPC server out entirely — set to `false` if you want to keep port 4317 closed or run in a restricted environment.
+
+### Upgrade procedure
+
+```bash
+docker compose down
+git pull           # pulls v4.1
+docker compose up -d --build
+
+# Confirm both halves of the new listener kind are healthy:
+docker exec apigenie python /app/scripts/smoke_otlp.py
+# → SMOKE OK   (creates a listener, pushes OTLP/HTTP + OTLP/gRPC, verifies hits, cleans up)
+
+# Optional: run the full regression suite — now node + pytest ship in the image
+docker exec apigenie python -m pytest tests/ -q
+# → all green
+
+# Smoke the egress side end-to-end (creates a listener + an OTLP push profile,
+# runs both transports against it, verifies decoded events land, cleans up):
+docker exec apigenie python /app/scripts/smoke_otlp_egress.py
+# → EGRESS SMOKE OK
+```
+
+### What's next
+
+- **More OTLP signals on the egress side.** Today push profiles emit only OTLP logs; metrics + traces will follow once the synthetic generators emit non-log shapes (the framework is already signal-aware via `otlp_signal`).
+- **OTLP receiver → push profile chaining.** Right now an apigenie deployment can act as a collector *or* a producer; a tiny piece of glue ("forward this push-sink listener's hits to this push profile") would turn it into a full mini-collector with arbitrary transform stages.
+- **Per-listener token rotation.** Today the listener's bearer token is a static string; a rolling-rotation policy (next-token + grace window) would close the auth-replay window for long-lived collector deployments.
+
+---
+
 ## v4.0 — *The Multi-User Edition*
 
 > *Released June 2026.* The biggest release since v1.0. ApiGenie is no longer a single-tenant mock server: one deployment now hosts arbitrarily many isolated users, each with their own log profiles, detection rules, source identifiers, SentinelOne console, avatar, and recovery flow — driven from a brand-new `/portal` UI that lives side-by-side with the existing `/admin`.

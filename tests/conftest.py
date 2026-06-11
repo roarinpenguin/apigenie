@@ -21,6 +21,10 @@ os.environ["APIGENIE_DATA_DIR"] = str(_TMPROOT)     # accounts.py / telemetry.py
 os.environ["APIGENIE_DATA"] = str(_TMPROOT)         # bans.py / request_log.py / intrusions.py
 os.environ["APIGENIE_DATA_ROOT"] = str(_TMPROOT)    # profiles.py / detection_rules.py / log_pusher.py / …
 os.environ["APIGENIE_DB"] = str(_TMPROOT / "apigenie.db")
+# Default-disable the OTLP/gRPC server in tests so TestClient(app) doesn't
+# spawn a real port-4317 listener every time. The gRPC-specific tests start
+# their own server on an ephemeral port.
+os.environ.setdefault("APIGENIE_OTLP_GRPC_ENABLED", "false")
 # Keep admin password files off the production volume too.
 os.environ.setdefault("ADMIN_PASSWORD_FILE", str(_TMPROOT / "admin_pass"))
 os.environ.setdefault("USER_PASSWORD_FILE", str(_TMPROOT / "user_pass"))

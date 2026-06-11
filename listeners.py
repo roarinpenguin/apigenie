@@ -60,7 +60,12 @@ _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,30}$")
 _PATH_RE = re.compile(r"^/[A-Za-z0-9_\-./{}:]*$")  # tolerant; no query string
 
 ALLOWED_METHODS = {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"}
-ALLOWED_CODECS_V1 = {"json", "ndjson", "syslog"}            # see docs §10
+# v1 codecs: json/ndjson/syslog for synthetic+replay listeners; otlp_proto/
+# otlp_json for push_sink listeners (see docs/OTEL_LISTENER.md §3).
+ALLOWED_CODECS_V1 = {"json", "ndjson", "syslog", "otlp_proto", "otlp_json"}
+PUSH_SINK_CODECS  = {"otlp_proto", "otlp_json"}
+PUSH_SINK_SIGNALS = {"logs", "metrics", "traces"}
+PUSH_SINK_PROTOCOLS = {"otlp_http", "otlp_grpc"}
 ALLOWED_AUTH_KINDS = {"none", "basic", "bearer", "oauth2_cc", "x_api_key"}
 
 # Tokens minted by ApiGenie's existing /oauth2/v1/token endpoint. Listeners
@@ -130,6 +135,22 @@ class ReplayFileSpec:
 
 
 @dataclass
+class PushSinkSpec:
+    """OpenTelemetry push-sink configuration. See docs/OTEL_LISTENER.md.
+
+    A listener that has ``push_sink`` set accepts OTLP exports from a
+    collector and acknowledges them with the spec-compliant 200 /
+    ``Export*ServiceResponse`` envelope. The hit pane shows the decoded
+    resource attributes + first ``max_decode_records`` records.
+    """
+    protocol: Literal["otlp_http", "otlp_grpc"] = "otlp_http"
+    signal:   Literal["logs", "metrics", "traces"] = "logs"
+    decode_preview: bool = True
+    ack_partial_success: bool = True
+    max_decode_records: int = 5
+
+
+@dataclass
 class Listener:
     id: str
     name: str
@@ -144,6 +165,7 @@ class Listener:
     # Exactly one of these is populated. Encoded as a tagged dict on disk.
     synthetic: SyntheticTopicSpec | None = None
     replay: ReplayFileSpec | None = None
+    push_sink: PushSinkSpec | None = None
     owner_id: str | None = None
     visibility: str = "private"
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds"))
@@ -171,6 +193,7 @@ class Listener:
             chaos=_sub(ChaosSpec, "chaos"),
             synthetic=_sub(SyntheticTopicSpec, "synthetic"),
             replay=_sub(ReplayFileSpec, "replay"),
+            push_sink=_sub(PushSinkSpec, "push_sink"),
             owner_id=d.get("owner_id"),
             visibility=d.get("visibility", "private"),
             created_at=d.get("created_at") or datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -204,15 +227,38 @@ def validate_listener_payload(d: dict[str, Any]) -> tuple[bool, str]:
             return False, "auth.kind=bearer requires token"
         if akind == "x_api_key" and not auth.get("api_key"):
             return False, "auth.kind=x_api_key requires api_key"
-        # Exactly one of synthetic / replay
+        # Exactly one of synthetic / replay / push_sink (three-way XOR).
         has_syn = isinstance(d.get("synthetic"), dict)
         has_rep = isinstance(d.get("replay"), dict)
-        if has_syn == has_rep:
-            return False, "exactly one of 'synthetic' or 'replay' must be set"
+        has_psk = isinstance(d.get("push_sink"), dict)
+        if sum([has_syn, has_rep, has_psk]) != 1:
+            return False, "exactly one of 'synthetic', 'replay' or 'push_sink' must be set"
         if has_syn:
             topic = d["synthetic"].get("topic", "")
             if topic not in {"endpoint", "identity", "cloud", "network"}:
                 return False, "synthetic.topic must be endpoint|identity|cloud|network"
+        if has_psk:
+            ps = d["push_sink"]
+            proto = ps.get("protocol", "otlp_http")
+            if proto not in PUSH_SINK_PROTOCOLS:
+                return False, f"push_sink.protocol must be one of {sorted(PUSH_SINK_PROTOCOLS)}"
+            signal = ps.get("signal", "logs")
+            if signal not in PUSH_SINK_SIGNALS:
+                return False, f"push_sink.signal must be one of {sorted(PUSH_SINK_SIGNALS)}"
+            if codec not in PUSH_SINK_CODECS:
+                return False, (
+                    f"push_sink listeners require codec in {sorted(PUSH_SINK_CODECS)}; got {codec!r}"
+                )
+            if proto == "otlp_grpc" and codec != "otlp_proto":
+                return False, "push_sink.protocol=otlp_grpc requires codec=otlp_proto"
+            if method != "POST":
+                return False, "push_sink listeners require method=POST"
+            try:
+                mdr = int(ps.get("max_decode_records", 5))
+            except (TypeError, ValueError):
+                return False, "push_sink.max_decode_records must be an integer"
+            if mdr < 0 or mdr > 100:
+                return False, "push_sink.max_decode_records must be between 0 and 100"
         return True, ""
     except (KeyError, TypeError, ValueError) as exc:
         return False, f"malformed payload: {exc}"
@@ -716,8 +762,12 @@ def _syslog_val(v: Any) -> str:
 def make_hit(*, ts: str, method: str, path: str, query: str, client: str,
              status: int, identity: str, headers: dict[str, str],
              body: str, duration_ms: int,
-             resp_body: str = "", resp_size: int = 0) -> dict[str, Any]:
-    return {
+             resp_body: str = "", resp_size: int = 0,
+             otlp_preview: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Build a hit-history entry. ``otlp_preview`` (if set) carries the
+    decoded OTLP summary for push_sink listeners — see
+    ``listeners_otlp.decode_preview`` and docs/OTEL_LISTENER.md §8."""
+    entry = {
         "ts": ts,
         "method": method,
         "path": path,
@@ -731,6 +781,9 @@ def make_hit(*, ts: str, method: str, path: str, query: str, client: str,
         "resp_size": resp_size,
         "resp_preview": resp_body[:500],
     }
+    if otlp_preview is not None:
+        entry["otlp_preview"] = otlp_preview
+    return entry
 
 
 # Initialise on import so admin endpoints can list configs immediately.

@@ -58,6 +58,30 @@ def _register_all() -> None:
     log_pusher.register_source(
         key="stamus", name="Stamus Networks SSP (Suricata)", module="push_sources.stamus",
         description="IDS/IPS alerts, flow records, DNS, HTTP, TLS, fileinfo, anomaly, stats — Suricata EVE JSON format")
+    # OTLP-egress companions (v4.1) — mirror the OTLP listener's data
+    # sources so an operator can stream the same synthetic topic or
+    # uploaded replay file *out* to an external OTLP collector. See
+    # docs/OTEL_LISTENER.md §6.
+    log_pusher.register_source(
+        key="synthetic_endpoint", name="Synthetic — Endpoint (EDR)",
+        module="push_sources.synthetic_endpoint",
+        description="EDR / process telemetry topic, same generator as the listener's synthetic endpoint source")
+    log_pusher.register_source(
+        key="synthetic_identity", name="Synthetic — Identity (SSO / IAM)",
+        module="push_sources.synthetic_identity",
+        description="Auth / SSO / IAM events, same generator as the listener's synthetic identity source")
+    log_pusher.register_source(
+        key="synthetic_cloud", name="Synthetic — Cloud audit",
+        module="push_sources.synthetic_cloud",
+        description="Multi-cloud audit events (AWS / Azure / GCP), same generator as the listener's synthetic cloud source")
+    log_pusher.register_source(
+        key="synthetic_network", name="Synthetic — Network (Zeek)",
+        module="push_sources.synthetic_network",
+        description="Zeek-style flow + protocol events, same generator as the listener's synthetic network source")
+    log_pusher.register_source(
+        key="replay_file", name="Replay — uploaded log file",
+        module="push_sources.replay_file",
+        description="Streams an admin-uploaded replay file (jsonl / csv / syslog / cef) with time-shift anchoring")
 
 
 _register_all()

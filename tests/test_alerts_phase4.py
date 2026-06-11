@@ -221,12 +221,14 @@ class TestEgressWireContract:
         assert captured_requests[0].headers["s1-scope"] == "acct-only"
 
     def test_s1_scope_with_site_and_group(self, mock_client, captured_requests):
-        """Triplet S1-Scope ``account:site:group`` — Resilient-Inc-style scope.
+        """Triplet S1-Scope is **clamped to** ``account:site`` — group is dropped.
 
-        The S1 UAM gateway accepts this form (verified empirically against
-        ingest.us1.sentinelone.net 2026-06-10) and routes the alert into the
-        named group so binding to inventory can succeed when the agent lives
-        there.
+        Empirical finding on ``usea1-purple`` 2026-06-10: the ``/v1/alerts``
+        gateway returns 202 for group-scoped headers but the downstream
+        ingest processor never lands them. ``build_scope`` therefore
+        deliberately ignores ``group_id`` for routing (see
+        ``alerts.build_scope`` docstring). The field is still accepted on
+        the API surface for profile compatibility.
         """
         import alerts
         prepared = alerts.prepare_alert(alerts.get_template("default_alert"))
@@ -239,7 +241,8 @@ class TestEgressWireContract:
             group_id="grp-77",
             client=mock_client,
         )
-        assert captured_requests[0].headers["s1-scope"] == "acct-123:site-9:grp-77"
+        # Group dropped; clamped to account:site.
+        assert captured_requests[0].headers["s1-scope"] == "acct-123:site-9"
 
     def test_s1_scope_orphan_group_falls_back_to_site(self, mock_client, captured_requests):
         """``group_id`` without ``site_id`` is invalid (group lives inside a
@@ -259,14 +262,22 @@ class TestEgressWireContract:
 
     def test_build_scope_helper(self):
         """Unit-test build_scope directly so regressions surface even if
-        egress_alert is refactored."""
+        egress_alert is refactored.
+
+        The helper is **clamped to ``account:site``** — ``group_id`` is
+        accepted for API compatibility but silently dropped from the
+        produced S1-Scope header (see ``alerts.build_scope`` docstring
+        for the rationale).
+        """
         import alerts
         assert alerts.build_scope("A") == "A"
         assert alerts.build_scope("A", "S") == "A:S"
-        assert alerts.build_scope("A", "S", "G") == "A:S:G"
-        # Orphan group is dropped
+        # Group is deliberately clamped out — site scope is the deepest the
+        # /v1/alerts gateway will actually land.
+        assert alerts.build_scope("A", "S", "G") == "A:S"
+        # Orphan group (no site) degrades to account scope.
         assert alerts.build_scope("A", None, "G") == "A"
-        # Empty string treated as absent
+        # Empty string treated as absent.
         assert alerts.build_scope("A", "", "G") == "A"
 
     def test_body_is_gzipped_json_round_trip(self, mock_client, captured_requests):

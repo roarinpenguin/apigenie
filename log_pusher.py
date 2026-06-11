@@ -169,6 +169,14 @@ def create_profile(data: dict[str, Any]) -> dict[str, Any]:
         "events_sent": 0,
         "started_at": "",
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        # OTLP egress (v4.1) — see docs/OTEL_LISTENER.md §6.
+        # ``replay_file_id`` is only meaningful when ``source_type == 'replay'``.
+        # ``otlp_signal`` selects the OTLP signal for the outbound export;
+        # logs is the only signal apigenie generates today (synthetic + replay
+        # are both log-shaped), but the field is here for forward-compat.
+        "replay_file_id": data.get("replay_file_id") or None,
+        "otlp_signal": data.get("otlp_signal", "logs"),
+        "otlp_listener_id": data.get("otlp_listener_id") or None,
     }
     with _lock:
         profiles = _load_profiles()
@@ -192,7 +200,8 @@ def update_profile(profile_id: str, data: dict[str, Any]) -> dict[str, Any] | No
         if not p:
             return None
         for key in ("name", "source_type", "format", "transport", "destination",
-                     "duration", "rate", "profile_id", "visibility"):
+                     "duration", "rate", "profile_id", "visibility",
+                     "replay_file_id", "otlp_signal", "otlp_listener_id"):
             if key in data:
                 p[key] = data[key]
         if "rate" in data:
@@ -504,14 +513,32 @@ def _send_syslog(payload: str, dest: dict[str, Any]) -> dict[str, Any]:
             sock.close()
 
 
-def send_event(formatted: str, transport: str, dest: dict[str, Any]) -> dict[str, Any]:
-    """Send a formatted event string via the specified transport. Returns delivery info."""
+def send_event(formatted: str, transport: str, dest: dict[str, Any],
+               *, event: dict[str, Any] | None = None,
+               profile: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Send a formatted event string (or, for OTLP transports, the dict
+    ``event`` directly) via the specified transport. Returns delivery info.
+
+    The ``event`` and ``profile`` kwargs are only consulted by the OTLP
+    transports, which marshal the *structured* event into an OTLP protobuf
+    request rather than wire-formatting a text payload. The textual
+    ``formatted`` is still used by the event-log preview in either case.
+    """
     if transport == "hec":
         return _send_hec(formatted, dest)
-    elif transport == "syslog":
+    if transport == "syslog":
         return _send_syslog(formatted, dest)
-    else:
-        return _send_http(formatted, dest)
+    if transport in ("otlp_http", "otlp_grpc"):
+        # Lazy import keeps the protobuf classes off the hot path for the
+        # non-OTLP transports and avoids a dependency cycle.
+        import otlp_pusher
+        return otlp_pusher.send(
+            transport=transport,
+            event=event or {},
+            dest=dest,
+            profile=profile or {},
+        )
+    return _send_http(formatted, dest)
 
 
 # ── Push execution engine ────────────────────────────────────────────────────
@@ -575,6 +602,20 @@ def _push_loop(profile_id: str) -> None:
         _update_status(profile_id, "error", error=str(exc))
         return
 
+    # Stateful sources (replay-file) expose ``make_iterator(profile)`` and we
+    # call ``next(it)`` per event. Stateless sources (the 16 vendor modules,
+    # plus the synthetic topics) expose ``generate_event(ctx=ctx)`` and we
+    # call it afresh per event. The branch keeps existing modules untouched.
+    src_iter = None
+    if hasattr(mod, "make_iterator"):
+        try:
+            src_iter = iter(mod.make_iterator(profile))
+        except Exception as exc:
+            log.error("Push %s: make_iterator(%s) failed: %s",
+                      profile_id, source_type, exc)
+            _update_status(profile_id, "error", error=str(exc))
+            return
+
     # Get log profile context if bound
     ctx = None
     if profile.get("profile_id"):
@@ -601,11 +642,19 @@ def _push_loop(profile_id: str) -> None:
 
         t0 = time.monotonic()
         try:
-            event = mod.generate_event(ctx=ctx)
+            if src_iter is not None:
+                try:
+                    event = next(src_iter)
+                except StopIteration:
+                    log.info("Push %s: source iterator exhausted", profile_id[:8])
+                    break
+            else:
+                event = mod.generate_event(ctx=ctx)
             batch = detection_rules.inject_detection_events(source_type, [event])
             for ev in batch:
                 formatted = format_event(ev, fmt, source_type)
-                delivery = send_event(formatted, transport, dest)
+                delivery = send_event(formatted, transport, dest,
+                                       event=ev, profile=profile)
                 events_sent += 1
                 _log_event(profile_id, ev, formatted, True, delivery=delivery)
 

@@ -98,6 +98,15 @@ async def lifespan(app: FastAPI):
         sysmon.start()
     except Exception as exc:
         logger.warning(f"Could not start sysmon: {exc}")
+    # OTLP/gRPC push-sink server (port 4317). See docs/OTEL_LISTENER.md §5.
+    # Disabled when the env var is set to 0/false so unit tests and
+    # restricted environments can opt out without editing the lifespan.
+    if os.environ.get("APIGENIE_OTLP_GRPC_ENABLED", "true").lower() != "false":
+        try:
+            import listeners_grpc
+            listeners_grpc.start()
+        except Exception as exc:
+            logger.warning(f"Could not start OTLP gRPC server: {exc}")
     yield
     if _publishers_enabled:
         try:
@@ -114,6 +123,11 @@ async def lifespan(app: FastAPI):
     try:
         import sysmon
         sysmon.stop()
+    except Exception:
+        pass
+    try:
+        import listeners_grpc
+        listeners_grpc.stop()
     except Exception:
         pass
 
@@ -1342,7 +1356,8 @@ async def listener_dispatch(lid: str, rest: str, request: Request):
 
     # Helper: record + return. Centralised so every code path emits a hit.
     def _finish(status: int, body: Any, content_type: str,
-                identity: str = "anon", extra_headers: dict[str, str] | None = None):
+                identity: str = "anon", extra_headers: dict[str, str] | None = None,
+                otlp_preview: dict[str, Any] | None = None):
         ts_iso = _dt.now(_tz.utc).isoformat(timespec="seconds")
         duration_ms = int((_time.monotonic() - t0) * 1000)
         client_ip = request.client.host if request.client else "?"
@@ -1360,6 +1375,7 @@ async def listener_dispatch(lid: str, rest: str, request: Request):
                 headers=dict(request.headers), body=body_str,
                 duration_ms=duration_ms,
                 resp_body=resp_str, resp_size=len(resp_str),
+                otlp_preview=otlp_preview,
             )
             _listeners.record_hit(lid, entry)
         if isinstance(body, str):
@@ -1395,6 +1411,25 @@ async def listener_dispatch(lid: str, rest: str, request: Request):
     injected = _listeners.maybe_inject_status(listener)
     if injected is not None:
         return _finish(injected, {"error": "injected", "status": injected}, "application/json", identity)
+
+    # ── OTLP push sink ────────────────────────────────────────────────
+    # docs/OTEL_LISTENER.md §4. A push_sink listener does not generate a
+    # response payload from a topic generator or replay file — it accepts
+    # the collector's export, optionally decodes it into a hit-pane
+    # preview, and acks per the OTLP HTTP spec.
+    if listener.push_sink is not None:
+        import listeners_otlp as _otlp
+        preview: dict[str, Any] | None = None
+        if listener.push_sink.decode_preview:
+            preview = _otlp.decode_preview(
+                body=body_bytes,
+                codec=listener.codec,            # otlp_proto | otlp_json
+                signal=listener.push_sink.signal,
+                max_records=listener.push_sink.max_decode_records,
+            )
+        ack = _otlp.http_ack_body(listener.push_sink.signal)
+        return _finish(200, ack, "application/json", identity,
+                       otlp_preview=preview)
 
     body, ctype, extra = _listeners.build_response(listener, dict(request.query_params))
     return _finish(200, body, ctype, identity, extra)

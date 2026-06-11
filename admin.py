@@ -1282,8 +1282,9 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
         </div>
         <p style="font-size:.78rem;color:rgba(224,170,255,.55);margin-bottom:14px">
           Define an HTTP endpoint a custom Observo SCol Lua source can poll. Pick one of four synthetic telemetry topics
-          (endpoint / identity / cloud / network) or upload a log file for time-shifted replay.
-          Design: <code>docs/CUSTOM_LISTENERS.md</code>.
+          (endpoint / identity / cloud / network), upload a log file for time-shifted replay,
+          or expose an <b>OpenTelemetry push sink</b> for a collector to export OTLP into.
+          Design: <code>docs/CUSTOM_LISTENERS.md</code> &middot; <code>docs/OTEL_LISTENER.md</code>.
         </p>
         <div id="listeners-list"><p class="empty">Loading…</p></div>
       </div>
@@ -1330,7 +1331,7 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
             <div style="flex:1"><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Name</label>
               <input id="push-name" type="text" placeholder="e.g. PAN to SDL" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/></div>
             <div style="flex:1"><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Source Type</label>
-              <select id="push-source-type" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"></select></div>
+              <select id="push-source-type" onchange="togglePushSource()" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"></select></div>
           </div>
           <div style="display:flex;gap:10px">
             <div style="flex:1"><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Format</label>
@@ -1340,6 +1341,8 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
             <div style="flex:1"><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Transport</label>
               <select id="push-transport" onchange="togglePushPath()" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
                 <option value="http">HTTP POST</option><option value="hec">HEC</option><option value="syslog">Syslog TCP/UDP</option>
+                <option value="otlp_http">OTLP/HTTP (OpenTelemetry)</option>
+                <option value="otlp_grpc">OTLP/gRPC (OpenTelemetry)</option>
               </select></div>
           </div>
           <div style="font-size:.72rem;color:rgba(224,170,255,.5);margin-top:4px">Destination</div>
@@ -1364,6 +1367,26 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
               <div id="push-auth-type-group" style="flex:1"><select id="push-auth-type" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
                 <option value="none">None</option><option value="bearer">Bearer Token</option><option value="basic">Basic Auth</option></select></div>
               <div style="flex:2"><input id="push-auth-token" type="text" placeholder="Token / Username:Password" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.78rem"/></div>
+            </div>
+          </div>
+          <div id="push-replay-group" style="display:none">
+            <div style="font-size:.72rem;color:rgba(224,170,255,.5);margin-top:4px">Replay file <span style="color:rgba(255,128,128,.7)">*</span></div>
+            <select id="push-replay-file-id" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
+              <option value="">— select an uploaded file —</option>
+            </select>
+            <div style="font-size:.62rem;color:rgba(224,170,255,.4);margin-top:3px">Upload via Custom Listeners → Manage uploads. Records are streamed in file order with timestamp-shift to now.</div>
+          </div>
+          <div id="push-otlp-group" style="display:none">
+            <div style="font-size:.72rem;color:rgba(224,170,255,.5);margin-top:4px">OpenTelemetry export</div>
+            <div style="display:flex;gap:10px">
+              <div style="flex:1"><label style="font-size:.66rem;color:rgba(224,170,255,.4)">Signal</label>
+                <select id="push-otlp-signal" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
+                  <option value="logs">logs</option>
+                </select>
+              </div>
+              <div style="flex:2"><label style="font-size:.66rem;color:rgba(224,170,255,.4)">Listener id (optional, routes within an apigenie collector)</label>
+                <input id="push-otlp-listener-id" type="text" placeholder="e.g. lst_abc123  — sent as x-apigenie-listener-id / X-Scope-OrgId" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.78rem"/>
+              </div>
             </div>
           </div>
           <div id="push-hec-group" style="display:none">
@@ -3464,6 +3487,28 @@ async function deleteListener(id) {
   } catch (e) { toast('Delete failed: ' + e, true); }
 }
 
+// Render the decoded OTLP preview inside a listener hit row. Compact form:
+// resource attrs as KV chips, first N records as a JSON-ish list.
+function _renderOtlpPreview(p) {
+  if (!p) return '';
+  if (p.decode_error) {
+    return '<details style="margin-top:4px"><summary style="font-size:.65rem;color:#ffb070;cursor:pointer">📡 OTLP preview unavailable: ' + escHtml(p.decode_error) + '</summary>' +
+      '<pre style="font-size:.68rem;color:rgba(224,170,255,.55);white-space:pre-wrap;max-height:120px;overflow-y:auto;margin:4px 0">' + escHtml(JSON.stringify(p, null, 2)) + '</pre></details>';
+  }
+  const resAttrs = (p.resources || []).slice(0, 3).map(function(r) {
+    return Object.keys(r).slice(0, 6).map(function(k) {
+      return '<span class="pill" style="background:rgba(176,135,255,.12);border-color:rgba(176,135,255,.22)">' + escHtml(k) + '=' + escHtml(String(r[k])) + '</span>';
+    }).join(' ');
+  }).join('<br/>');
+  const recs = (p.records || []).map(function(r) {
+    return JSON.stringify(r);
+  }).join('\\n');
+  return '<details style="margin-top:4px"><summary style="font-size:.65rem;color:rgba(176,135,255,.7);cursor:pointer">📡 OTLP preview — ' + escHtml(p.signal || '?') + ' · ' + (p.resource_count || 0) + ' resource(s) · ' + (p.record_count || 0) + ' record(s)' + (p.truncated ? ' (truncated)' : '') + '</summary>' +
+    (resAttrs ? '<div style="font-size:.68rem;margin:6px 0">' + resAttrs + '</div>' : '') +
+    (recs ? '<pre style="font-size:.68rem;color:rgba(224,170,255,.7);white-space:pre-wrap;max-height:160px;overflow-y:auto;margin:4px 0;background:rgba(0,0,0,.25);padding:6px;border-radius:6px">' + escHtml(recs) + '</pre>' : '') +
+    '</details>';
+}
+
 async function toggleHits(id) {
   const box = document.getElementById('hits-' + id);
   if (!box) return;
@@ -3485,6 +3530,12 @@ async function toggleHits(id) {
       const rSize = h.resp_size || 0;
       const rKb = rSize > 1024 ? (rSize/1024).toFixed(1)+'KB' : rSize+'B';
       const rPrev = h.resp_preview || '';
+      // OTLP push-sink hits carry an extra decoded preview (see
+      // listeners_otlp.decode_preview). Render it as a 📡 pill + expandable
+      // block under the row instead of the generic resp_preview.
+      const otlp  = h.otlp_preview || null;
+      const otlpPill = otlp ? ' <span class="pill" style="background:rgba(176,135,255,.18);border-color:rgba(176,135,255,.35);color:#d4b3ff">📡 OTLP ' + escHtml(otlp.signal || '?') + ((otlp.record_count != null) ? ' / ' + otlp.record_count + ' rec' : '') + (otlp.truncated ? ' …' : '') + '</span>' : '';
+      const otlpDetails = otlp ? _renderOtlpPreview(otlp) : '';
       return '<div class="hit-row">' +
         '<span style="color:rgba(224,170,255,.55)">' + escHtml(ts) + '</span>' +
         '<span class="' + cls + '">' + h.status + '</span>' +
@@ -3494,8 +3545,10 @@ async function toggleHits(id) {
         ' <span class="pill">' + (h.duration_ms || 0) + 'ms</span>' +
         ' <span class="pill">' + escHtml(h.client || '?') + '</span>' +
         (rSize ? ' <span class="pill" style="background:rgba(100,181,246,.15);border-color:rgba(100,181,246,.3);color:#90caf9">◀ ' + rKb + '</span>' : '') +
+        otlpPill +
         (rPrev ? '<details style="margin-top:4px"><summary style="font-size:.65rem;color:rgba(224,170,255,.4);cursor:pointer">response preview</summary>' +
           '<pre style="font-size:.68rem;color:rgba(224,170,255,.6);white-space:pre-wrap;max-height:120px;overflow-y:auto;margin:4px 0">' + escHtml(rPrev.substring(0,500)) + '</pre></details>' : '') +
+        otlpDetails +
         '</span></div>';
     }).join('');
   } catch (e) {
@@ -3520,6 +3573,7 @@ function openWizard(existingId) {
     auth: {kind:'none'},
     synthetic: {topic:'endpoint', rate_per_request:50, seed:null},
     pagination: null, rate_limit: null, chaos: null,
+    push_sink: null,
   };
   _openWizardWith(base, false);
 }
@@ -3541,10 +3595,20 @@ function _openWizardWith(state, editing) {
   document.getElementById('wiz-auth-pass').value  = (state.auth && state.auth.password) || '';
   document.getElementById('wiz-auth-apikey').value= (state.auth && state.auth.api_key) || '';
   document.getElementById('wiz-auth-apikey-h').value=(state.auth && state.auth.api_key_header) || 'X-Api-Key';
-  // Step 3 (data source) — synthetic vs replay
-  const dsKind = state.replay ? 'replay' : 'synthetic';
+  // Step 3 (data source) — synthetic vs replay vs push_sink (OTLP)
+  const dsKind = state.push_sink ? 'push_sink' : (state.replay ? 'replay' : 'synthetic');
   document.querySelectorAll('input[name="wiz-ds-kind"]').forEach(r => { r.checked = (r.value === dsKind); });
   _showDataSourceFields(dsKind);
+  // OTLP push-sink fields
+  const psk = state.push_sink || {protocol:'otlp_http', signal:'logs', decode_preview:true, ack_partial_success:true, max_decode_records:5};
+  const pskProtoEl = document.getElementById('wiz-psk-protocol');
+  if (pskProtoEl) pskProtoEl.value = psk.protocol || 'otlp_http';
+  const pskSigEl = document.getElementById('wiz-psk-signal');
+  if (pskSigEl) pskSigEl.value = psk.signal || 'logs';
+  const pskDecEl = document.getElementById('wiz-psk-decode');
+  if (pskDecEl) pskDecEl.checked = (psk.decode_preview !== false);
+  const pskMaxEl = document.getElementById('wiz-psk-max');
+  if (pskMaxEl) pskMaxEl.value = psk.max_decode_records != null ? psk.max_decode_records : 5;
   const syn = state.synthetic || {topic:'endpoint', rate_per_request:50, seed:null};
   document.getElementById('wiz-topic').value = syn.topic;
   document.getElementById('wiz-rate').value  = syn.rate_per_request;
@@ -3641,7 +3705,7 @@ function _collectWizard() {
                                        auth.api_key_header = document.getElementById('wiz-auth-apikey-h').value || 'X-Api-Key'; }
   // oauth2_cc and none have no extra fields
   const dsKind = (document.querySelector('input[name="wiz-ds-kind"]:checked') || {}).value || 'synthetic';
-  let synthetic = null, replay = null;
+  let synthetic = null, replay = null, push_sink = null;
   if (dsKind === 'synthetic') {
     const seedRaw = document.getElementById('wiz-seed').value.trim();
     synthetic = {
@@ -3649,7 +3713,7 @@ function _collectWizard() {
       rate_per_request: parseInt(document.getElementById('wiz-rate').value) || 50,
       seed: seedRaw === '' ? null : parseInt(seedRaw),
     };
-  } else {
+  } else if (dsKind === 'replay') {
     replay = {
       file_id:               document.getElementById('wiz-replay-file').value,
       format:                document.getElementById('wiz-replay-format').value || 'jsonl',
@@ -3658,6 +3722,14 @@ function _collectWizard() {
       anchor_offset_seconds: parseInt(document.getElementById('wiz-replay-anchor-offset').value) || 0,
       anchor_fixed_iso:      document.getElementById('wiz-replay-anchor-fixed').value.trim() || null,
       preserve_spread:       document.getElementById('wiz-replay-spread').checked,
+    };
+  } else if (dsKind === 'push_sink') {
+    push_sink = {
+      protocol:            document.getElementById('wiz-psk-protocol').value || 'otlp_http',
+      signal:              document.getElementById('wiz-psk-signal').value   || 'logs',
+      decode_preview:      document.getElementById('wiz-psk-decode').checked,
+      ack_partial_success: true,
+      max_decode_records:  parseInt(document.getElementById('wiz-psk-max').value) || 5,
     };
   }
   let pagination = null;
@@ -3683,7 +3755,7 @@ function _collectWizard() {
     method: document.getElementById('wiz-method').value,
     codec: document.getElementById('wiz-codec').value,
     enabled: WIZ_STATE.enabled !== false,
-    auth, synthetic, replay, pagination, rate_limit, chaos,
+    auth, synthetic, replay, push_sink, pagination, rate_limit, chaos,
   };
 }
 
@@ -3738,7 +3810,36 @@ function closeSnippet(){ document.getElementById('snippet-modal').classList.add(
 function _showDataSourceFields(kind) {
   document.getElementById('wiz-ds-synthetic').style.display = (kind === 'synthetic') ? 'block' : 'none';
   document.getElementById('wiz-ds-replay').style.display    = (kind === 'replay')    ? 'block' : 'none';
+  const psk = document.getElementById('wiz-ds-push-sink');
+  if (psk) psk.style.display = (kind === 'push_sink') ? 'block' : 'none';
+  // OTLP push sinks have rigid protocol-level constraints: method=POST,
+  // codec must be otlp_proto/otlp_json, path conventionally /v1/<signal>.
+  // Pre-fill those when the user picks the OTLP tile to remove footguns.
+  if (kind === 'push_sink') {
+    const sigEl  = document.getElementById('wiz-psk-signal');
+    const protoEl= document.getElementById('wiz-psk-protocol');
+    const pathEl = document.getElementById('wiz-path');
+    const mEl    = document.getElementById('wiz-method');
+    const cEl    = document.getElementById('wiz-codec');
+    const signal = sigEl ? sigEl.value : 'logs';
+    const proto  = protoEl ? protoEl.value : 'otlp_http';
+    if (mEl) mEl.value = 'POST';
+    if (pathEl && (!pathEl.value || (/^[/]v1[/](logs|metrics|traces)$/).test(pathEl.value) || pathEl.value === '/v1/events')) {
+      pathEl.value = '/v1/' + signal;
+    }
+    if (cEl) {
+      // Force otlp_proto for gRPC (binary on the wire); pick otlp_proto by
+      // default for HTTP unless the user has already chosen otlp_json.
+      if (proto === 'otlp_grpc') cEl.value = 'otlp_proto';
+      else if (cEl.value !== 'otlp_proto' && cEl.value !== 'otlp_json') cEl.value = 'otlp_proto';
+    }
+  }
 }
+
+// Re-apply path/method/codec defaults whenever the user changes signal/protocol
+// on the OTLP tile. Wired from inline onchange handlers in the HTML.
+function _onOtlpSignalChange() { _showDataSourceFields('push_sink'); }
+function _onOtlpProtocolChange() { _showDataSourceFields('push_sink'); }
 function _showAnchorFields(mode) {
   document.getElementById('wiz-replay-anchor-offset-row').style.display = (mode === 'offset') ? 'grid' : 'none';
   document.getElementById('wiz-replay-anchor-fixed-row').style.display  = (mode === 'fixed')  ? 'grid' : 'none';
@@ -4984,33 +5085,69 @@ function togglePushPath() {
   var isSyslog = t === 'syslog';
   var isHec = t === 'hec';
   var isHttp = t === 'http';
-  // Path: show for HTTP and HEC, hide for Syslog
+  var isOtlpHttp = t === 'otlp_http';
+  var isOtlpGrpc = t === 'otlp_grpc';
+  var isOtlp = isOtlpHttp || isOtlpGrpc;
+  // Path: show for HTTP / HEC / OTLP-HTTP. Hide for Syslog and OTLP-gRPC
+  // (gRPC uses target host:port, no URL path).
   var pg = document.getElementById('push-path-group');
-  if (pg) pg.style.display = isSyslog ? 'none' : 'flex';
+  if (pg) pg.style.display = (isSyslog || isOtlpGrpc) ? 'none' : 'flex';
   // Protocol (TCP/UDP): show for Syslog only
   var proto = document.getElementById('push-protocol-group');
   if (proto) proto.style.display = isSyslog ? '' : 'none';
-  // Auth type + token: show for HTTP only
+  // Auth type + token: show for HTTP and OTLP (both flavours support Bearer)
   var ag = document.getElementById('push-auth-group');
-  if (ag) ag.style.display = isHttp ? '' : 'none';
+  if (ag) ag.style.display = (isHttp || isOtlp) ? '' : 'none';
   // HEC token: show for HEC only
   var hg = document.getElementById('push-hec-group');
   if (hg) hg.style.display = isHec ? '' : 'none';
+  // OTLP group (signal + listener id): show for OTLP only
+  var og = document.getElementById('push-otlp-group');
+  if (og) og.style.display = isOtlp ? '' : 'none';
   // Smart port defaults (only if currently a common default)
   var portEl = document.getElementById('push-port');
   var curPort = parseInt(portEl.value);
   if (isSyslog && (curPort === 443 || curPort === 8088 || !curPort)) portEl.value = 514;
   if (isHec && (curPort === 514 || !curPort)) portEl.value = 443;
   if (isHttp && (curPort === 514 || !curPort)) portEl.value = 443;
+  if (isOtlpHttp && (curPort === 514 || curPort === 4317 || !curPort)) portEl.value = 443;
+  if (isOtlpGrpc && (curPort === 514 || curPort === 443 || !curPort)) portEl.value = 4317;
   // Smart TLS default
   var tlsEl = document.getElementById('push-tls');
   if (isHec) tlsEl.checked = true;
-  // Smart path default for HEC
+  if (isOtlpHttp) tlsEl.checked = true;
+  if (isOtlpGrpc) tlsEl.checked = false; // in-cluster default is plaintext h2c
+  // Smart path default for HEC and OTLP/HTTP
   var pathEl = document.getElementById('push-path');
   if (isHec && (pathEl.value === '/' || !pathEl.value)) pathEl.value = '/services/collector/event';
   if (isHttp && pathEl.value === '/services/collector/event') pathEl.value = '/';
+  if (isOtlpHttp && (pathEl.value === '/' || pathEl.value === '/services/collector/event' || !pathEl.value)) pathEl.value = '/v1/logs';
   // Trigger HEC flavour hints
   if (isHec) onHecFlavourChange();
+}
+
+async function togglePushSource() {
+  // Show the replay-file picker only when source_type === 'replay_file'.
+  var st = document.getElementById('push-source-type').value;
+  var rg = document.getElementById('push-replay-group');
+  var isReplay = st === 'replay_file';
+  if (rg) rg.style.display = isReplay ? '' : 'none';
+  if (!isReplay) return;
+  var sel = document.getElementById('push-replay-file-id');
+  if (sel && sel.options.length <= 1) {
+    // Lazy-load the upload list — reuse the existing /admin/api/replays
+    // endpoint that the Custom Listeners replay tab uses.
+    try {
+      var r = await fetch('/admin/api/replays', {credentials:'same-origin'});
+      var d = await r.json();
+      var keep = sel.value || '';
+      sel.innerHTML = '<option value="">\u2014 select an uploaded file \u2014</option>';
+      (d.replays || []).forEach(function(f) {
+        sel.innerHTML += '<option value="' + escHtml(f.file_id) + '">' + escHtml(f.filename) + ' (' + (f.line_count||0) + ' records, ' + escHtml(f.format||'?') + ')</option>';
+      });
+      if (keep) sel.value = keep;
+    } catch(e) { /* keep the placeholder */ }
+  }
 }
 
 function onHecFlavourChange() {
@@ -5081,6 +5218,16 @@ async function openPushEditor(profileId) {
         document.getElementById('push-auth-token').value = d.auth_token || '';
         document.getElementById('push-hec-token').value = d.hec_token || '';
         document.getElementById('push-hec-flavour').value = d.hec_flavour || 's1_dpm';
+        // OTLP egress fields (v4.1)
+        var otlpSigSel = document.getElementById('push-otlp-signal');
+        if (otlpSigSel) otlpSigSel.value = p.otlp_signal || 'logs';
+        var otlpLidEl = document.getElementById('push-otlp-listener-id');
+        if (otlpLidEl) otlpLidEl.value = p.otlp_listener_id || d.listener_id || '';
+        var replaySel = document.getElementById('push-replay-file-id');
+        if (replaySel) {
+          // Pre-stage the saved id so togglePushSource() preserves it on hydrate.
+          replaySel.value = p.replay_file_id || '';
+        }
         document.getElementById('push-rate').value = p.rate || 10;
         var dur = p.duration || {};
         document.getElementById('push-duration-val').value = dur.value || 1;
@@ -5088,6 +5235,7 @@ async function openPushEditor(profileId) {
         document.getElementById('push-profile-id').value = p.profile_id || '';
         document.getElementById('push-visibility').value = p.visibility || 'private';
         togglePushPath();
+        togglePushSource();
         _applyPushMode(p);
       });
   } else {
@@ -5102,6 +5250,7 @@ async function openPushEditor(profileId) {
     document.getElementById('push-profile-id').value = '';
     document.getElementById('push-visibility').value = 'private';
     togglePushPath();
+    togglePushSource();
     _applyPushMode(null);
   }
 }
@@ -5157,8 +5306,12 @@ async function savePushProfile() {
       auth_username: authType === 'basic' ? authVal.split(':')[0] || '' : '',
       auth_password: authType === 'basic' ? authVal.split(':').slice(1).join(':') || '' : '',
       hec_token: document.getElementById('push-transport').value === 'hec' ? (document.getElementById('push-hec-token').value || '') : '',
-      hec_flavour: document.getElementById('push-transport').value === 'hec' ? (document.getElementById('push-hec-flavour').value || 's1_dpm') : ''
+      hec_flavour: document.getElementById('push-transport').value === 'hec' ? (document.getElementById('push-hec-flavour').value || 's1_dpm') : '',
+      listener_id: (document.getElementById('push-otlp-listener-id') || {}).value || ''
     },
+    otlp_signal: (document.getElementById('push-otlp-signal') || {}).value || 'logs',
+    otlp_listener_id: (document.getElementById('push-otlp-listener-id') || {}).value || null,
+    replay_file_id: (document.getElementById('push-replay-file-id') || {}).value || null,
     rate: parseInt(document.getElementById('push-rate').value) || 10,
     duration: {
       value: parseInt(document.getElementById('push-duration-val').value) || 1,
@@ -6139,8 +6292,11 @@ function deleteProfile() {
             <label style="font-size:.85rem;margin-right:14px;cursor:pointer">
               <input type="radio" name="wiz-ds-kind" value="synthetic" checked onchange="_showDataSourceFields('synthetic')"/> Synthetic topic
             </label>
-            <label style="font-size:.85rem;cursor:pointer">
+            <label style="font-size:.85rem;margin-right:14px;cursor:pointer">
               <input type="radio" name="wiz-ds-kind" value="replay" onchange="_showDataSourceFields('replay')"/> Replay uploaded file
+            </label>
+            <label style="font-size:.85rem;cursor:pointer">
+              <input type="radio" name="wiz-ds-kind" value="push_sink" onchange="_showDataSourceFields('push_sink')"/> OTLP push sink (OpenTelemetry)
             </label>
           </div>
         </div>
@@ -6204,6 +6360,34 @@ function deleteProfile() {
 
           <div id="wiz-replay-preview" style="margin-top:10px;font-size:.78rem;color:rgba(224,170,255,.55)"></div>
         </div>
+
+        <div id="wiz-ds-push-sink" style="display:none">
+          <div class="hint" style="grid-column:1 / span 2;margin-bottom:8px">
+            Accept OpenTelemetry exports (OTLP/HTTP or OTLP/gRPC) from any collector
+            (OpenTelemetry Collector, Splunk OTel Collector, Vector’s otlp sink, OTel SDKs).
+            See <code>docs/OTEL_LISTENER.md</code>.
+          </div>
+          <div class="field"><label>Signal</label>
+            <select id="wiz-psk-signal" onchange="_onOtlpSignalChange()">
+              <option value="logs">logs (Log records)</option>
+              <option value="metrics">metrics (Sums / gauges / histograms)</option>
+              <option value="traces">traces (Spans)</option>
+            </select>
+          </div>
+          <div class="field"><label>Protocol</label>
+            <select id="wiz-psk-protocol" onchange="_onOtlpProtocolChange()">
+              <option value="otlp_http">OTLP/HTTP &mdash; POST <code>/v1/&lt;signal&gt;</code></option>
+              <option value="otlp_grpc">OTLP/gRPC &mdash; port 4317 (protobuf only)</option>
+            </select>
+          </div>
+          <div class="hint" style="grid-column:2">For OTLP/gRPC, point your collector at <code>&lt;host&gt;:4317</code> and set metadata header <code>x-apigenie-listener-id: &lt;id&gt;</code> (or the Grafana-compatible <code>x-scope-orgid</code>) to route to this listener.</div>
+          <div class="field"><label>Decode preview</label>
+            <label style="font-size:.85rem;cursor:pointer">
+              <input id="wiz-psk-decode" type="checkbox" checked/> Decode each export to show resource attributes &amp; first N records in the hit pane.
+            </label>
+          </div>
+          <div class="field"><label>Max records in preview</label><input id="wiz-psk-max" type="number" min="0" max="100" value="5"/></div>
+        </div>
       </div>
 
       <div class="wiz-pane" id="wiz-pane-4">
@@ -6212,9 +6396,11 @@ function deleteProfile() {
             <option value="json">application/json</option>
             <option value="ndjson">application/x-ndjson</option>
             <option value="syslog">RFC 3164 syslog (text/plain)</option>
+            <option value="otlp_proto">OTLP protobuf (application/x-protobuf)</option>
+            <option value="otlp_json">OTLP JSON (application/json)</option>
           </select>
         </div>
-        <div class="hint" style="grid-column:2">v1 set. GELF / protobuf / Avro / VRL deferred to v2 — see docs §10.</div>
+        <div class="hint" style="grid-column:2">v1 set. Use <code>otlp_proto</code>/<code>otlp_json</code> for OTLP push sinks. GELF / Avro / VRL deferred to v2 — see docs §10.</div>
 
         <div class="field"><label>Pagination</label>
           <select id="wiz-pag-kind">

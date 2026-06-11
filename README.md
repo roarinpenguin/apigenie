@@ -8,7 +8,7 @@ The deployment hostname is fully parameterised: pick any domain, run `./scripts/
 
 **Multi-tenant by design.** One ApiGenie deployment can host many isolated users — each with their own log profiles, detection rules, source identifiers, SentinelOne console, avatar and recovery flow. Admins drive the platform from `/admin`; users drive their own corner from `/portal`. Same TLS port, two distinct portals, role-aware UI, owner-scoped APIs. See **[Multi-user & RBAC](#multi-user--rbac)** below for the model, and the two companion guides in [`docs/`](docs/) for hands-on labs.
 
-**Current release: v4.0** — *The Multi-User Edition*. See [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for what's new, the upgrade path from v3.x, and the breaking-change checklist.
+**Current release: v4.1** — *OpenTelemetry, both directions*. A new **OTLP push-sink listener** accepts exports over OTLP/HTTP (443) and OTLP/gRPC (4317), and a new **OTLP push-egress transport** streams synthetic topics or uploaded replay files out to any OTLP collector. See [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for what's new, the (container-only) upgrade path from v4.0, and the breaking-change checklist.
 
 ---
 
@@ -83,7 +83,8 @@ A background publisher pushes 5 randomly-generated events into both streams ever
 │            apigenie-nginx              │  │   apigenie-kafka │
 │  Let's Encrypt TLS (HTTP + gRPC)       │  │   ZK + 4 listeners│
 │  • 443  → apigenie:8000 (FastAPI)      │  │   PLAINTEXT       │
-│  • 8443 → pubsub-emulator:8085 (gRPC)  │  │   SASL_SSL        │
+│  • 4317 → apigenie:4317 (OTLP/gRPC)    │  │   SASL_SSL        │
+│  • 8443 → pubsub-emulator:8085 (gRPC)  │  │   (and more)      │
 └────────────────┬───────────────────────┘  │   SASL_PLAINTEXT  │
                  │                          │   internal        │
                  ▼                          └──────────────────┘
@@ -358,7 +359,7 @@ Beyond System Settings, the admin tabs cover:
 | **Requests** | Live trace of every inbound HTTP request, grouped by source. Shows request headers, body, **response size and preview**. Includes Pub/Sub and Kafka heartbeats, plus a **Bus Subscribers** panel showing Kafka consumer groups and Pub/Sub subscription status with lag and member counts |
 | **Observability** | Four sub-tabs: **Flows** (Sankey: source IPs → log sources), **GeoMap** (world map with IP bubbles), **Usage** (stacked area chart, 1h–1y range, SQLite-backed), and **System** (real-time host CPU/RAM/disk + per-container resource monitoring via Docker API) |
 | **Intrusions** | Threat detection for unrecognised paths (scanners, bots, attackers). Categorizes attempts (credential_theft, wordpress_scan, rce_attempt, php_scan, etc.), shows top offenders with one-click banning, and supports **acknowledgement** of known-good paths with multi-condition suppression (path, IP, category, prefix — AND logic). Acknowledged paths are persisted and silently counted |
-| **Listeners** | Custom HTTP endpoints for SCol Lua source testing — synthetic data (endpoint / identity / cloud / network) or replay uploaded log files (json / jsonl / csv / syslog / cef). Design: [`docs/CUSTOM_LISTENERS.md`](docs/CUSTOM_LISTENERS.md) |
+| **Listeners** | Custom HTTP endpoints for collector testing — three kinds: **synthetic data** (endpoint / identity / cloud / network), **replay** of uploaded log files (json / jsonl / csv / syslog / cef), or **OTLP push sink** that accepts OpenTelemetry exports over OTLP/HTTP (port 443) and OTLP/gRPC (port 4317) from any collector (OpenTelemetry Collector, Splunk OTel Collector, Vector, OTel SDKs). Design: [`docs/CUSTOM_LISTENERS.md`](docs/CUSTOM_LISTENERS.md), [`docs/OTEL_LISTENER.md`](docs/OTEL_LISTENER.md) |
 | **Container Logs** | Tail logs of any container via `docker logs --follow` |
 | **Investigations** | IP lookup (WHOIS, rDNS, GeoIP), request history, anomaly detection, and IP banning. Request log files downloadable as JSONL. *(The earlier investigation-password gate was removed in Phase 1 — Investigations is now plain admin-only.)* |
 | **Log Profiles & Detection Rules** | Entity pools (users, machines, C2 servers, malware, mail senders) bound to sources with signal-to-noise ratio. **Per-source log volume control** (1–100%) scales how many logs each API response contains. **Detection Rules** inject SIEM-triggering log patterns at configurable periodicity. Owner-scoped — admin sees everything, can publish public; users only see their own + public. See [Log Profiles](#log-profiles) and [Detection Rules](#detection-rules) below |

@@ -76,6 +76,44 @@ http {
         }
     }
 
+    # ── OTLP/gRPC push sink (port 4317) ──────────────────────────────────────
+    # Receives OpenTelemetry exports over gRPC from any collector
+    # (OpenTelemetry Collector, Splunk OTel Collector, Vector, OTel SDKs).
+    # nginx terminates TLS here on the conventional OTLP port 4317 and
+    # forwards plaintext h2c to the apigenie container, which routes the
+    # request to the matching push_sink listener via the
+    # `x-apigenie-listener-id` / `x-scope-orgid` / authorization metadata.
+    # See docs/OTEL_LISTENER.md §5.
+    server {
+        listen 4317 ssl;
+        listen [::]:4317 ssl;
+        http2 on;
+        server_name ${APIGENIE_DOMAIN};
+
+        ssl_certificate     /etc/nginx/certs/${APIGENIE_DOMAIN}/fullchain.pem;
+        ssl_certificate_key /etc/nginx/certs/${APIGENIE_DOMAIN}/privkey.pem;
+        ssl_protocols TLSv1.2 TLSv1.3;
+
+        # OTLP exports are typically small (<4MB by collector default), but
+        # accept up to 16MB without buffering for chatty deployments.
+        grpc_read_timeout    1h;
+        grpc_send_timeout    1h;
+        client_max_body_size 16M;
+
+        location / {
+            grpc_pass grpc://apigenie:4317;
+            error_page 502 = /otlp_grpc_unavailable;
+        }
+
+        location = /otlp_grpc_unavailable {
+            internal;
+            default_type application/grpc;
+            add_header grpc-status 14;
+            add_header grpc-message "apigenie OTLP server unavailable";
+            return 204;
+        }
+    }
+
     # ── Pub/Sub emulator behind TLS ────────────────────────────────────────────
     # Production GCP client libraries default to gRPC-over-TLS and will refuse
     # to negotiate plaintext h2c against the raw emulator port (8085). nginx

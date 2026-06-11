@@ -5,6 +5,7 @@ version: "3.9"
 #
 # Firewall:
 #   80, 443                    HTTP redirect + main HTTPS API
+#   4317                       OTLP/gRPC push sink (OpenTelemetry exports, TLS)
 #   8443                       Pub/Sub gRPC over TLS (emulator behind nginx)
 #   8085                       Pub/Sub gRPC plaintext (only for emulator-aware clients)
 #   9092                       Kafka PLAINTEXT (legacy)
@@ -30,6 +31,7 @@ services:
     ports:
       - "80:80"
       - "443:443"
+      - "4317:4317"
       - "8443:8443"
     volumes:
       - ./nginx/nginx.conf.template:/etc/nginx/nginx.conf.template:ro
@@ -72,6 +74,9 @@ services:
       APIGENIE_LISTENER_HITS_CAP: ${APIGENIE_LISTENER_HITS_CAP:-200}
       APIGENIE_LISTENER_HITS_DISK_CAP: ${APIGENIE_LISTENER_HITS_DISK_CAP:-5000}
       APIGENIE_REPLAY_MAX_MB: ${APIGENIE_REPLAY_MAX_MB:-100}
+      # OTLP push sink (see docs/OTEL_LISTENER.md)
+      APIGENIE_OTLP_GRPC_ENABLED: ${APIGENIE_OTLP_GRPC_ENABLED:-true}
+      APIGENIE_OTLP_GRPC_PORT: ${APIGENIE_OTLP_GRPC_PORT:-4317}
       # Pub/Sub emulator
       PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
       GCP_PROJECT_ID: obs-test
