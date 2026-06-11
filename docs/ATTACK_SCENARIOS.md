@@ -536,13 +536,13 @@ The full event still flows to the configured sinks via the normal HTTP / push pi
 
 Each scenario card gets an **Events (N)** button next to **Export**. Clicking it expands an inline log table beneath the MITRE timeline showing timestamp, phase id, source, and the top three preview fields per event. The 8-second card auto-refresh repopulates expanded panels so a running scenario streams new events without losing scroll position.
 
-### What's still pending in Phase 3
+### Phase 3 sub-task status
 
 | # | Task | Status |
 |---|------|--------|
 | 3.1 | Per-scenario event log + REST + card UI | **Shipped (v5.0)** |
 | 3.2 | `attack.id` search in Request Inspector — filter events by attack.id across all sources | **Shipped (v5.0)** |
-| 3.3 | Exportable attack timeline (JSON / PDF) for demo handoff | Pending |
+| 3.3 | Exportable attack timeline (JSON) for demo handoff | **Shipped (v5.0)** |
 
 ---
 
@@ -615,11 +615,83 @@ Clicking a Source chip while the filter is active automatically clears the filte
 - `@/Users/marco.rottigni/Library/CloudStorage/GoogleDrive-marco.rottigni@sentinelone.com/My Drive/Solutions Architect SecOps/GitHub Projects/apigenie/trace.py:35` — `find_by_attack()` helper
 - `@/Users/marco.rottigni/Library/CloudStorage/GoogleDrive-marco.rottigni@sentinelone.com/My Drive/Solutions Architect SecOps/GitHub Projects/apigenie/admin.py` — `GET /admin/api/requests/by-attack/{attack_id}` endpoint + Requests pane filter UI + scenario-card pill onclick
 
-### What's still pending in Phase 3
+---
 
-| # | Task | Status |
-|---|------|--------|
-| 3.3 | Exportable attack timeline — `GET /admin/api/scenarios/{id}/timeline` returning a chronologically ordered JSON list of phases + events for demo handoff | Pending |
+## Phase 3.3 — Exportable attack timeline (shipped)
+
+Phase 3.1 + 3.2 gave operators live visibility into a scenario. Phase 3.3 gives them a **portable snapshot**: a single JSON file that captures the entire chronology of a campaign — phase boundaries, every fired event, MITRE coordinates, metadata — and can be reviewed offline hours or days later without the live engine.
+
+### REST endpoint
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/admin/api/scenarios/{id}/timeline` | Inline JSON snapshot for programmatic consumers (`curl`, scripted reviewers). |
+| GET | `/admin/api/scenarios/{id}/timeline?download=1` | Same payload, but served as an `application/json` attachment with a sortable `Content-Disposition` filename. Powers the **↓ Timeline** button on each scenario card. |
+
+`404` if the scenario id is unknown; `401` if unauthenticated. The downloadable filename is `timeline-<safe-name>-<generated_at-compact>.json` (e.g. `timeline-BEC-Wire-Fraud-20260526T180500.json`).
+
+### Snapshot shape
+
+```json
+{
+  "scenario_id": "scn-...",
+  "name": "Ransomware Demo",
+  "description": "...",
+  "attack_id": "att-20260526-0001",
+  "status": "completed",
+  "started_at": "2026-05-26T14:00:00+00:00",
+  "duration": {"value": 4, "unit": "hours"},
+  "elapsed_seconds": 14400,
+  "events_injected": 42,
+  "generated_at": "2026-05-26T18:05:00+00:00",
+  "phases": [
+    {"phase_id": "initial-access", "name": "Phishing", "source": "proofpoint",
+     "mitre_tactic": "Initial Access", "mitre_technique": "T1566.001",
+     "status": "completed", "events_count": 12,
+     "time_offset_pct": 0, "duration_pct": 25}
+  ],
+  "timeline": [
+    {"ts": "2026-05-26T14:00:00+00:00", "kind": "scenario_start",
+     "attack_id": "att-20260526-0001", "name": "Ransomware Demo"},
+    {"ts": "2026-05-26T14:00:00+00:00", "kind": "phase_start",
+     "phase_id": "initial-access", "name": "Phishing", "source": "proofpoint",
+     "mitre_tactic": "Initial Access", "mitre_technique": "T1566.001"},
+    {"ts": "2026-05-26T14:15:00+00:00", "kind": "event",
+     "phase_id": "initial-access", "source": "proofpoint",
+     "attack_id": "att-20260526-0001", "preview": {"subject": "Q4 Invoice"}},
+    {"ts": "2026-05-26T15:00:00+00:00", "kind": "phase_end",
+     "phase_id": "initial-access"},
+    ...
+    {"ts": "2026-05-26T18:00:00+00:00", "kind": "scenario_end"}
+  ]
+}
+```
+
+### How phase timestamps are derived
+
+Phase boundaries (`phase_start` / `phase_end`) are **derived** at export time from `started_at + duration + time_offset_pct + duration_pct` — they're not separately persisted. The scheduler uses the same deterministic windowing for live injection, so the derived timestamps match what actually fired to the second.
+
+Two side-effects worth knowing:
+
+- **A still-running scenario has no `scenario_end` anchor** — its end is in the future, so emitting it would be a misleading prediction. Re-export after the run completes to get the closing boundary.
+- **A never-run scenario emits an empty `timeline` array** — no `started_at` means no real timestamps to anchor against. The phase catalogue is still present so reviewers can see the campaign plan even if it never executed.
+
+### Why a flat list instead of a tree
+
+The output is a single flat `timeline[]` sorted oldest-first. Three reasons:
+
+1. **Trivial to render** — a CLI reviewer can `jq '.timeline[]'` and pipe directly to a table.
+2. **Survives a single phase having dozens of events** — a nested `phases[i].events[]` shape balloons unevenly; the flat list stays uniform.
+3. **Mixes phase anchors and events natively** — the `kind` discriminator (`scenario_start` / `phase_start` / `event` / `phase_end` / `scenario_end`) lets a reviewer filter to "just phase boundaries" or "just SentinelOne events" without separate code paths.
+
+### UI surface
+
+Each scenario card now has a **↓ Timeline** button between **Events (N)** and **↓ Export**. Available on every scenario regardless of status — a stopped/never-run scenario simply exports the phase catalogue with an empty `timeline[]`.
+
+### Backend module touched
+
+- `@/Users/marco.rottigni/Library/CloudStorage/GoogleDrive-marco.rottigni@sentinelone.com/My Drive/Solutions Architect SecOps/GitHub Projects/apigenie/attack_scenarios.py:371` — `build_timeline()` helper + `_MAX_TIMELINE_EVENTS` cap
+- `@/Users/marco.rottigni/Library/CloudStorage/GoogleDrive-marco.rottigni@sentinelone.com/My Drive/Solutions Architect SecOps/GitHub Projects/apigenie/admin.py` — `GET /admin/api/scenarios/{id}/timeline` endpoint + `downloadTimeline()` JS + card button
 
 ## Storage
 

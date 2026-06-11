@@ -6778,6 +6778,10 @@ async function loadScenarios() {
       // events_injected field so it stays accurate across container restarts.
       var evtLabel = _scenarioEventsOpen[s.id] ? "Hide Events" : ("Events (" + (s.events_injected || 0) + ")");
       h += '<button class="btn-sm" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2);padding:3px 10px;font-size:.68rem" onclick="toggleScenarioEvents(\\'' + escHtml(s.id) + '\\')">' + evtLabel + '</button>';
+      // Timeline export (Phase 3.3) — chronological phase + event JSON for
+      // demo handoff. Always available, even for stopped/never-run scenarios
+      // (a stopped run returns just the phase metadata).
+      h += '<button class="btn-sm" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2);padding:3px 10px;font-size:.68rem" onclick="downloadTimeline(\\'' + escHtml(s.id) + '\\')" title="Download chronological phase + event timeline as JSON">&#x2193; Timeline</button>';
       // Export is always available — the export endpoint scrubs runtime state
       // before serialising, so it\\u2019s safe to grab a snapshot mid-run.
       h += '<button class="btn-sm" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2);padding:3px 10px;font-size:.68rem" onclick="exportScenario(\\'' + escHtml(s.id) + '\\')" title="Download scenario as JSON">&#x2193; Export</button>';
@@ -7209,6 +7213,36 @@ async function exportScenario(id) {
     URL.revokeObjectURL(url);
     toast('Exported ' + safeName);
   } catch(e) { alert('Export failed: ' + e); }
+}
+
+async function downloadTimeline(id) {
+  // Phase 3.3 timeline download. The server stamps the Content-Disposition
+  // filename so the browser save dialog opens with a sortable name and we
+  // don't have to recompute the safe-name in JS.
+  var url = '/admin/api/scenarios/' + encodeURIComponent(id) + '/timeline?download=1';
+  try {
+    // HEAD-style preflight: a 404 on a deleted scenario must produce a
+    // friendly alert rather than a blank tab. We fetch once, check the
+    // status, then convert the body to a Blob if it's good.
+    var r = await fetch(url, {credentials:'same-origin'});
+    if (!r.ok) {
+      if (r.status === 404) alert('Timeline failed: scenario not found');
+      else alert('Timeline failed: HTTP ' + r.status);
+      return;
+    }
+    var blob = await r.blob();
+    var disp = r.headers.get('content-disposition') || '';
+    var m = disp.match(/filename="([^"]+)"/);
+    var fname = m ? m[1] : ('timeline-' + id + '.json');
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fname;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+    toast('Timeline ' + fname);
+  } catch(e) { alert('Timeline failed: ' + e); }
 }
 
 async function importScenarioFromFile(file) {
@@ -10819,6 +10853,39 @@ async def api_scenario_events(scenario_id: str,
                                          phase_id=phase_id, source=source)
     return JSONResponse({"scenario_id": scenario_id, "events": events,
                          "count": len(events)})
+
+
+@router.get("/api/scenarios/{scenario_id}/timeline")
+async def api_scenario_timeline(scenario_id: str,
+                                download: int = 0,
+                                ag_session: str | None = Cookie(None)):
+    """Chronological phase + event timeline (Phase 3.3).
+
+    Returns a self-describing JSON snapshot that interleaves derived phase
+    boundaries (from started_at + duration_pct) with the captured event log.
+    With ``?download=1`` the response is served as ``application/json``
+    with a Content-Disposition attachment, so the UI can trigger a save
+    dialog without juggling Blob URLs in JavaScript.
+    """
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import attack_scenarios
+    timeline = attack_scenarios.build_timeline(scenario_id)
+    if timeline is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if int(download or 0):
+        # Build a sortable filename: timeline-<safe-name>-<ts>.json
+        import re as _re
+        safe = _re.sub(r"[^A-Za-z0-9._-]+", "-",
+                       (timeline.get("name") or "scenario")).strip("-")[:60] or "scenario"
+        ts = (timeline.get("generated_at") or "").replace(":", "").replace("-", "")[:15]
+        fname = f"timeline-{safe}-{ts}.json"
+        return Response(
+            content=json.dumps(timeline, indent=2, ensure_ascii=False),
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
+    return JSONResponse(timeline)
 
 
 # ── Webhooks API (v5.0) ──────────────────────────────────────────────────────

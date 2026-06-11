@@ -368,6 +368,144 @@ def _reset_event_logs_for_tests() -> None:
         _scenario_event_logs.clear()
 
 
+# ── Phase 3.3: exportable attack timeline ────────────────────────────────────
+
+# Cap on events embedded in a timeline export. The per-scenario ring buffer
+# is bounded to _MAX_SCENARIO_EVENT_LOG (500) so this is mostly defensive,
+# but the REST endpoint also caps the response to keep JSON downloads sane
+# on long-running scenarios that survive multiple buffer rotations.
+_MAX_TIMELINE_EVENTS = _MAX_SCENARIO_EVENT_LOG
+
+
+def build_timeline(scenario_id: str) -> dict[str, Any] | None:
+    """Return a chronologically-sorted phase + event timeline for a scenario.
+
+    The resulting dict is designed for two consumers:
+
+      * The Admin UI **Timeline** download button — operators grab a JSON
+        snapshot mid-run or after completion and drop it next to a demo
+        recording.
+      * Offline reviewers — every entry is self-describing (no IDs that
+        require a live engine to resolve) so the file is useful in
+        isolation, hours or days later.
+
+    Each entry in ``timeline`` carries:
+
+      * ``ts``        — ISO-8601 timestamp (newest-first sort applied last)
+      * ``kind``      — ``scenario_start`` / ``phase_start`` / ``event``
+                         / ``phase_end`` / ``scenario_end``
+      * ``phase_id``  — present on phase + event entries
+      * ``source``    — present on phase_start + event
+      * ``preview``   — present on event (the slim payload from Phase 3.1)
+      * ``mitre_tactic`` / ``mitre_technique`` — on phase_start
+
+    Phase boundaries are **derived** from ``started_at`` + ``duration`` +
+    each phase's ``time_offset_pct`` / ``duration_pct``. Persisting them
+    on every phase row would mean writing JSON on every scheduler tick;
+    derivation is exact for the deterministic windowing the scheduler
+    uses anyway. For a scenario that never ran (``started_at`` empty)
+    only the phase metadata and any orphan events are included — no
+    fabricated timestamps.
+    """
+    scenario = get_scenario(scenario_id)
+    if scenario is None:
+        return None
+
+    started_iso = scenario.get("started_at", "")
+    total_seconds = _duration_to_seconds(scenario.get("duration", {}))
+    started_dt: datetime | None = None
+    if started_iso:
+        try:
+            started_dt = datetime.fromisoformat(started_iso)
+        except ValueError:
+            started_dt = None
+
+    timeline: list[dict[str, Any]] = []
+
+    if started_dt is not None:
+        # scenario_start anchor
+        timeline.append({
+            "ts": started_dt.isoformat(timespec="seconds"),
+            "kind": "scenario_start",
+            "attack_id": scenario.get("attack_id", ""),
+            "name": scenario.get("name", ""),
+        })
+        # phase_start + phase_end anchors derived from offset/duration pct
+        for phase in scenario.get("phases", []):
+            phase_id = phase.get("phase_id", phase.get("id", ""))
+            offset_pct = phase.get("time_offset_pct", 0) / 100.0
+            duration_pct = phase.get("duration_pct", 10) / 100.0
+            phase_start = started_dt + timedelta(seconds=total_seconds * offset_pct)
+            phase_end = started_dt + timedelta(
+                seconds=total_seconds * (offset_pct + duration_pct)
+            )
+            timeline.append({
+                "ts": phase_start.isoformat(timespec="seconds"),
+                "kind": "phase_start",
+                "phase_id": phase_id,
+                "name": phase.get("name", ""),
+                "source": phase.get("source", ""),
+                "mitre_tactic": phase.get("mitre_tactic", ""),
+                "mitre_technique": phase.get("mitre_technique", ""),
+            })
+            timeline.append({
+                "ts": phase_end.isoformat(timespec="seconds"),
+                "kind": "phase_end",
+                "phase_id": phase_id,
+            })
+        # scenario_end anchor only when the run has actually finished —
+        # for a still-running scenario the "end" is in the future and
+        # would be misleading on a mid-run export.
+        if scenario.get("status") == "completed":
+            scenario_end = started_dt + timedelta(seconds=total_seconds)
+            timeline.append({
+                "ts": scenario_end.isoformat(timespec="seconds"),
+                "kind": "scenario_end",
+            })
+
+    # Captured events from the Phase 3.1 ring buffer. get_events returns
+    # newest-first; we'll re-sort below so the ordering is consistent
+    # with the derived phase anchors.
+    for ev in get_events(scenario_id, limit=_MAX_TIMELINE_EVENTS):
+        timeline.append({
+            "ts": ev.get("ts", ""),
+            "kind": "event",
+            "phase_id": ev.get("phase_id", ""),
+            "source": ev.get("source", ""),
+            "attack_id": ev.get("attack_id", ""),
+            "preview": ev.get("preview", {}),
+        })
+
+    # Sort the merged list chronologically (oldest-first). ISO-8601 with
+    # the same offset format sorts lexicographically — no parsing needed.
+    timeline.sort(key=lambda e: e.get("ts", ""))
+
+    return {
+        "scenario_id": scenario_id,
+        "name": scenario.get("name", ""),
+        "description": scenario.get("description", ""),
+        "attack_id": scenario.get("attack_id", ""),
+        "status": scenario.get("status", "stopped"),
+        "started_at": started_iso,
+        "duration": scenario.get("duration", {}),
+        "elapsed_seconds": scenario.get("elapsed_seconds", 0),
+        "events_injected": scenario.get("events_injected", 0),
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "phases": [{
+            "phase_id": p.get("phase_id", p.get("id", "")),
+            "name": p.get("name", ""),
+            "source": p.get("source", ""),
+            "mitre_tactic": p.get("mitre_tactic", ""),
+            "mitre_technique": p.get("mitre_technique", ""),
+            "status": p.get("status", "pending"),
+            "events_count": p.get("events_count", 0),
+            "time_offset_pct": p.get("time_offset_pct", 0),
+            "duration_pct": p.get("duration_pct", 10),
+        } for p in scenario.get("phases", [])],
+        "timeline": timeline,
+    }
+
+
 # ── Phase timing ─────────────────────────────────────────────────────────────
 
 def _duration_to_seconds(duration: dict) -> int:
