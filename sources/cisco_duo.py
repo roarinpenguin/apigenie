@@ -1,9 +1,21 @@
-"""Cisco Duo mock data generator."""
+"""Cisco Duo mock data generator.
+
+Event catalog sourced from the Cisco Duo Admin API docs
+(``duo.com/docs/adminapi``). Two endpoint families ship today:
+
+* ``/admin/v1/logs/authentication`` — ``auth.*`` events.
+* ``/admin/v1/logs/administrator`` — ``admin.*`` events.
+
+The per-template dicts (``_AUTH_TEMPLATES`` / ``_ADMIN_TEMPLATES``) key on
+the same ids declared in ``EVENT_CATALOG`` so an admin can toggle and
+reweight them via ``event_mix``.
+"""
 
 import random
 from typing import Any
 
 import detection_rules
+import event_mix
 import profiles
 from generators import (
     epoch_to_iso,
@@ -16,6 +28,42 @@ from generators import (
     weighted_choice,
 )
 
+# ── Event catalog ────────────────────────────────────────────────────────────
+# Mapped to the Duo Admin API event taxonomy (``duo.com/docs/adminapi``).
+# Defaults match the historical weights so existing callers see no behaviour
+# change until an admin opts in to a custom mix.
+EVENT_CATALOG: list[dict[str, Any]] = [
+    # ── /admin/v1/logs/authentication ──
+    {"id": "auth.success", "label": "Authentication success",
+     "endpoint": "authentication", "default_weight": 0.70,
+     "docs_anchor": "duo.com/docs/adminapi#authentication-logs"},
+    {"id": "auth.failure", "label": "Authentication failure",
+     "endpoint": "authentication", "default_weight": 0.15,
+     "docs_anchor": "duo.com/docs/adminapi#authentication-logs"},
+    {"id": "auth.fraud", "label": "Marked fraud by user",
+     "endpoint": "authentication", "default_weight": 0.10,
+     "docs_anchor": "duo.com/docs/adminapi#authentication-logs"},
+    {"id": "auth.error", "label": "Authentication error",
+     "endpoint": "authentication", "default_weight": 0.05,
+     "docs_anchor": "duo.com/docs/adminapi#authentication-logs"},
+    # ── /admin/v1/logs/administrator ──
+    {"id": "admin.admin_login", "label": "Administrator logged in",
+     "endpoint": "administrator", "default_weight": 0.40,
+     "docs_anchor": "duo.com/docs/adminapi#retrieve-administrator-logs"},
+    {"id": "admin.user_create", "label": "User created",
+     "endpoint": "administrator", "default_weight": 0.25,
+     "docs_anchor": "duo.com/docs/adminapi#retrieve-administrator-logs"},
+    {"id": "admin.policy_update", "label": "Policy updated",
+     "endpoint": "administrator", "default_weight": 0.20,
+     "docs_anchor": "duo.com/docs/adminapi#retrieve-administrator-logs"},
+    {"id": "admin.integration_update", "label": "Integration updated",
+     "endpoint": "administrator", "default_weight": 0.10,
+     "docs_anchor": "duo.com/docs/adminapi#retrieve-administrator-logs"},
+    {"id": "admin.group_create", "label": "Group created",
+     "endpoint": "administrator", "default_weight": 0.05,
+     "docs_anchor": "duo.com/docs/adminapi#retrieve-administrator-logs"},
+]
+
 _USERS = ["john.doe@example.com", "jane.smith@corp.com", "admin@acme.org", "service.account@example.com"]
 _FACTORS = ["duo_push", "phone_call", "passcode", "hardware_token", "bypass_code"]
 _REASONS = {
@@ -25,24 +73,27 @@ _REASONS = {
     "ERROR": ["user_not_enrolled", "locked_out", "no_active_auth_methods"],
 }
 
+# Keys deliberately match the EVENT_CATALOG ids so event_mix overrides apply
+# 1:1. Renaming a key here without updating the catalog (or vice versa) will
+# fail the catalog-coverage test in tests/test_event_mix.py.
 _AUTH_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
-    "success": ({"result": "SUCCESS"}, 0.70),
-    "failure": ({"result": "FAILURE"}, 0.15),
-    "fraud": ({"result": "FRAUD"}, 0.10),
-    "error": ({"result": "ERROR"}, 0.05),
+    "auth.success": ({"result": "SUCCESS"}, 0.70),
+    "auth.failure": ({"result": "FAILURE"}, 0.15),
+    "auth.fraud":   ({"result": "FRAUD"},   0.10),
+    "auth.error":   ({"result": "ERROR"},   0.05),
 }
 
 _ADMIN_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
-    "admin_login": ({"action": "admin_login", "description": "Administrator logged in"}, 0.40),
-    "user_create": ({"action": "user_create", "description": "User created"}, 0.25),
-    "policy_update": ({"action": "update_policy", "description": "Policy updated"}, 0.20),
-    "integration_update": ({"action": "update_integration", "description": "Integration updated"}, 0.10),
-    "group_create": ({"action": "group_create", "description": "Group created"}, 0.05),
+    "admin.admin_login":         ({"action": "admin_login",         "description": "Administrator logged in"}, 0.40),
+    "admin.user_create":         ({"action": "user_create",         "description": "User created"},          0.25),
+    "admin.policy_update":       ({"action": "update_policy",       "description": "Policy updated"},        0.20),
+    "admin.integration_update":  ({"action": "update_integration",  "description": "Integration updated"},   0.10),
+    "admin.group_create":        ({"action": "group_create",        "description": "Group created"},         0.05),
 }
 
 
 def _make_auth_log(mintime: int | None = None, maxtime: int | None = None, ctx: profiles.ProfileContext | None = None) -> dict[str, Any]:
-    template = weighted_choice(_AUTH_TEMPLATES)
+    template = weighted_choice(event_mix.apply(_AUTH_TEMPLATES, "cisco_duo"))
     result = template["result"]
     reason = random.choice(_REASONS[result])
     ts = now_epoch() - random.randint(0, 3600)
@@ -134,8 +185,9 @@ def get_auth_logs_response(limit: int = 100, mintime: int | None = None, maxtime
 def get_admin_logs_response(limit: int = 100, mintime: int | None = None) -> dict[str, Any]:
     count = min(limit, 50)
     logs = []
+    admin_templates = event_mix.apply(_ADMIN_TEMPLATES, "cisco_duo")
     for _ in range(count):
-        template = weighted_choice(_ADMIN_TEMPLATES)
+        template = weighted_choice(admin_templates)
         ts = now_epoch() - random.randint(0, 7200)
         if mintime:
             ts = max(ts, mintime)
