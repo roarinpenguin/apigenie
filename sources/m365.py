@@ -27,6 +27,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Any
 
 import detection_rules
+import event_mix
 import profiles
 from generators import (
     generate_email,
@@ -34,6 +35,7 @@ from generators import (
     generate_hostname,
     generate_uuid,
     now_iso,
+    weighted_choice,
 )
 
 
@@ -459,25 +461,75 @@ def _user_login(ctx=None) -> dict[str, Any]:
 
 # ── Event type weights ──────────────────────────────────────────────────────
 
-_EVENT_GENERATORS = [
-    (_mailbox_audit,      16),
-    (_email_threat,       10),
-    (_dlp_violation,       5),
-    (_ediscovery,          4),
-    (_admin_exchange,      7),
-    (_sharepoint,         16),
-    (_teams,               9),
-    (_oauth_consent,       5),
-    (_inbox_rules,         5),
-    (_power_platform,      3),
-    (_pim,                 4),
-    (_audit_log_search,    3),
-    (_quarantine,          3),
-    (_user_login,         10),
+# Event-mix scope is the TOP-LEVEL category selector. An admin can disable
+# or reweight whole categories (e.g. "only show me OAuth consent + PIM" for
+# a privileged-access demo). The per-category inner ops dispatch (mailbox
+# operations, SharePoint operations, etc.) stays hard-coded — wiring those
+# too would explode the catalogue with hundreds of entries and dilute the
+# demo value.
+EVENT_CATALOG: list[dict[str, Any]] = [
+    {"id": "mailbox_audit", "label": "Mailbox audit (Exchange BEC / data access)",
+     "default_weight": 0.16,
+     "docs_anchor": "learn.microsoft.com/en-us/office/office-365-management-api/office-365-management-activity-api-schema#exchange-mailbox-audit"},
+    {"id": "email_threat", "label": "Email threat protection (Defender for O365)",
+     "default_weight": 0.10,
+     "docs_anchor": "learn.microsoft.com/en-us/office/office-365-management-api/office-365-management-activity-api-schema#advanced-threat-protection-schema"},
+    {"id": "dlp_violation", "label": "DLP rule match",
+     "default_weight": 0.05,
+     "docs_anchor": "learn.microsoft.com/en-us/office/office-365-management-api/office-365-management-activity-api-schema#data-loss-prevention-dlp-schema"},
+    {"id": "ediscovery", "label": "eDiscovery / Compliance search",
+     "default_weight": 0.04,
+     "docs_anchor": "learn.microsoft.com/en-us/microsoft-365/compliance/ediscovery"},
+    {"id": "admin_exchange", "label": "Exchange Online admin operation",
+     "default_weight": 0.07,
+     "docs_anchor": "learn.microsoft.com/en-us/office/office-365-management-api/office-365-management-activity-api-schema#exchange-admin-schema"},
+    {"id": "sharepoint", "label": "SharePoint / OneDrive file activity",
+     "default_weight": 0.16,
+     "docs_anchor": "learn.microsoft.com/en-us/office/office-365-management-api/office-365-management-activity-api-schema#sharepoint-schema"},
+    {"id": "teams", "label": "Microsoft Teams activity",
+     "default_weight": 0.09,
+     "docs_anchor": "learn.microsoft.com/en-us/office/office-365-management-api/office-365-management-activity-api-schema#microsoft-teams-schema"},
+    {"id": "oauth_consent", "label": "OAuth / app consent grant",
+     "default_weight": 0.05,
+     "docs_anchor": "learn.microsoft.com/en-us/azure/active-directory/manage-apps/configure-user-consent"},
+    {"id": "inbox_rules", "label": "Inbox rules / mail forwarding",
+     "default_weight": 0.05,
+     "docs_anchor": "learn.microsoft.com/en-us/exchange/policy-and-compliance/mailbox-audit-logging/mailbox-audit-logging"},
+    {"id": "power_platform", "label": "Power Platform (Flow / App / Connection)",
+     "default_weight": 0.03,
+     "docs_anchor": "learn.microsoft.com/en-us/power-platform/admin/logging-power-automate"},
+    {"id": "pim", "label": "Privileged Identity Management (role activation)",
+     "default_weight": 0.04,
+     "docs_anchor": "learn.microsoft.com/en-us/azure/active-directory/privileged-identity-management/pim-configure"},
+    {"id": "audit_log_search", "label": "Unified Audit Log search",
+     "default_weight": 0.03,
+     "docs_anchor": "learn.microsoft.com/en-us/microsoft-365/compliance/audit-log-search"},
+    {"id": "quarantine", "label": "Quarantine release / delete / preview",
+     "default_weight": 0.03,
+     "docs_anchor": "learn.microsoft.com/en-us/microsoft-365/security/office-365-security/quarantine-about"},
+    {"id": "user_login", "label": "User login / logout / session",
+     "default_weight": 0.10,
+     "docs_anchor": "learn.microsoft.com/en-us/office/office-365-management-api/office-365-management-activity-api-schema#azure-active-directory-secure-token-service-sts-logon-schema"},
 ]
 
-_GENERATORS = [g for g, _ in _EVENT_GENERATORS]
-_WEIGHTS = [w for _, w in _EVENT_GENERATORS]
+# Catalogue ids → (generator callable, default weight). The dict keys MUST
+# match EVENT_CATALOG ids exactly so an admin's override binds 1:1.
+_EVENT_TEMPLATES: dict[str, tuple[Any, float]] = {
+    "mailbox_audit":     (_mailbox_audit,     0.16),
+    "email_threat":      (_email_threat,      0.10),
+    "dlp_violation":     (_dlp_violation,     0.05),
+    "ediscovery":        (_ediscovery,        0.04),
+    "admin_exchange":    (_admin_exchange,    0.07),
+    "sharepoint":        (_sharepoint,        0.16),
+    "teams":             (_teams,             0.09),
+    "oauth_consent":     (_oauth_consent,     0.05),
+    "inbox_rules":       (_inbox_rules,       0.05),
+    "power_platform":    (_power_platform,    0.03),
+    "pim":               (_pim,               0.04),
+    "audit_log_search":  (_audit_log_search,  0.03),
+    "quarantine":        (_quarantine,        0.03),
+    "user_login":        (_user_login,        0.10),
+}
 
 
 # ── Public API ──────────────────────────────────────────────────────────────
@@ -487,7 +539,8 @@ def get_content_response(content_type: str = "Audit.General", limit: int = 50) -
     ctx = profiles.get_context("m365")
     count = profiles.scale_count("m365", min(limit, 100))
 
-    events = [random.choices(_GENERATORS, weights=_WEIGHTS, k=1)[0](ctx=ctx) for _ in range(count)]
+    templates = event_mix.apply(_EVENT_TEMPLATES, "m365")
+    events = [weighted_choice(templates)(ctx=ctx) for _ in range(count)]
     events = detection_rules.inject_detection_events("m365", events)
 
     # Wrap in content blob format (like the real API returns content URIs)

@@ -26,8 +26,9 @@ import json
 import hashlib
 from datetime import datetime, timezone, timedelta
 from typing import Any
-from generators import generate_ip, generate_uuid
+from generators import generate_ip, generate_uuid, weighted_choice
 from detection_rules import inject_detection_events
+import event_mix
 import profiles
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -410,18 +411,54 @@ def _ttp_impersonation_event(ctx=None) -> dict[str, Any]:
 
 # ── Generator registry ───────────────────────────────────────────────────────
 
-_GENERATORS = [
-    (_receipt_event, 30),
-    (_process_event, 20),
-    (_delivery_event, 25),
-    (_av_event, 5),
-    (_spam_event, 5),
-    (_ttp_url_event, 5),
-    (_ttp_attach_event, 5),
-    (_ttp_impersonation_event, 5),
+# The eight log types declared in the module docstring become catalogue
+# entries 1:1. Event-mix scope is the top-level type selector; per-type
+# inner randomisation (action codes, hold reasons, TLS versions) stays
+# hard-coded.
+EVENT_CATALOG: list[dict[str, Any]] = [
+    {"id": "receipt", "label": "MTA receipt (inbound/outbound/internal mail)",
+     "default_weight": 0.30,
+     "docs_anchor": "integrations.mimecast.com/documentation/endpoint-reference/logs-and-statistics/get-siem-logs"},
+    {"id": "process", "label": "MTA process (policy + content scanning)",
+     "default_weight": 0.20,
+     "docs_anchor": "integrations.mimecast.com/documentation/endpoint-reference/logs-and-statistics/get-siem-logs"},
+    {"id": "delivery", "label": "MTA delivery (delivered / failed)",
+     "default_weight": 0.25,
+     "docs_anchor": "integrations.mimecast.com/documentation/endpoint-reference/logs-and-statistics/get-siem-logs"},
+    {"id": "av", "label": "Antivirus detection (malware attachment)",
+     "default_weight": 0.05,
+     "docs_anchor": "integrations.mimecast.com/documentation/endpoint-reference/logs-and-statistics/get-siem-logs"},
+    {"id": "spam", "label": "Spam event thread detection",
+     "default_weight": 0.05,
+     "docs_anchor": "integrations.mimecast.com/documentation/endpoint-reference/logs-and-statistics/get-siem-logs"},
+    {"id": "ttp_url", "label": "TTP URL Protect (malicious link click)",
+     "default_weight": 0.05,
+     "docs_anchor": "integrations.mimecast.com/documentation/endpoint-reference/url-protect/get-ttp-url-logs"},
+    {"id": "ttp_attach", "label": "TTP Attachment Protect (sandbox detection)",
+     "default_weight": 0.05,
+     "docs_anchor": "integrations.mimecast.com/documentation/endpoint-reference/attachment-protect/get-ttp-attachment-logs"},
+    {"id": "ttp_imperson", "label": "TTP Impersonation Protect (BEC / spoofing)",
+     "default_weight": 0.05,
+     "docs_anchor": "integrations.mimecast.com/documentation/endpoint-reference/impersonation-protect/get-impersonation-logs"},
 ]
-_GEN_FUNCS = [g for g, _ in _GENERATORS]
-_GEN_WEIGHTS = [w for _, w in _GENERATORS]
+
+# Catalogue ids → (generator callable, default weight). Keys MUST match
+# EVENT_CATALOG ids exactly so admin overrides bind 1:1.
+_EVENT_TEMPLATES: dict[str, tuple[Any, float]] = {
+    "receipt":      (_receipt_event,           0.30),
+    "process":      (_process_event,           0.20),
+    "delivery":     (_delivery_event,          0.25),
+    "av":           (_av_event,                0.05),
+    "spam":         (_spam_event,              0.05),
+    "ttp_url":      (_ttp_url_event,           0.05),
+    "ttp_attach":   (_ttp_attach_event,        0.05),
+    "ttp_imperson": (_ttp_impersonation_event, 0.05),
+}
+
+# Ids the narrower MTA-only endpoint (POST /api/audit/get-siem-logs)
+# restricts to. Filtering AFTER event_mix.apply() means disabling 'receipt'
+# globally drops it from this endpoint too.
+_MTA_ONLY_IDS = ("receipt", "process", "delivery")
 
 
 # ── Public API ───────────────────────────────────────────────────────────────
@@ -436,14 +473,17 @@ def generate_events(count: int = 20, event_type: str = "") -> list[dict[str, Any
     """
     ctx = profiles.get_context("mimecast")
     count = profiles.scale_count("mimecast", count)
+    templates = event_mix.apply(_EVENT_TEMPLATES, "mimecast")
     events = []
     for _ in range(count):
-        if event_type:
-            gen = next((g for g, _ in _GENERATORS if g.__name__ == f"_{event_type}_event"), None)
-            if gen:
-                events.append(gen(ctx=ctx))
-                continue
-        gen = random.choices(_GEN_FUNCS, weights=_GEN_WEIGHTS, k=1)[0]
+        if event_type and event_type in _EVENT_TEMPLATES:
+            # Explicit filter wins over the mix — collectors that ask for
+            # a single log_type expect that exact type back regardless of
+            # admin overrides.
+            gen = _EVENT_TEMPLATES[event_type][0]
+            events.append(gen(ctx=ctx))
+            continue
+        gen = weighted_choice(templates)
         events.append(gen(ctx=ctx))
     events = inject_detection_events("mimecast", events)
     return events
@@ -578,16 +618,23 @@ def generate_siem_logs_response(count: int = 25, log_type: str = "") -> dict[str
     """
     ctx = profiles.get_context("mimecast")
     count = profiles.scale_count("mimecast", count)
-    mta_generators = [_receipt_event, _process_event, _delivery_event]
-    mta_weights = [35, 25, 40]
+    # MTA-only narrowing: take the full mix, keep only the three MTA ids,
+    # then let weighted_choice renormalise across that subset. An admin
+    # who disables 'receipt' globally sees it absent from this endpoint
+    # too — the single source of truth stays in event_mix storage.
+    full = event_mix.apply(_EVENT_TEMPLATES, "mimecast")
+    mta_templates = {k: v for k, v in full.items() if k in _MTA_ONLY_IDS}
+    if not mta_templates:
+        # Every MTA id disabled → fall back to defaults rather than emit
+        # nothing (consistent with event_mix.apply()'s own fallback).
+        mta_templates = {k: v for k, v in _EVENT_TEMPLATES.items() if k in _MTA_ONLY_IDS}
     events = []
     for _ in range(count):
-        if log_type:
-            gen = next((g for g in mta_generators if g.__name__ == f"_{log_type}_event"), None)
-            if gen:
-                events.append(gen(ctx=ctx))
-                continue
-        gen = random.choices(mta_generators, weights=mta_weights, k=1)[0]
+        if log_type and log_type in _MTA_ONLY_IDS:
+            gen = _EVENT_TEMPLATES[log_type][0]
+            events.append(gen(ctx=ctx))
+            continue
+        gen = weighted_choice(mta_templates)
         events.append(gen(ctx=ctx))
     events = inject_detection_events("mimecast", events)
     return events, _make_token(count)

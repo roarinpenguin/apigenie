@@ -179,7 +179,9 @@ so wiring a source up is **zero-cost** when no admin has touched it.
 | `aws_waf` | **wired** | 7 action × terminating-rule templates: allowed, XSS/SQLi/LFI managed-rule blocks, rate-based blocks, bot blocks, CAPTCHA challenges. |
 | `azure_ad` | **wired** | 11 entries spanning two endpoint families: `directoryAudits` (6 templates: user updates, MFA registration, CA blocks, risky-user confirmed safe, service principal added, impossible travel) and `signIns` (5 templates: success, MFA interrupted 50074, CA block 53003, invalid password 50126, risky `atRisk`). |
 | `microsoft_defender` | **wired** | 5 Defender XDR alert templates anchored to MITRE intents: suspicious process (Execution), RDP brute force (PreAttack), encoded PowerShell (Execution), LSASS access (CredentialAccess), crypto-mining (Impact). |
-| Everyone else | pending | 12 sources still hard-code their weights (`cato`, `cloudflare`, `darktrace`, `gcp_audit`, `m365`, `mimecast`, `netskope`, `sentinelone`, `snyk`, `tenable`, `wiz`, `zscaler_zpa`). |
+| `m365` | **wired** | 14 top-level event-category entries from the M365 Management Activity API schema: mailbox audit, email threat protection, DLP, eDiscovery, Exchange admin ops, SharePoint/OneDrive, Teams, OAuth consent, inbox rules, Power Platform, PIM, Audit Log search, Quarantine, User login. Event-mix scope is the category selector — per-category inner ops (mailbox operations, SharePoint operations, etc.) stay hard-coded so the catalogue stays readable. |
+| `mimecast` | **wired** | 8 SIEM API log types (`receipt`, `process`, `delivery`, `av`, `spam`, `ttp_url`, `ttp_attach`, `ttp_imperson`). The narrower MTA-only endpoint (`POST /api/audit/get-siem-logs`) filters to the 3 MTA ids after applying the mix — disabling `receipt` globally drops it from both endpoints (single source of truth). |
+| Everyone else | pending | 10 sources still hard-code their weights (`cato`, `cloudflare`, `darktrace`, `gcp_audit`, `netskope`, `sentinelone`, `snyk`, `tenable`, `wiz`, `zscaler_zpa`). |
 
 When adding a new source, the catalog-coverage test
 (`tests/test_event_mix_sources.py`) parametrises over a `_WIRED_SOURCES`

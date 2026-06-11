@@ -53,6 +53,8 @@ _WIRED_SOURCES = (
     "aws_waf",
     "azure_ad",
     "microsoft_defender",
+    "m365",
+    "mimecast",
 )
 
 
@@ -187,6 +189,43 @@ def test_microsoft_defender_catalog_ids_match_template_keys():
     assert cat_ids == tpl_ids, (
         f"microsoft_defender catalog/template drift: "
         f"catalog-only={cat_ids - tpl_ids}, template-only={tpl_ids - cat_ids}"
+    )
+
+
+def test_m365_catalog_ids_match_template_keys():
+    """m365 stores callables (not data dicts) as template payloads, but the
+    catalog → template key contract is identical."""
+    from sources import m365
+
+    cat_ids = {e["id"] for e in m365.EVENT_CATALOG}
+    tpl_ids = set(m365._EVENT_TEMPLATES.keys())
+    assert cat_ids == tpl_ids, (
+        f"m365 catalog/template drift: "
+        f"catalog-only={cat_ids - tpl_ids}, template-only={tpl_ids - cat_ids}"
+    )
+
+
+def test_mimecast_catalog_ids_match_template_keys():
+    from sources import mimecast
+
+    cat_ids = {e["id"] for e in mimecast.EVENT_CATALOG}
+    tpl_ids = set(mimecast._EVENT_TEMPLATES.keys())
+    assert cat_ids == tpl_ids, (
+        f"mimecast catalog/template drift: "
+        f"catalog-only={cat_ids - tpl_ids}, template-only={tpl_ids - cat_ids}"
+    )
+
+
+def test_mimecast_mta_subset_is_subset_of_event_templates():
+    """The MTA-only endpoint restricts to a subset of EVENT_CATALOG. If the
+    subset references an id that isn't in the catalogue, the override system
+    breaks for that endpoint."""
+    from sources import mimecast
+
+    tpl_ids = set(mimecast._EVENT_TEMPLATES.keys())
+    assert set(mimecast._MTA_ONLY_IDS).issubset(tpl_ids), (
+        f"_MTA_ONLY_IDS references unknown ids: "
+        f"{set(mimecast._MTA_ONLY_IDS) - tpl_ids}"
     )
 
 
@@ -330,4 +369,54 @@ def test_microsoft_defender_resolver_actually_disables_event(_isolate_data_root)
         1 for alert in resp["value"]
         if alert["properties"]["alertDisplayName"] == "Suspicious LSASS Memory Access"
     )
+    assert hits == 0
+
+
+def test_m365_resolver_actually_disables_event(_isolate_data_root):
+    """Disabling ``oauth_consent`` should drop every event whose Operation
+    starts with the OAuth consent verbs (``Consent to application.``,
+    ``Add OAuth2PermissionGrant.``, etc.). Those Operations are unique to
+    the _oauth_consent generator."""
+    em = _isolate_data_root
+    _apply_disable_mix(em, "m365", ["oauth_consent"])
+    from sources import m365
+
+    random.seed(42)
+    resp = m365.get_content_response(limit=100)
+    oauth_ops = (
+        "Consent to application.",
+        "Add OAuth2PermissionGrant.",
+        "Add application.",
+        "Add service principal.",
+        "Update application.",
+    )
+    hits = sum(1 for ev in resp["events"] if ev.get("Operation") in oauth_ops)
+    assert hits == 0
+
+
+def test_mimecast_resolver_actually_disables_event(_isolate_data_root):
+    """Disabling ``ttp_imperson`` should remove events whose subtype is
+    ``ttp_imperson`` from the SIEM stream. That subtype is unique to the
+    _ttp_impersonation_event generator."""
+    em = _isolate_data_root
+    _apply_disable_mix(em, "mimecast", ["ttp_imperson"])
+    from sources import mimecast
+
+    random.seed(42)
+    events = mimecast.generate_events(count=100)
+    hits = sum(1 for ev in events if ev.get("subtype") == "ttp_imperson")
+    assert hits == 0
+
+
+def test_mimecast_mta_only_endpoint_respects_global_disable(_isolate_data_root):
+    """The MTA-only endpoint must honour a global ``receipt`` disable —
+    proves the single-source-of-truth contract (the override applies
+    everywhere, not just to the broad SIEM stream)."""
+    em = _isolate_data_root
+    _apply_disable_mix(em, "mimecast", ["receipt"])
+    from sources import mimecast
+
+    random.seed(42)
+    events, _token = mimecast.generate_siem_logs_response(count=100)
+    hits = sum(1 for ev in events if ev.get("subtype") == "receipt")
     assert hits == 0
