@@ -65,6 +65,12 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-apigenie}
       ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:-}
+      # At-rest secrets encryption (v5.1 Phase B). 44-char urlsafe-base64
+      # Fernet key. Generate with:
+      #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      # If empty, crypto.py falls back to /var/lib/apigenie/secret.key
+      # (auto-generated; BACK IT UP — see crypto.py module docstring).
+      APIGENIE_SECRET_KEY: ${APIGENIE_SECRET_KEY:-}
       # Investigation password (gate for 🔍 Investigations tab)
       APIGENIE_INVESTIGATE_PASSWORD: ${APIGENIE_INVESTIGATE_PASSWORD:-}
       INVESTIGATE_PASSWORD_FILE: /var/lib/apigenie/investigate_pass

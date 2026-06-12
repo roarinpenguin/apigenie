@@ -80,6 +80,7 @@ if [ -f "$ENV_FILE" ]; then
     EXISTING_MAXMIND_KEY=$(awk -F= '/^MAXMIND_LICENSE_KEY=/ {print $2; exit}' "$ENV_FILE")
     EXISTING_INVESTIGATE_HASH=$(awk -F= '/^APIGENIE_INVESTIGATE_PASSWORD=/ {print $2; exit}' "$ENV_FILE")
     EXISTING_INVESTIGATE_HASH="${EXISTING_INVESTIGATE_HASH//\$\$/\$}"
+    EXISTING_SECRET_KEY=$(awk -F= '/^APIGENIE_SECRET_KEY=/ {print $2; exit}' "$ENV_FILE")
 fi
 
 say
@@ -167,6 +168,22 @@ if [ -n "$INVESTIGATE_PASS_PLAIN" ]; then
     ok "Hash generated."
 fi
 
+# Preserve an existing APIGENIE_SECRET_KEY across re-runs (losing it would
+# render every encrypted blob in ./data/ unreadable). Generate one only on
+# first boot. The key is a 44-char urlsafe-base64 Fernet token.
+SECRET_KEY="${EXISTING_SECRET_KEY:-}"
+if [ -z "$SECRET_KEY" ]; then
+    say
+    say "Generating ApiGenie at-rest secret key (Fernet)…"
+    SECRET_KEY="$(python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())' 2>/dev/null || true)"
+    if [ -z "$SECRET_KEY" ]; then
+        warn "python3 cryptography module unavailable — leaving APIGENIE_SECRET_KEY blank."
+        warn "The container will auto-generate ./data/secret.key on first run instead."
+    else
+        ok "Key generated. BACK IT UP — losing it makes every encrypted blob unreadable."
+    fi
+fi
+
 # ─── 3. Write .env ───────────────────────────────────────────────────────────
 if [ -f "$ENV_FILE" ]; then
     cp "$ENV_FILE" "$ENV_FILE.bak"
@@ -214,6 +231,11 @@ ${COMPOSE_PROFILES_LINE}
 ADMIN_USERNAME=${ADMIN_USER}
 ADMIN_PASSWORD=${ADMIN_PASS_FALLBACK}
 ADMIN_PASSWORD_HASH=${ADMIN_HASH_ENV}
+
+# ── At-rest secrets encryption (v5.1 Phase B) ──
+# Fernet key. Encrypts admin-global S1 token (and future server-side at-rest
+# secrets) inside ./data/. BACK THIS KEY UP. See crypto.py module docstring.
+APIGENIE_SECRET_KEY=${SECRET_KEY}
 
 # ── Investigation password ──
 APIGENIE_INVESTIGATE_PASSWORD=${INVESTIGATE_HASH_ENV}

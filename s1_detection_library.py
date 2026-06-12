@@ -52,18 +52,42 @@ SOURCE_KEY_TO_S1 = {
 # ── Settings ─────────────────────────────────────────────────────────────────
 
 def get_settings() -> dict[str, Any]:
+    """Read the admin-global S1 settings, transparently decrypting the
+    ``api_token`` field.
+
+    v5.1 Phase B: ``api_token`` is stored as a Fernet token at rest. Legacy
+    plaintext blobs are auto-detected and returned as-is; the next call to
+    :func:`save_settings` will re-encrypt them (silent migration). If the
+    stored ciphertext fails to decrypt (e.g. ``APIGENIE_SECRET_KEY`` was
+    rotated incorrectly), the caller sees an empty token and is prompted
+    to re-enter — never a 500.
+    """
     try:
         if _SETTINGS_FILE.is_file():
-            return json.loads(_SETTINGS_FILE.read_text())
+            raw = json.loads(_SETTINGS_FILE.read_text())
+        else:
+            return {}
     except (json.JSONDecodeError, OSError):
-        pass
-    return {}
+        return {}
+    token = raw.get("api_token") or ""
+    if token:
+        import crypto                   # lazy import to keep import-time light
+        raw["api_token"] = crypto.try_decrypt(token)
+    return raw
 
 
 def save_settings(data: dict[str, Any]) -> None:
+    """Persist the admin-global S1 settings, encrypting ``api_token`` at
+    rest with the server-side Fernet key (see :mod:`crypto`)."""
     _DATA_ROOT.mkdir(parents=True, exist_ok=True)
-    current = get_settings()
+    current = get_settings()             # returns plaintext token (or "")
     current.update(data)
+    # Re-encrypt the token on every save — covers the silent-migration
+    # case where the previously-read token was legacy plaintext.
+    token = current.get("api_token") or ""
+    if token:
+        import crypto
+        current["api_token"] = crypto.encrypt(token)
     tmp = _SETTINGS_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(current, indent=2))
     tmp.replace(_SETTINGS_FILE)
