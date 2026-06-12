@@ -1,4 +1,4 @@
-"""RBAC Phase 3.5 — self-service account settings (TDD).
+"""RBAC Phase 3.5 + v5.1 Phase A — self-service account settings (TDD).
 
 Three pieces ship together:
 
@@ -7,15 +7,18 @@ Three pieces ship together:
      raises ValueError on any input failure. Underpins the per-user portal
      "Change password" form.
 
-  2. `accounts.update_user(uid, email=..., console_url=..., console_token=...)`
-     — already exists; this file pins the contract for the self-service
-     wrappers in admin.py.
+  2. `accounts.update_user(uid, email=..., ...)` — self-service writes for
+     the email + admin-managed flags only. The legacy `console_url` /
+     `console_token` columns were dropped in v5.1 Phase A; the per-user S1
+     console URL + token now live exclusively in browser localStorage and
+     ride every request as `X-S1-Console-URL` / `X-S1-Console-Token`
+     headers — never persisted on the server.
 
-  3. `s1_detection_library._resolved_settings()` — returns the **per-user**
-     S1 console URL + token if the resolved caller (via
-     `profiles.set_current_user`) has both set, otherwise falls back to the
-     global `s1_settings.json` blob written by the admin "System Settings"
-     page. Wires per-user S1 access for the Detection Library browser.
+  3. `s1_detection_library._resolved_settings()` — returns the **per-request
+     browser override** (installed by `set_request_override()` from the
+     middleware) when both URL and token are set, otherwise falls back to
+     the global `s1_settings.json` blob written by the admin
+     "System Settings" page.
 """
 from __future__ import annotations
 
@@ -87,45 +90,41 @@ class TestAccountsSelfServiceFields:
         with pytest.raises(ValueError):
             accounts.update_user(u["id"], email="not-an-email")
 
-    def test_per_user_s1_console_url_and_token_round_trip(self, make_user):
+    def test_per_user_s1_console_columns_are_gone(self, make_user):
+        """v5.1 Phase A — the per-user S1 console URL + token used to live on
+        the `users` row (`console_url` / `console_token`) and round-tripped
+        through `accounts.update_user(...)`. They now live exclusively in
+        browser localStorage. This regression test pins the contract that:
+
+        a) `update_user()` no longer accepts those kwargs (TypeError);
+        b) `get_user(..., with_secrets=True)` no longer surfaces the columns.
+        """
         import accounts
 
         u = make_user("alice")
-        upd = accounts.update_user(
-            u["id"],
-            console_url="https://alice-tenant.sentinelone.net",
-            console_token="alice-s1-mgmt-token-xyz",
-        )
-        assert upd["console_url"] == "https://alice-tenant.sentinelone.net"
-        assert upd["has_console_token"] is True
-
-        # Token is not echoed back without secrets=True
-        public = accounts.get_user(u["id"])
-        assert "console_token" not in public
-
-        # With secrets it is
+        # (a) the kwargs are gone from the signature.
+        with pytest.raises(TypeError):
+            accounts.update_user(
+                u["id"],
+                console_url="https://alice-tenant.sentinelone.net",
+                console_token="alice-token",
+            )
+        # (b) and the dropped columns must not leak even with secrets.
         secret = accounts.get_user(u["id"], with_secrets=True)
-        assert secret["console_token"] == "alice-s1-mgmt-token-xyz"
-
-    def test_per_user_s1_console_can_be_cleared(self, make_user):
-        import accounts
-
-        u = make_user("alice")
-        accounts.update_user(
-            u["id"], console_url="https://x.sentinelone.net", console_token="t"
-        )
-        accounts.update_user(u["id"], console_url="", console_token="")
-        fresh = accounts.get_user(u["id"], with_secrets=True)
-        assert fresh["console_url"] == ""
-        assert fresh["console_token"] == ""
+        assert "console_url" not in secret
+        assert "console_token" not in secret
+        assert "has_console_token" not in secret
 
 
 # ── s1_detection_library._resolved_settings ──────────────────────────────────
 
 class TestS1ResolvedSettings:
-    """The S1 client must read per-user override when the caller-context (set
-    by auth.py from a matched identifier, OR by an admin/portal endpoint from
-    the session) points to a user with a configured per-user console."""
+    """v5.1 Phase A — the S1 client reads its console URL + API token from
+    a per-request override installed by the FastAPI middleware (which itself
+    pulls them off the `X-S1-Console-URL` / `X-S1-Console-Token` headers
+    stamped by the browser from localStorage). When the override is absent
+    or partial, we fall back to the admin-global `s1_settings.json` blob.
+    """
 
     def _set_global(self, tmp_path, monkeypatch, url="https://global.sentinelone.net",
                     token="global-token"):
@@ -134,90 +133,84 @@ class TestS1ResolvedSettings:
         monkeypatch.setattr(s1, "_SETTINGS_FILE", tmp_path / "s1_settings.json")
         s1.save_settings({"console_url": url, "api_token": token})
 
-    def test_no_caller_falls_back_to_global(self, tmp_path, monkeypatch):
+    def test_no_override_falls_back_to_global(self, tmp_path, monkeypatch):
         import s1_detection_library as s1
-        import profiles
 
         self._set_global(tmp_path, monkeypatch)
-        profiles.set_current_user(None)
-
+        # No middleware has installed an override on this context.
         out = s1._resolved_settings()
         assert out["console_url"] == "https://global.sentinelone.net"
         assert out["api_token"] == "global-token"
+        assert out["_source"] == "global"
 
-    def test_caller_with_per_user_override_uses_per_user(
-        self, tmp_path, monkeypatch, make_user
-    ):
+    def test_request_override_wins_over_global(self, tmp_path, monkeypatch):
         import s1_detection_library as s1
-        import accounts
-        import profiles
 
         self._set_global(tmp_path, monkeypatch)
-        u = make_user("alice")
-        accounts.update_user(
-            u["id"],
-            console_url="https://alice-tenant.sentinelone.net",
-            console_token="alice-token",
+        tok = s1.set_request_override(
+            "https://alice-tenant.sentinelone.net",
+            "alice-browser-token",
         )
+        try:
+            out = s1._resolved_settings()
+            assert out["console_url"] == "https://alice-tenant.sentinelone.net"
+            assert out["api_token"] == "alice-browser-token"
+            assert out["_source"] == "browser_override"
+        finally:
+            s1.clear_request_override(tok)
 
-        profiles.set_current_user(u["id"])
-        out = s1._resolved_settings()
-        assert out["console_url"] == "https://alice-tenant.sentinelone.net"
-        assert out["api_token"] == "alice-token"
-
-    def test_partial_override_falls_back_to_global(
-        self, tmp_path, monkeypatch, make_user
-    ):
-        """A user who set the URL but not the token (or vice versa) must NOT be
-        mixed with the global token — that would leak the admin's credentials
-        against an unrelated tenant. Fall back cleanly to global."""
+    def test_partial_override_falls_back_to_global(self, tmp_path, monkeypatch):
+        """A browser that sent the URL but not the token (or vice versa) must
+        NOT be mixed with the global token — that would leak the admin's
+        credentials against an unrelated tenant. Fall back cleanly to global.
+        """
         import s1_detection_library as s1
-        import accounts
-        import profiles
 
         self._set_global(tmp_path, monkeypatch)
-        u = make_user("alice")
-        accounts.update_user(u["id"], console_url="https://alice-tenant.sentinelone.net")
-        # No console_token set.
+        # URL only — no token.
+        tok = s1.set_request_override("https://alice-tenant.sentinelone.net", "")
+        try:
+            out = s1._resolved_settings()
+            assert out["console_url"] == "https://global.sentinelone.net"
+            assert out["api_token"] == "global-token"
+            assert out["_source"] == "global"
+        finally:
+            s1.clear_request_override(tok)
 
-        profiles.set_current_user(u["id"])
-        out = s1._resolved_settings()
-        assert out["console_url"] == "https://global.sentinelone.net"
-        assert out["api_token"] == "global-token"
+        # Token only — no URL.
+        tok = s1.set_request_override("", "orphan-token")
+        try:
+            out = s1._resolved_settings()
+            assert out["console_url"] == "https://global.sentinelone.net"
+            assert out["api_token"] == "global-token"
+        finally:
+            s1.clear_request_override(tok)
 
-    def test_unknown_caller_uid_falls_back_to_global(self, tmp_path, monkeypatch):
+    def test_override_is_reset_correctly(self, tmp_path, monkeypatch):
+        """clear_request_override must restore the previous context state so
+        per-request values can't leak across requests on the same worker."""
         import s1_detection_library as s1
-        import profiles
 
         self._set_global(tmp_path, monkeypatch)
-        profiles.set_current_user("usr_does_not_exist")
-        out = s1._resolved_settings()
-        assert out["console_url"] == "https://global.sentinelone.net"
-        assert out["api_token"] == "global-token"
+        tok = s1.set_request_override("https://x.sentinelone.net", "x-token")
+        assert s1._resolved_settings()["_source"] == "browser_override"
+        s1.clear_request_override(tok)
+        assert s1._resolved_settings()["_source"] == "global"
 
-    def test_is_configured_reflects_resolved_settings(
-        self, tmp_path, monkeypatch, make_user
-    ):
-        """If global is empty and the resolved caller has a per-user setup,
+    def test_is_configured_reflects_resolved_settings(self, tmp_path, monkeypatch):
+        """If global is empty and a request-scoped override is installed,
         is_configured() must say True."""
         import s1_detection_library as s1
-        import accounts
-        import profiles
 
         # Empty global.
         monkeypatch.setattr(s1, "_DATA_ROOT", tmp_path)
         monkeypatch.setattr(s1, "_SETTINGS_FILE", tmp_path / "s1_settings.json")
         s1.save_settings({"console_url": "", "api_token": ""})
 
-        u = make_user("alice")
-        accounts.update_user(
-            u["id"],
-            console_url="https://alice-tenant.sentinelone.net",
-            console_token="alice-token",
-        )
-
-        profiles.set_current_user(None)
         assert s1.is_configured() is False
-
-        profiles.set_current_user(u["id"])
-        assert s1.is_configured() is True
+        tok = s1.set_request_override("https://alice.sentinelone.net", "alice-tok")
+        try:
+            assert s1.is_configured() is True
+        finally:
+            s1.clear_request_override(tok)
+        assert s1.is_configured() is False

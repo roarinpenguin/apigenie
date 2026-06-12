@@ -76,6 +76,10 @@ docker cp crypto.py                                "$C":/app/crypto.py
 docker cp s1_detection_library.py                  "$C":/app/s1_detection_library.py
 docker cp tests/test_crypto.py                     "$C":/app/tests/test_crypto.py
 docker cp tests/test_s1_settings_encrypted_at_rest.py "$C":/app/tests/test_s1_settings_encrypted_at_rest.py
+# Browser-only per-user S1 console + header-based override (v5.1 Phase A)
+docker cp app.py                                   "$C":/app/app.py
+docker cp tests/test_rbac_phase35_self_service.py  "$C":/app/tests/test_rbac_phase35_self_service.py
+docker cp tests/test_rbac_phase35_endpoints.py     "$C":/app/tests/test_rbac_phase35_endpoints.py
 
 echo "[2/3] restarting container..."
 docker restart "$C" > /dev/null

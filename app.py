@@ -188,6 +188,26 @@ async def _portal_role_guard(request: Request, call_next):
             caller_token = _profiles.set_current_user(uid)
         except Exception:
             caller_token = None
+
+    # v5.1 Phase A — per-request S1 console override.
+    #
+    # The browser keeps the user's S1 console URL + API token in
+    # localStorage (never sent to / persisted on the server) and stamps
+    # every fetch() with X-S1-Console-URL / X-S1-Console-Token. We pop
+    # them off here and install them into the s1_detection_library
+    # ContextVar so any downstream S1 client call in this request uses
+    # the caller's tenant — without ever writing the token to disk.
+    s1_override_token = None
+    s1_console_url = request.headers.get("x-s1-console-url") or ""
+    s1_console_tok = request.headers.get("x-s1-console-token") or ""
+    if s1_console_url and s1_console_tok:
+        try:
+            import s1_detection_library as _s1lib
+            s1_override_token = _s1lib.set_request_override(
+                s1_console_url, s1_console_tok)
+        except Exception:
+            s1_override_token = None
+
     try:
         return await call_next(request)
     finally:
@@ -195,6 +215,12 @@ async def _portal_role_guard(request: Request, call_next):
             try:
                 import profiles as _profiles
                 _profiles.reset_current_user(caller_token)
+            except Exception:
+                pass
+        if s1_override_token is not None:
+            try:
+                import s1_detection_library as _s1lib
+                _s1lib.clear_request_override(s1_override_token)
             except Exception:
                 pass
 

@@ -93,37 +93,75 @@ def save_settings(data: dict[str, Any]) -> None:
     tmp.replace(_SETTINGS_FILE)
 
 
+# ── Per-request S1 console override (v5.1 Phase A) ──────────────────────────
+#
+# The per-user S1 console URL + API token live in the browser's localStorage
+# and ride every fetch() as X-S1-Console-URL / X-S1-Console-Token headers.
+# A FastAPI middleware (see app.py) reads those headers and calls
+# ``set_request_override()`` so handlers downstream — and any
+# ``s1_detection_library`` call originating from this request — see the
+# per-user values without the server ever persisting them.
+#
+# The override is a ``contextvars.ContextVar`` so concurrent requests on
+# the same worker don't bleed into each other (FastAPI runs each request
+# in its own task with its own context copy).
+
+import contextvars as _contextvars
+
+_REQUEST_OVERRIDE: _contextvars.ContextVar[dict[str, str] | None] = (
+    _contextvars.ContextVar("apigenie_s1_request_override", default=None)
+)
+
+
+def set_request_override(console_url: str, api_token: str) -> _contextvars.Token:
+    """Install a per-request S1 console override.
+
+    Called by the FastAPI middleware on each incoming request that
+    carries the ``X-S1-Console-URL`` + ``X-S1-Console-Token`` headers.
+    Returns a token that the middleware should pass to
+    :func:`clear_request_override` once the response is dispatched.
+
+    *Partial* overrides (URL but no token, or vice versa) are ignored —
+    falling back to the global blob is safer than pairing the admin's
+    token with an unrelated tenant URL.
+    """
+    if not (console_url and api_token):
+        return _REQUEST_OVERRIDE.set(None)
+    return _REQUEST_OVERRIDE.set({
+        "console_url": console_url.rstrip("/"),
+        "api_token":   api_token,
+    })
+
+
+def clear_request_override(token: _contextvars.Token) -> None:
+    """Restore the override variable to its previous state."""
+    _REQUEST_OVERRIDE.reset(token)
+
+
 def _resolved_settings() -> dict[str, Any]:
     """Return the active S1 console settings for the current request.
 
-    RBAC Phase 3.5 — every user can configure their *own* S1 console URL +
-    API token (stored on the users row via accounts.update_user). When the
-    request's caller-context (``profiles.get_current_user``) points to a
-    user with **both** ``console_url`` and ``console_token`` set, we use
-    them. Otherwise we fall back to the global ``s1_settings.json`` written
-    by the admin "System Settings" page.
+    v5.1 Phase A — resolution order:
 
-    Partial overrides (URL but no token, or vice versa) deliberately fall
-    back to the global blob — mixing a user's URL with the admin's token
-    would point the admin's credentials at an unrelated tenant.
+    1. Per-request browser override (``X-S1-Console-URL`` +
+       ``X-S1-Console-Token`` headers, installed by app.py middleware).
+       This is the path *every* signed-in user takes when they've
+       configured a personal S1 console on their browser.
+    2. Admin global ``s1_settings.json`` (encrypted at rest via
+       :mod:`crypto` since v5.1 Phase B), used as a fallback when no
+       browser override is present — typically the built-in admin or
+       a user who hasn't configured their own console yet.
     """
-    try:
-        from profiles import get_current_user
-        import accounts
-        uid = get_current_user()
-        if uid:
-            u = accounts.get_user(uid, with_secrets=True)
-            if u and u.get("console_url") and u.get("console_token"):
-                return {
-                    "console_url": u["console_url"],
-                    "api_token": u["console_token"],
-                    # account_id is global-only for now — per-user discovery
-                    # would happen on first per-user API call.
-                    "account_id": get_settings().get("account_id", ""),
-                    "_source": "per_user",
-                }
-    except Exception as e:                          # pragma: no cover
-        log.debug("per-user S1 resolution failed: %s", e)
+    override = _REQUEST_OVERRIDE.get()
+    if override:
+        return {
+            "console_url": override["console_url"],
+            "api_token":   override["api_token"],
+            # account_id is global-only for now — per-user discovery
+            # would happen on first per-user API call.
+            "account_id":  get_settings().get("account_id", ""),
+            "_source":     "browser_override",
+        }
     s = get_settings()
     return {**s, "_source": "global"}
 

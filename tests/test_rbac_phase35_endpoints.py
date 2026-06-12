@@ -31,7 +31,7 @@ class TestMeAccount:
         r = client.get("/admin/api/me/account")
         assert r.status_code == 401
 
-    def test_user_sees_their_email_and_console_state(self, client, make_user):
+    def test_user_sees_their_email(self, client, make_user):
         u = make_user("alice")
         _login_as_user(client, "alice", "testpassw0rd")
         r = client.get("/admin/api/me/account")
@@ -41,8 +41,11 @@ class TestMeAccount:
         assert d["user_id"] == u["id"]
         assert d["username"] == "alice"
         assert d["email"] == "alice@test.local"
-        assert d["console_url"] == ""
-        assert d["has_console_token"] is False
+        # v5.1 Phase A — the per-user S1 console URL + token live only in
+        # the browser. The legacy `console_url` / `has_console_token`
+        # fields must NOT be present on this payload.
+        assert "console_url" not in d
+        assert "has_console_token" not in d
 
 
 # ── /admin/api/me/email ────────────────────────────────────────────────────
@@ -103,97 +106,124 @@ class TestMePassword:
         assert r.status_code == 400
 
 
-# ── /admin/api/me/s1-console ───────────────────────────────────────────────
+# ── /admin/api/me/s1-console (REMOVED in v5.1 Phase A) ─────────────────────
 
-class TestMeS1Console:
-    def test_put_then_get_round_trip(self, client, make_user):
+class TestMeS1ConsoleEndpointsRemoved:
+    """v5.1 Phase A regression — the per-user S1 console URL + token used
+    to round-trip through GET/PUT/DELETE /admin/api/me/s1-console. They now
+    live in browser localStorage only, so those endpoints have been deleted.
+    A future regression that resurrects server-side persistence would have
+    to re-add them; this guard pins the deletion.
+    """
+
+    @pytest.mark.parametrize("method", ["get", "put", "delete"])
+    def test_endpoints_are_gone(self, client, make_user, method):
         make_user("alice")
         _login_as_user(client, "alice", "testpassw0rd")
-        r = client.put("/admin/api/me/s1-console",
-                       json={"console_url": "https://alice.sentinelone.net/",
-                             "api_token": "alice-secret-001"})
-        assert r.status_code == 200, r.text
-        d = r.json()
-        assert d["console_url"] == "https://alice.sentinelone.net"  # trailing slash stripped
-        assert d["has_console_token"] is True
-
-        g = client.get("/admin/api/me/s1-console").json()
-        assert g["console_url"] == "https://alice.sentinelone.net"
-        assert g["has_console_token"] is True
-
-    def test_put_preserves_token_when_only_url_changes(self, client, make_user):
-        make_user("alice")
-        _login_as_user(client, "alice", "testpassw0rd")
-        client.put("/admin/api/me/s1-console",
-                   json={"console_url": "https://alice.sentinelone.net",
-                         "api_token": "alice-secret-001"})
-        # Now change only the URL — token must remain saved
-        r = client.put("/admin/api/me/s1-console",
-                       json={"console_url": "https://alice2.sentinelone.net",
-                             "api_token": ""})
-        assert r.status_code == 200
-        g = client.get("/admin/api/me/s1-console").json()
-        assert g["console_url"] == "https://alice2.sentinelone.net"
-        assert g["has_console_token"] is True  # preserved
-
-    def test_delete_clears_override(self, client, make_user):
-        make_user("alice")
-        _login_as_user(client, "alice", "testpassw0rd")
-        client.put("/admin/api/me/s1-console",
-                   json={"console_url": "https://alice.sentinelone.net",
-                         "api_token": "alice-secret-001"})
-        r = client.delete("/admin/api/me/s1-console")
-        assert r.status_code == 200
-        g = client.get("/admin/api/me/s1-console").json()
-        assert g["console_url"] == ""
-        assert g["has_console_token"] is False
+        if method == "get":
+            r = client.get("/admin/api/me/s1-console")
+        elif method == "put":
+            r = client.put("/admin/api/me/s1-console",
+                           json={"console_url": "https://x.sentinelone.net",
+                                 "api_token": "t"})
+        else:
+            r = client.delete("/admin/api/me/s1-console")
+        # FastAPI returns 405 for an unknown method on a defined path, and
+        # 404 for an entirely-undefined path — either way, the endpoint is
+        # gone and *not* persisting anything.
+        assert r.status_code in (404, 405), (method, r.status_code, r.text)
 
 
-# ── Caller context wiring (middleware) ─────────────────────────────────────
+# ── Header-based S1 override middleware (v5.1 Phase A) ─────────────────────
 
-class TestCallerContextMiddleware:
-    def test_admin_api_request_sets_caller_to_session_user(self, client, make_user):
-        """The Phase 3.5 middleware sets profiles.set_current_user() for every
-        /admin/api/ request so caller-aware helpers (s1._resolved_settings,
-        profiles.get_context, …) see the right uid without manual plumbing."""
-        import profiles
+class TestS1HeaderOverrideMiddleware:
+    """The app.py middleware reads `X-S1-Console-URL` + `X-S1-Console-Token`
+    off every request and installs them into the s1_detection_library
+    ContextVar override for the duration of the request. After the response
+    is dispatched, the override is cleared so the next request sees a clean
+    context (no cross-request leakage on the same worker).
+    """
+
+    def test_headers_install_browser_override_for_one_request(
+        self, client, make_user
+    ):
         import s1_detection_library as s1
 
-        u = make_user("alice")
-        # Configure a per-user S1 console for alice.
+        make_user("alice")
         _login_as_user(client, "alice", "testpassw0rd")
-        client.put("/admin/api/me/s1-console",
-                   json={"console_url": "https://alice.sentinelone.net",
-                         "api_token": "alice-secret-001"})
 
-        # Now fetch /admin/api/me — the middleware should bind caller=alice
-        # for the duration of the request, so _resolved_settings (called from
-        # any handler that consults it) would resolve to her values.
         captured = {}
-
         original = s1._resolved_settings
+
         def _spy():
-            captured["snapshot"] = dict(original())
-            return original()
+            snap = dict(original())
+            captured["snapshot"] = snap
+            return snap
         s1._resolved_settings = _spy
         try:
-            # Any cheap /admin/api/ endpoint that runs through the middleware.
-            r = client.get("/admin/api/me")
-            assert r.status_code == 200
-            # The middleware runs even when the endpoint itself does not call
-            # _resolved_settings, so we trigger it manually inside a follow-up
-            # request handler by hitting one that does.
-            r = client.get("/admin/api/s1/settings")
-            # /api/s1/settings calls is_configured() → _resolved_settings()
+            # /admin/api/s1/settings reads is_configured() → _resolved_settings.
+            r = client.get(
+                "/admin/api/s1/settings",
+                headers={
+                    "X-S1-Console-URL":   "https://alice.sentinelone.net",
+                    "X-S1-Console-Token": "alice-browser-secret",
+                },
+            )
+            assert r.status_code == 200, r.text
+        finally:
+            s1._resolved_settings = original
+
+        snap = captured.get("snapshot", {})
+        assert snap.get("_source") == "browser_override", \
+            "middleware did not install the X-S1-Console-* headers as an override"
+        assert snap["console_url"] == "https://alice.sentinelone.net"
+        assert snap["api_token"] == "alice-browser-secret"
+
+    def test_override_cleared_after_response(self, client, make_user):
+        """Once the response is back, the ContextVar must be reset — the
+        next request without headers must see the global settings only."""
+        import s1_detection_library as s1
+
+        make_user("alice")
+        _login_as_user(client, "alice", "testpassw0rd")
+
+        # First request: headers present, override is installed.
+        client.get(
+            "/admin/api/s1/settings",
+            headers={
+                "X-S1-Console-URL":   "https://alice.sentinelone.net",
+                "X-S1-Console-Token": "alice-browser-secret",
+            },
+        )
+        # Outside any request, the contextvar in the test process must be
+        # back to its default (None).
+        out = s1._resolved_settings()
+        assert out.get("_source") == "global", \
+            "browser override leaked past the request lifecycle"
+
+    def test_partial_headers_do_not_override(self, client, make_user):
+        """URL-only (or token-only) headers must NOT replace the admin-global
+        credentials — pairing the admin's token with an unrelated tenant URL
+        would be a credential leak."""
+        import s1_detection_library as s1
+
+        make_user("alice")
+        _login_as_user(client, "alice", "testpassw0rd")
+
+        captured = {}
+        original = s1._resolved_settings
+        def _spy():
+            snap = dict(original())
+            captured["snapshot"] = snap
+            return snap
+        s1._resolved_settings = _spy
+        try:
+            r = client.get(
+                "/admin/api/s1/settings",
+                headers={"X-S1-Console-URL": "https://alice.sentinelone.net"},
+            )
             assert r.status_code == 200
         finally:
             s1._resolved_settings = original
 
-        assert captured.get("snapshot", {}).get("_source") == "per_user", \
-            "middleware did not bind alice's caller context for /admin/api/s1/*"
-        assert captured["snapshot"]["console_url"] == "https://alice.sentinelone.net"
-        assert captured["snapshot"]["api_token"] == "alice-secret-001"
-
-        # And after the request, the contextvar must be reset back to None so
-        # state can't leak between requests/workers.
-        assert profiles.get_current_user() is None
+        assert captured.get("snapshot", {}).get("_source") != "browser_override"

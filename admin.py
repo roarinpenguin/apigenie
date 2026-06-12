@@ -1737,6 +1737,33 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
               </div>
             </div>
           </div>
+          <!-- v5.1 Phase C: Mode + Visibility row. Mode picks the time
+               semantics (Realtime keeps today's scheduler; Historical
+               pre-stages every event with backdated timestamps so demos
+               start with the full story already in the past). Visibility
+               controls whether other users' collectors see this run's
+               backlog: private = only the owner's caller token sees it. -->
+          <div style="display:flex;gap:10px;align-items:flex-end">
+            <div style="flex:1">
+              <label style="font-size:.72rem;color:rgba(224,170,255,.5)">Mode</label>
+              <select id="scenario-mode" onchange="onScenarioModeChange()" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
+                <option value="realtime" selected>Realtime &mdash; events fire on a live schedule as collectors poll</option>
+                <option value="historical">Historical &mdash; pre-stage every event with backdated timestamps</option>
+              </select>
+            </div>
+            <div style="flex:1">
+              <label style="font-size:.72rem;color:rgba(224,170,255,.5)">Visibility</label>
+              <select id="scenario-visibility" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
+                <option value="private" selected>Private &mdash; only you / your collectors</option>
+                <option value="public">Public &mdash; visible to every caller</option>
+              </select>
+            </div>
+            <div id="scenario-epp-wrap" style="flex:0 0 110px;display:none">
+              <label style="font-size:.72rem;color:rgba(224,170,255,.5)" title="Optional. Events per phase (historical mode only). Empty = auto from phase duration + periodicity.">Events/phase</label>
+              <input id="scenario-epp" type="number" min="1" placeholder="auto" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/>
+            </div>
+          </div>
+          <div id="scenario-mode-hint" style="font-size:.68rem;color:rgba(224,170,255,.4);min-height:16px"></div>
           <div>
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
               <label style="font-size:.72rem;color:rgba(224,170,255,.5)">Phases <span id="scenario-phase-count" style="color:rgba(224,170,255,.35)"></span></label>
@@ -1843,10 +1870,11 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
           enrichment performed in your session.
         </p>
         <div id="acct-builtin-note" style="display:none;font-size:.78rem;color:#f0c040;background:rgba(240,192,64,.08);border:1px solid rgba(240,192,64,.3);border-radius:8px;padding:8px 12px;margin-bottom:14px">
-          You are signed in as the <b>built-in admin</b>. Self-service settings
-          live on registered user accounts. Use <b>System Settings → User
-          Portal Password</b> and <b>S1 Detection Library</b> for the global
-          equivalents.
+          You are signed in as the <b>built-in admin</b>. The email and password
+          forms below are disabled (no DB row) — use
+          <b>System Settings → User Portal Password</b> instead. The
+          <b>My SentinelOne console</b> card still works for you because it is
+          stored only in this browser.
         </div>
         <div class="cfg-grid" id="acct-identity" style="display:grid;grid-template-columns:160px 1fr;gap:8px 14px;align-items:center;font-size:.85rem">
           <div style="color:rgba(224,170,255,.6)">Username</div>
@@ -1887,18 +1915,20 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
         <p style="font-size:.75rem;color:rgba(224,170,255,.55);margin-bottom:10px">
           Optional. When set, ApiGenie pulls detection rules from <b>your</b> S1
           console (and uses <b>your</b> API token) instead of the global one.
-          Leave the token blank to keep the saved value. To remove your override
-          entirely, click <i>Clear</i>.
+          <b style="color:#e0aaff">Stored only in this browser</b> (localStorage)
+          and sent on every request as <code>X-S1-Console-URL</code> /
+          <code>X-S1-Console-Token</code> headers — the server never writes it
+          to disk. Clearing your browser data also clears the override.
         </p>
         <div class="row" style="gap:10px;flex-wrap:wrap;margin-bottom:8px">
           <input id="acct-s1-url" type="text" placeholder="https://yourtenant.sentinelone.net"
                  style="flex:2;min-width:260px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.3);border-radius:8px;padding:7px 12px;color:var(--mist);font-family:inherit;font-size:.88rem;outline:none"/>
-          <input id="acct-s1-token" type="password" placeholder="API token (leave blank to keep)"
+          <input id="acct-s1-token" type="password" placeholder="API token (paste to set/replace)"
                  style="flex:2;min-width:260px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.3);border-radius:8px;padding:7px 12px;color:var(--mist);font-family:inherit;font-size:.88rem;outline:none"/>
         </div>
         <div class="row" style="gap:10px">
-          <button class="btn-sm" onclick="saveAccountS1()">Save S1 console</button>
-          <button class="btn-sm" onclick="clearAccountS1()" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.3);color:#e0aaff">Clear override</button>
+          <button class="btn-sm" onclick="saveAccountS1()">Save to this browser</button>
+          <button class="btn-sm" onclick="clearAccountS1()" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.3);color:#e0aaff">Forget on this browser</button>
         </div>
         <div id="acct-s1-msg" style="font-size:.78rem;min-height:1.1em;margin-top:8px"></div>
       </div>
@@ -4511,6 +4541,24 @@ function _acctMsg(id, ok, text) {
   el.style.color = ok ? '#2ecc71' : '#ff7f7f';
 }
 
+// v5.1 Phase A — per-user S1 console URL + token live in this browser
+// only. They never round-trip through the server (no DB column, no
+// JSON file, no API endpoint). The keys below are read by s1Fetch /
+// the global fetch wrapper to stamp X-S1-Console-{URL,Token} on every
+// same-origin request, which the FastAPI middleware then loads into a
+// ContextVar (see app.py + s1_detection_library.set_request_override).
+var S1_LS_URL   = 'apigenie.s1.console_url';
+var S1_LS_TOKEN = 'apigenie.s1.api_token';
+
+function _s1GetLocal() {
+  try {
+    return {
+      url:   localStorage.getItem(S1_LS_URL)   || '',
+      token: localStorage.getItem(S1_LS_TOKEN) || '',
+    };
+  } catch (e) { return {url:'', token:''}; }
+}
+
 async function loadAccount() {
   try {
     var r = await fetch('/admin/api/me/account', {credentials:'same-origin'});
@@ -4519,20 +4567,27 @@ async function loadAccount() {
     document.getElementById('acct-username').textContent = d.username || '—';
     document.getElementById('acct-uid').textContent = d.user_id || '—';
     document.getElementById('acct-email').value = d.email || '';
-    document.getElementById('acct-s1-url').value = d.console_url || '';
+    // S1 console URL + token come from localStorage now, never from the API.
+    var ls = _s1GetLocal();
+    document.getElementById('acct-s1-url').value = ls.url;
     var tokInput = document.getElementById('acct-s1-token');
     tokInput.value = '';
-    tokInput.placeholder = d.has_console_token
-      ? '********** (saved — leave blank to keep)'
-      : 'API token (paste once)';
+    tokInput.placeholder = ls.token
+      ? '********** (saved in this browser — paste to replace)'
+      : 'API token (paste to set)';
     document.getElementById('acct-builtin-note').style.display =
       d.is_builtin_admin ? 'block' : 'none';
-    // Disable forms entirely for the built-in admin (no DB row to update).
+    // Email + password forms are still server-backed, so they stay disabled
+    // for the built-in admin. The S1 console fields are now purely
+    // browser-side and work for everyone (including the built-in admin).
     var disable = !!d.is_builtin_admin;
-    ['acct-email','acct-pw-current','acct-pw-new','acct-s1-url','acct-s1-token']
+    ['acct-email','acct-pw-current','acct-pw-new']
       .forEach(function(i){
         var n = document.getElementById(i); if (n) n.disabled = disable;
       });
+    ['acct-s1-url','acct-s1-token'].forEach(function(i){
+      var n = document.getElementById(i); if (n) n.disabled = false;
+    });
   } catch(e) {}
 }
 
@@ -4568,32 +4623,84 @@ async function saveAccountPassword() {
   } catch(e) { _acctMsg('acct-pw-msg', false, 'Failed: ' + (e.message || e)); }
 }
 
-async function saveAccountS1() {
+function saveAccountS1() {
+  // Pure-client save: write to localStorage so the global fetch wrapper
+  // can pick the values up on every subsequent request. Nothing is ever
+  // sent to the server through a dedicated endpoint.
   var url = document.getElementById('acct-s1-url').value.trim();
   var tok = document.getElementById('acct-s1-token').value;
+  if (!url) {
+    _acctMsg('acct-s1-msg', false, 'Console URL is required.');
+    return;
+  }
   try {
-    var r = await fetch('/admin/api/me/s1-console', {
-      method:'PUT', credentials:'same-origin',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({console_url: url, api_token: tok})
-    });
-    var d = await r.json().catch(function(){ return {}; });
-    if (!r.ok) { _acctMsg('acct-s1-msg', false, d.error || ('Error ' + r.status)); return; }
-    _acctMsg('acct-s1-msg', true, 'Saved. Detection-rule queries now use your console.');
+    // Normalize: strip any trailing slash so the server-side override
+    // doesn't get a double-slash URL.
+    url = url.replace(/\\/+$/, '');
+    localStorage.setItem(S1_LS_URL, url);
+    if (tok) {
+      // Only overwrite the token if the user actually typed something —
+      // keeps the "saved in this browser" behaviour when they edit the URL.
+      localStorage.setItem(S1_LS_TOKEN, tok);
+    }
+    var ls = _s1GetLocal();
+    if (!ls.token) {
+      _acctMsg('acct-s1-msg', false,
+        'URL saved but no API token yet — paste your token to start using your console.');
+    } else {
+      _acctMsg('acct-s1-msg', true,
+        'Saved in this browser. Subsequent detection-rule queries will use your console.');
+    }
     loadAccount();
-  } catch(e) { _acctMsg('acct-s1-msg', false, 'Failed: ' + (e.message || e)); }
+  } catch (e) {
+    _acctMsg('acct-s1-msg', false, 'Failed to write localStorage: ' + (e.message || e));
+  }
 }
 
-async function clearAccountS1() {
-  if (!confirm('Clear your per-user S1 console override?')) return;
+function clearAccountS1() {
+  if (!confirm('Forget your S1 console URL + token on this browser?')) return;
   try {
-    var r = await fetch('/admin/api/me/s1-console', {method:'DELETE', credentials:'same-origin'});
-    var d = await r.json().catch(function(){ return {}; });
-    if (!r.ok) { _acctMsg('acct-s1-msg', false, d.error || ('Error ' + r.status)); return; }
-    _acctMsg('acct-s1-msg', true, 'Override cleared — falling back to global S1 settings.');
+    localStorage.removeItem(S1_LS_URL);
+    localStorage.removeItem(S1_LS_TOKEN);
+    _acctMsg('acct-s1-msg', true,
+      'Forgotten on this browser — falling back to the admin-global S1 settings.');
     loadAccount();
-  } catch(e) { _acctMsg('acct-s1-msg', false, 'Failed: ' + (e.message || e)); }
+  } catch (e) {
+    _acctMsg('acct-s1-msg', false, 'Failed: ' + (e.message || e));
+  }
 }
+
+// v5.1 Phase A — global fetch wrapper.
+// Stamp X-S1-Console-URL / X-S1-Console-Token on every same-origin
+// request that has both values configured in this browser. The
+// middleware (app.py) reads them into a ContextVar consumed by
+// s1_detection_library, so admin / portal S1 endpoints transparently
+// hit the user's tenant. No-op when localStorage is empty.
+(function installS1FetchWrapper() {
+  if (window._s1FetchWrapped) return;
+  window._s1FetchWrapped = true;
+  var _origFetch = window.fetch.bind(window);
+  window.fetch = function(input, init) {
+    try {
+      var url = (typeof input === 'string') ? input : (input && input.url) || '';
+      // Only stamp same-origin (relative or same host) — never leak the
+      // token to a third party.
+      var sameOrigin = url.startsWith('/') ||
+                       url.startsWith(window.location.origin);
+      if (sameOrigin) {
+        var ls = _s1GetLocal();
+        if (ls.url && ls.token) {
+          init = init || {};
+          var hdrs = new Headers(init.headers || (input && input.headers) || {});
+          if (!hdrs.has('X-S1-Console-URL'))   hdrs.set('X-S1-Console-URL',   ls.url);
+          if (!hdrs.has('X-S1-Console-Token')) hdrs.set('X-S1-Console-Token', ls.token);
+          init.headers = hdrs;
+        }
+      }
+    } catch (e) { /* never block the request because of header logic */ }
+    return _origFetch(input, init);
+  };
+})();
 buildChips('source-chips', selectSource);
 buildChips('cfg-chips', showConfig);
 // auto-select first source
@@ -6967,12 +7074,36 @@ async function loadScenarios() {
         h += '</div>';
       });
       h += '</div>';
-      // Status line
-      h += '<div style="display:flex;gap:16px;font-size:.68rem;color:rgba(224,170,255,.4);margin-top:6px">';
+      // Status line — also surfaces v5.1 Phase C mode + visibility so
+      // operators can tell at a glance what kind of run this is and who
+      // can see it.
+      h += '<div style="display:flex;gap:16px;font-size:.68rem;color:rgba(224,170,255,.4);margin-top:6px;align-items:center;flex-wrap:wrap">';
       h += '<span>' + (dur.value || '?') + ' ' + (dur.unit || '') + '</span>';
       h += '<span>' + (phases.length) + ' phases</span>';
+      // Mode pill (Historical gets a distinct accent so it stands out).
+      var modeVal = s.mode || 'realtime';
+      var modeBg  = modeVal === 'historical' ? 'rgba(199,125,255,.18)' : 'rgba(46,204,113,.15)';
+      var modeFg  = modeVal === 'historical' ? '#c77dff' : '#2ecc71';
+      h += '<span class="pill" title="Time semantics for this scenario." style="background:' + modeBg + ';color:' + modeFg + ';font-size:.62rem;text-transform:uppercase;letter-spacing:.5px">' + escHtml(modeVal) + '</span>';
+      // Visibility pill — yellow = private (collector-token-scoped),
+      // grey = public (every caller sees the backlog).
+      var visVal = s.visibility || 'public';
+      var visBg  = visVal === 'private' ? 'rgba(243,156,18,.18)' : 'rgba(199,125,255,.1)';
+      var visFg  = visVal === 'private' ? '#f39c12' : 'rgba(224,170,255,.6)';
+      h += '<span class="pill" title="Who can see this scenario\\u2019s events on their collector." style="background:' + visBg + ';color:' + visFg + ';font-size:.62rem;text-transform:uppercase;letter-spacing:.5px">' + escHtml(visVal) + '</span>';
       if (s.elapsed_seconds > 0) h += '<span>elapsed: ' + Math.floor(s.elapsed_seconds/60) + 'm</span>';
       if (s.started_at) h += '<span>started: ' + escHtml(s.started_at).replace('T',' ') + '</span>';
+      // Setup-notes disclosure trigger (v5.1 Phase C). Click toggles a
+      // collapsed-by-default card immediately under the status line that
+      // tells the operator exactly which collectors / push profiles to
+      // configure for this scenario to play out end-to-end.
+      var notesId = 'scn-notes-' + escHtml(s.id);
+      h += '<span style="margin-left:auto;cursor:pointer;color:#c77dff;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px" onclick="toggleScenarioSetupNotes(\\'' + escHtml(s.id) + '\\')" title="Show / hide collector configuration hints for every source this scenario touches">Setup notes \\u25be</span>';
+      h += '</div>';
+      // Setup-notes panel — hidden by default, populated from the
+      // scenario\\u2019s persisted setup_notes block on first expand.
+      h += '<div id="' + notesId + '" style="display:none;margin-top:10px;border-top:1px solid rgba(199,125,255,.15);padding-top:8px">';
+      h += _renderScenarioSetupNotes(s);
       h += '</div>';
       // Per-scenario event log container (Phase 3.1). Initial display state
       // tracks _scenarioEventsOpen so the 8s auto-refresh keeps expanded
@@ -6997,6 +7128,71 @@ async function loadScenarios() {
       if (_scenarioRefreshTimer) { clearInterval(_scenarioRefreshTimer); _scenarioRefreshTimer = null; }
     }
   } catch(e) { box.innerHTML = '<p class="empty">Failed: ' + escHtml(String(e)) + '</p>'; }
+}
+
+// ── Scenario setup notes (v5.1 Phase C) ────────────────────────────────────
+// `_renderScenarioSetupNotes` renders the `setup_notes` block the backend
+// attaches to every scenario at create / update time. The block lists every
+// distinct source the scenario touches and tells the operator what kind it
+// is (pull / push / bus / unknown), which endpoint to point at, what auth to
+// configure, and free-form notes. `toggleScenarioSetupNotes` flips the
+// panel\u2019s display so the operator can keep it folded by default.
+
+function _renderScenarioSetupNotes(s) {
+  var notes = s && s.setup_notes;
+  if (!notes || !notes.sources || !notes.sources.length) {
+    return '<div style="font-size:.7rem;color:rgba(224,170,255,.45)">'
+      + 'No setup notes available \u2014 add phases or update the scenario to (re)generate them.'
+      + '</div>';
+  }
+  var h = '';
+  if (notes.summary) {
+    h += '<div style="font-size:.72rem;color:rgba(224,170,255,.65);margin-bottom:6px">'
+      + escHtml(notes.summary) + '</div>';
+  }
+  h += '<div style="display:grid;grid-template-columns:1fr;gap:6px">';
+  notes.sources.forEach(function(row) {
+    var kind = row.kind || 'unknown';
+    // Per-kind accent for the leading chip.
+    var bg, fg;
+    if (kind === 'pull') { bg = 'rgba(46,204,113,.18)'; fg = '#2ecc71'; }
+    else if (kind === 'push') { bg = 'rgba(243,156,18,.18)'; fg = '#f39c12'; }
+    else if (kind === 'bus') { bg = 'rgba(199,125,255,.18)'; fg = '#c77dff'; }
+    else { bg = 'rgba(255,80,80,.18)'; fg = '#ff8080'; }
+    h += '<div style="background:rgba(36,0,70,.55);border:1px solid rgba(199,125,255,.12);border-radius:6px;padding:8px 10px">';
+    h += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">';
+    h += '<span style="font-weight:600;color:var(--mist);font-size:.78rem;font-family:monospace">' + escHtml(row.source || '') + '</span>';
+    h += '<span class="pill" style="background:' + bg + ';color:' + fg + ';font-size:.6rem;text-transform:uppercase;letter-spacing:.5px">' + escHtml(kind) + '</span>';
+    h += '</div>';
+    if (row.endpoint) {
+      h += '<div style="font-size:.68rem;color:rgba(224,170,255,.7);margin-top:2px"><span style="color:rgba(224,170,255,.4)">Endpoint:</span> <code style="background:rgba(90,24,154,.25);padding:1px 5px;border-radius:3px">' + escHtml(row.endpoint) + '</code></div>';
+    }
+    if (row.auth) {
+      h += '<div style="font-size:.68rem;color:rgba(224,170,255,.7);margin-top:2px"><span style="color:rgba(224,170,255,.4)">Auth:</span> ' + escHtml(row.auth) + '</div>';
+    }
+    if (row.options && row.options.length) {
+      h += '<div style="font-size:.68rem;color:rgba(224,170,255,.7);margin-top:2px"><span style="color:rgba(224,170,255,.4)">Options:</span> ';
+      h += row.options.map(function(o) {
+        return '<code style="background:rgba(90,24,154,.25);padding:1px 5px;border-radius:3px;margin-right:4px">' + escHtml(o) + '</code>';
+      }).join('');
+      h += '</div>';
+    }
+    if (row.notes) {
+      h += '<div style="font-size:.68rem;color:rgba(224,170,255,.55);margin-top:4px;line-height:1.4">' + escHtml(row.notes) + '</div>';
+    }
+    h += '</div>';
+  });
+  h += '</div>';
+  if (notes.generated_at) {
+    h += '<div style="font-size:.62rem;color:rgba(224,170,255,.3);margin-top:6px;text-align:right">Generated ' + escHtml(notes.generated_at) + '</div>';
+  }
+  return h;
+}
+
+function toggleScenarioSetupNotes(scenarioId) {
+  var panel = document.getElementById('scn-notes-' + scenarioId);
+  if (!panel) return;
+  panel.style.display = (panel.style.display === 'none' || !panel.style.display) ? 'block' : 'none';
 }
 
 // ── Scenario builder state (Phase 2) ────────────────────────────────────────
@@ -7035,6 +7231,24 @@ function _blankPhase() {
   };
 }
 
+function onScenarioModeChange() {
+  // v5.1 Phase C — toggle the events-per-phase control + an inline
+  // hint that explains what the operator just picked. Historical mode
+  // pre-stages everything at launch and stamps backdated timestamps;
+  // realtime mode keeps today's scheduler-driven UX.
+  var mode = (document.getElementById('scenario-mode') || {}).value || 'realtime';
+  var eppWrap = document.getElementById('scenario-epp-wrap');
+  var hint = document.getElementById('scenario-mode-hint');
+  if (eppWrap) eppWrap.style.display = (mode === 'historical') ? '' : 'none';
+  if (hint) {
+    if (mode === 'historical') {
+      hint.textContent = 'Historical: every event for the duration is pre-computed at launch with timestamps spanning [now \u2212 duration, now]. Collectors drain the full backlog on their next poll. No live scheduler runs.';
+    } else {
+      hint.textContent = 'Realtime: the scheduler activates phases over wall-clock; events fire as collectors pull. Current default.';
+    }
+  }
+}
+
 function openScenarioCreator() {
   // Create mode: blank state, template selector visible, both Save+Create buttons
   // are shown but Save stays hidden until we actually have an id to PUT against.
@@ -7047,6 +7261,13 @@ function openScenarioCreator() {
   document.getElementById('scenario-name').value = '';
   document.getElementById('scenario-dur-val').value = '4';
   document.getElementById('scenario-dur-unit').value = 'hours';
+  // v5.1 Phase C — reset Mode + Visibility + events-per-phase to the
+  // safe defaults: realtime + private + auto. The hint line under the
+  // row gets refreshed by onScenarioModeChange.
+  document.getElementById('scenario-mode').value = 'realtime';
+  document.getElementById('scenario-visibility').value = 'private';
+  document.getElementById('scenario-epp').value = '';
+  onScenarioModeChange();
   document.getElementById('scenario-validation-errors').textContent = '';
   // Populate template dropdown.
   var sel = document.getElementById('scenario-template');
@@ -7091,6 +7312,12 @@ async function openScenarioEditor(id) {
     var dur = s.duration || {};
     document.getElementById('scenario-dur-val').value = dur.value || 4;
     document.getElementById('scenario-dur-unit').value = dur.unit || 'hours';
+    // v5.1 Phase C — hydrate Mode + Visibility + events-per-phase from
+    // the persisted scenario so the editor reflects what was saved.
+    document.getElementById('scenario-mode').value = s.mode || 'realtime';
+    document.getElementById('scenario-visibility').value = s.visibility || 'private';
+    document.getElementById('scenario-epp').value = (s.events_per_phase == null ? '' : s.events_per_phase);
+    onScenarioModeChange();
     document.getElementById('scenario-validation-errors').textContent = '';
     renderScenarioPhasesEditor();
     document.getElementById('scenario-modal').classList.remove('hidden');
@@ -7266,12 +7493,23 @@ function _collectScenarioPayload() {
     return null;
   }
   errBox.textContent = '';
+  // v5.1 Phase C — pick up Mode / Visibility / events-per-phase. The
+  // backend tolerates omitted values (defaults to realtime / private /
+  // auto) so an old client that doesn't render these stays compatible.
+  var modeEl = document.getElementById('scenario-mode');
+  var visEl  = document.getElementById('scenario-visibility');
+  var eppEl  = document.getElementById('scenario-epp');
+  var eppRaw = eppEl ? eppEl.value.trim() : '';
+  var epp    = eppRaw === '' ? null : (parseInt(eppRaw, 10) || null);
   return {
     name: document.getElementById('scenario-name').value.trim(),
     duration: {
       value: parseFloat(document.getElementById('scenario-dur-val').value) || 4,
       unit: document.getElementById('scenario-dur-unit').value
     },
+    mode:       modeEl ? modeEl.value : 'realtime',
+    visibility: visEl  ? visEl.value  : 'private',
+    events_per_phase: epp,
     phases: _scenarioPhases.map(function(p) {
       var out = {
         name: p.name, source: p.source,
@@ -9562,7 +9800,14 @@ def _self_service_uid(token: str | None) -> str | None:
 
 @router.get("/api/me/account")
 async def api_me_account(ag_session: str | None = Cookie(None)):
-    """Compact view of the current self-service profile for the Account panel."""
+    """Compact view of the current self-service profile for the Account panel.
+
+    v5.1 Phase A: the per-user S1 console URL and API token are no longer
+    stored on the server — they live in browser localStorage and ride
+    every request as ``X-S1-Console-URL`` / ``X-S1-Console-Token`` headers.
+    The legacy ``console_url`` / ``has_console_token`` fields have been
+    dropped from this response.
+    """
     sess = session_info(ag_session)
     if not sess:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -9573,8 +9818,6 @@ async def api_me_account(ag_session: str | None = Cookie(None)):
             "is_builtin_admin": True,
             "username": sess.get("username") or "admin",
             "email": "",
-            "console_url": "",
-            "has_console_token": False,
         })
     u = accounts.get_user(uid) or {}
     return JSONResponse({
@@ -9582,8 +9825,6 @@ async def api_me_account(ag_session: str | None = Cookie(None)):
         "user_id": uid,
         "username": u.get("username") or sess.get("username") or "",
         "email": u.get("email", "") or "",
-        "console_url": u.get("console_url", "") or "",
-        "has_console_token": bool(u.get("has_console_token")),
     })
 
 
@@ -9640,76 +9881,12 @@ async def api_me_password(request: Request, ag_session: str | None = Cookie(None
     return JSONResponse({"ok": True})
 
 
-@router.get("/api/me/s1-console")
-async def api_me_s1_console_get(ag_session: str | None = Cookie(None)):
-    if not _valid(ag_session):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    uid = _self_service_uid(ag_session)
-    if not uid:
-        return JSONResponse({"is_builtin_admin": True,
-                             "console_url": "", "has_console_token": False})
-    u = accounts.get_user(uid) or {}
-    return JSONResponse({
-        "is_builtin_admin": False,
-        "console_url": u.get("console_url", "") or "",
-        "has_console_token": bool(u.get("has_console_token")),
-    })
-
-
-@router.put("/api/me/s1-console")
-async def api_me_s1_console_put(request: Request, ag_session: str | None = Cookie(None)):
-    """Set this user's personal S1 console URL and/or API token.
-
-    Empty *api_token* preserves the saved token (so the UI can update the URL
-    without re-pasting the secret). To clear both, send an empty *console_url*
-    AND an empty *api_token*, or use DELETE.
-    """
-    if not _valid(ag_session):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    uid = _self_service_uid(ag_session)
-    if not uid:
-        return JSONResponse({"error": "the built-in admin has no per-user S1 console; "
-                             "use Settings → S1 Detection Library"}, status_code=400)
-    try:
-        body = await request.json()
-    except Exception:
-        return JSONResponse({"error": "invalid JSON"}, status_code=400)
-    console_url = (body.get("console_url") or "").rstrip("/")
-    api_token   = (body.get("api_token") or "").strip()
-    kwargs: dict[str, Any] = {"console_url": console_url}
-    if api_token:
-        kwargs["console_token"] = api_token
-    elif not console_url:
-        # Caller explicitly cleared the URL with no token — clear both.
-        kwargs["console_token"] = ""
-    try:
-        user = accounts.update_user(uid, **kwargs)
-    except ValueError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
-    if user is None:
-        return JSONResponse({"error": "not_found"}, status_code=404)
-    return JSONResponse({
-        "ok": True,
-        "console_url": user.get("console_url", "") or "",
-        "has_console_token": bool(user.get("has_console_token")),
-    })
-
-
-@router.delete("/api/me/s1-console")
-async def api_me_s1_console_delete(ag_session: str | None = Cookie(None)):
-    if not _valid(ag_session):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    uid = _self_service_uid(ag_session)
-    if not uid:
-        return JSONResponse({"error": "the built-in admin has no per-user S1 console"},
-                            status_code=400)
-    try:
-        user = accounts.update_user(uid, console_url="", console_token="")
-    except ValueError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
-    if user is None:
-        return JSONResponse({"error": "not_found"}, status_code=404)
-    return JSONResponse({"ok": True})
+# v5.1 Phase A: the per-user S1 console URL + API token used to live on the
+# users row and were exposed through GET/PUT/DELETE /admin/api/me/s1-console.
+# They now live exclusively in browser localStorage and ride the request as
+# X-S1-Console-URL / X-S1-Console-Token headers (see app.py middleware and
+# s1_detection_library._resolved_settings). The endpoints have been removed
+# to make the new contract authoritative — see RELEASE_NOTES v5.1.
 
 
 @router.post("/api/rbac/users/{uid}/reset-link")
@@ -10676,10 +10853,19 @@ def _build_asset_resolver_for_session(ag_session: str | None,
     mgmt console credentials, or return ``None`` when none are configured.
 
     Resolution order mirrors :func:`s1_detection_library._resolved_settings`:
-    a registered user's own ``console_url`` + ``console_token`` win when both
-    are set; the built-in admin (or a partially-configured user) falls back
-    to the global ``s1_settings.json``. Empty / missing creds return ``None``
-    so the caller silently sends without XDR enrichment.
+
+    1. The per-request browser override (``X-S1-Console-URL`` +
+       ``X-S1-Console-Token`` headers, installed by the app.py middleware
+       into a ContextVar) — v5.1 Phase A.
+    2. The admin-global ``s1_settings.json`` (encrypted at rest via
+       :mod:`crypto`).
+
+    The ``ag_session`` argument is kept for API compatibility but is no
+    longer used to fetch per-user credentials from the DB — the
+    ``console_url`` / ``console_token`` columns were dropped in v5.1.
+
+    Empty / missing creds return ``None`` so the caller silently sends
+    without XDR enrichment.
 
     The profile's ``account_id`` (and optionally ``site_id``) scope the
     ``/xdr/assets`` enumeration the resolver does — narrows the search to
@@ -10694,21 +10880,11 @@ def _build_asset_resolver_for_session(ag_session: str | None,
     leak.
     """
     import s1_assets
-    url = ""
-    token = ""
-    uid, _is_admin = _session_identity(ag_session)
-    if uid:
-        u = accounts.get_user(uid, with_secrets=True) or {}
-        url = (u.get("console_url") or "").strip()
-        token = (u.get("console_token") or "").strip()
-    if not (url and token):
-        try:
-            import s1_detection_library
-            s = s1_detection_library.get_settings() or {}
-            url = url or (s.get("console_url") or "").strip()
-            token = token or (s.get("api_token") or "").strip()
-        except Exception:                            # pragma: no cover
-            pass
+    import s1_detection_library
+    _ = ag_session                                    # kept for API compat
+    resolved = s1_detection_library._resolved_settings()
+    url = (resolved.get("console_url") or "").strip()
+    token = (resolved.get("api_token") or "").strip()
     if not (url and token):
         return None
     # group_id is accepted but not forwarded — see docstring above.

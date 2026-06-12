@@ -197,8 +197,6 @@ def init_db() -> None:
                 confirmed      INTEGER NOT NULL DEFAULT 0,
                 disabled       INTEGER NOT NULL DEFAULT 0,
                 avatar_path    TEXT,
-                console_url    TEXT NOT NULL DEFAULT '',
-                console_token  TEXT NOT NULL DEFAULT '',
                 created_iso    TEXT NOT NULL,
                 last_login_iso TEXT,
                 FOREIGN KEY (entitlement_id) REFERENCES entitlements(id) ON DELETE SET NULL
@@ -226,6 +224,13 @@ def init_db() -> None:
             );
             """
         )
+        # v5.1 Phase A migration — drop legacy per-user S1 console columns.
+        # These now live in browser localStorage; the server never stores them.
+        # See docs/SECURITY.md §"Tier 4 secrets" for the threat-model rationale.
+        existing_cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+        for legacy in ("console_url", "console_token"):
+            if legacy in existing_cols:
+                conn.execute(f"ALTER TABLE users DROP COLUMN {legacy}")
         conn.commit()
 
 
@@ -322,15 +327,12 @@ def _user_row(row: sqlite3.Row, *, with_secrets: bool = False) -> dict[str, Any]
         "confirmed": bool(row["confirmed"]),
         "disabled": bool(row["disabled"]),
         "avatar_path": row["avatar_path"],
-        "console_url": row["console_url"],
-        "has_console_token": bool(row["console_token"]),
         "has_password": bool(row["pw_hash"]),
         "created_iso": row["created_iso"],
         "last_login_iso": row["last_login_iso"],
     }
     if with_secrets:
         out["pw_hash"] = row["pw_hash"]
-        out["console_token"] = row["console_token"]
     return out
 
 
@@ -364,8 +366,7 @@ def create_user(username: str, email: str = "", password: str | None = None,
 
 def update_user(uid: str, *, email: str | None = None, entitlement_id: str | None = None,
                 confirmed: bool | None = None, disabled: bool | None = None,
-                avatar_path: str | None = None, console_url: str | None = None,
-                console_token: str | None = None) -> dict[str, Any] | None:
+                avatar_path: str | None = None) -> dict[str, Any] | None:
     with _LOCK:
         conn = _get_conn()
         cur = get_user(uid)
@@ -388,10 +389,6 @@ def update_user(uid: str, *, email: str | None = None, entitlement_id: str | Non
             sets.append("disabled=?"); vals.append(1 if disabled else 0)
         if avatar_path is not None:
             sets.append("avatar_path=?"); vals.append(avatar_path or None)
-        if console_url is not None:
-            sets.append("console_url=?"); vals.append(console_url.strip())
-        if console_token is not None:
-            sets.append("console_token=?"); vals.append(console_token.strip())
         if not sets:
             return cur
         vals.append(uid)
