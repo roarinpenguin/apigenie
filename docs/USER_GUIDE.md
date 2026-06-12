@@ -297,9 +297,9 @@ curl -sk -H "Authorization: ApiToken apigenie-valid-token-001" \
 
 1. **Email.** Type a new email into the *Email address* card and click **Save email**. The bottom message turns green: *"Email updated."*. Bad input (`not-an-email`) is rejected client-side then server-side with a 400.
 2. **Password.** Fill *Current password* and *New password* (min 8 chars) in the *Change password* card. Click **Change password**. Then sign out and sign back in with the new password to prove it stuck.
-3. **My SentinelOne console.** Paste your tenant URL (e.g. `https://yourtenant.sentinelone.net`) and your API token. The token field hint changes to `********** (saved — leave blank to keep)` once persisted — re-saving the URL without re-typing the token preserves it. Click **Clear override** to remove your personal settings and fall back to the global ones.
+3. **My SentinelOne console (v5.1 — browser-only storage).** Paste your tenant URL (e.g. `https://yourtenant.sentinelone.net`) and your API token into the *My SentinelOne console* card and click **Save in this browser**. The values are written **only to `localStorage`** on this browser (keys `apigenie.s1.console_url` and `apigenie.s1.api_token`) — they never reach the server filesystem. A global `fetch` wrapper installed at admin shell load injects them on every authenticated XHR as the headers `X-S1-Console-URL` and `X-S1-Console-Token`. Click **Clear from this browser** to wipe the localStorage entries and fall back to the admin-global console; signing out alone does **not** wipe them (so you can keep your credentials across sessions on the same browser).
 
-**Steps — curl (same endpoints, scripted).**
+**Steps — curl (per-user S1 override is header-only since v5.1).**
 
 ```bash
 # Capture Alice's session cookie
@@ -319,28 +319,28 @@ curl -sk -b /tmp/alice.cookie -X PUT -H 'Content-Type: application/json' \
   -d '{"current":"<old>","new":"<new-min-8>"}' \
   https://<your-domain>/admin/api/me/password | jq
 
-# Set per-user S1 console
-curl -sk -b /tmp/alice.cookie -X PUT -H 'Content-Type: application/json' \
-  -d '{"console_url":"https://alice.sentinelone.net","api_token":"<alice-token>"}' \
-  https://<your-domain>/admin/api/me/s1-console | jq
-
-# Read it back (token is never returned — only "has_console_token": true/false)
-curl -sk -b /tmp/alice.cookie https://<your-domain>/admin/api/me/s1-console | jq
-
-# Clear the override
-curl -sk -b /tmp/alice.cookie -X DELETE \
-  https://<your-domain>/admin/api/me/s1-console | jq
+# v5.1 — there is NO server-side per-user S1 endpoint anymore. The browser
+# stores the URL + token and forwards them on every call as headers. To
+# reproduce the override from a script, send the two headers explicitly
+# on each S1 call:
+curl -sk -b /tmp/alice.cookie \
+  -H 'X-S1-Console-URL: https://alice.sentinelone.net' \
+  -H 'X-S1-Console-Token: <alice-token>' \
+  https://<your-domain>/admin/api/s1/test | jq
 ```
+
+The deprecated `PUT/GET/DELETE /admin/api/me/s1-console` endpoints from v5.0 now return `404 / 405`. Tests in `tests/test_rbac_phase35_endpoints.py` assert they stay removed.
 
 **Pass criteria.**
 
 - Email and password round-trip and persist across logout / login.
-- `GET /admin/api/me/s1-console` after PUT returns the URL with the trailing `/` stripped and `has_console_token: true`.
-- After PUT, your *next* call to any `/admin/api/s1/*` endpoint queries **your** console (visible in the response source, and tested by `tests/test_rbac_phase35_endpoints.py::TestCallerContextMiddleware`).
-- Sending a PUT with `api_token: ""` and a non-empty URL leaves the stored token untouched (UX-friendly partial update).
-- The built-in admin account gets `is_builtin_admin: true` and all PUTs respond with a friendly 400 directing it to System Settings.
+- After clicking **Save in this browser**, opening DevTools → *Application* → *Local Storage* shows `apigenie.s1.console_url` and `apigenie.s1.api_token` with the values you entered.
+- The Network tab on any `/admin/api/s1/*` request shows `X-S1-Console-URL` and `X-S1-Console-Token` request headers.
+- A `/admin/api/s1/*` call sent from a *different* browser that does **not** have those `localStorage` keys falls back to the admin-global console (visible in the response source).
+- Clicking **Clear from this browser** removes the two `localStorage` keys; the next `/admin/api/s1/*` call no longer carries the headers.
+- The built-in admin account does not use this card — it edits the admin-global console + Fernet-encrypted token from **System Settings** (Admin Guide).
 
-**Why it matters.** Different SEs / customers / analysts can now point ApiGenie's S1 integration at **their own** tenants while sharing the same ApiGenie deployment — no more global token coordination. Admins who use the "Viewing as" switcher (Exercise 14) will see and edit the **target user's** settings, except password changes which always apply to the *real* signed-in account (so admins can never silently change someone else's password via this endpoint; they have a separate admin endpoint for that — see Admin Guide Exercise C).
+**Why it matters.** Different SEs / customers / analysts can now point ApiGenie's S1 integration at **their own** tenants while sharing the same ApiGenie deployment — *without ever writing a token to the server filesystem*. v5.1 moves the entire credential lifecycle into the operator's browser, which makes the platform safe to deploy in shared / multi-tenant contexts where a leaked SQLite file used to be a real-token exposure. Admins who use the "Viewing as" switcher (Exercise 14) will see the *target* user's profile and ownership, but the S1 override displayed in their browser is still the admin's own `localStorage` — there is no cross-user S1 sharing by design.
 
 ---
 

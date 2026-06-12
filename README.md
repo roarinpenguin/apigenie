@@ -8,7 +8,7 @@ The deployment hostname is fully parameterised: pick any domain, run `./scripts/
 
 **Multi-tenant by design.** One ApiGenie deployment can host many isolated users — each with their own log profiles, detection rules, source identifiers, SentinelOne console, avatar and recovery flow. Admins drive the platform from `/admin`; users drive their own corner from `/portal`. Same TLS port, two distinct portals, role-aware UI, owner-scoped APIs. See **[Multi-user & RBAC](#multi-user--rbac)** below for the model, and the two companion guides in [`docs/`](docs/) for hands-on labs.
 
-**Current release: v4.1** — *OpenTelemetry, both directions*. A new **OTLP push-sink listener** accepts exports over OTLP/HTTP (443) and OTLP/gRPC (4317), and a new **OTLP push-egress transport** streams synthetic topics or uploaded replay files out to any OTLP collector. See [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for what's new, the (container-only) upgrade path from v4.0, and the breaking-change checklist.
+**Current release: v5.1** — *Security hardening + time-shifted attack stories*. Per-user SentinelOne console URL + API token moved out of the server entirely — they now live exclusively in the operator's browser `localStorage` and ride on every request as `X-S1-Console-URL` / `X-S1-Console-Token` headers. The admin-global S1 token is **Fernet-encrypted at rest** (key from `APIGENIE_SECRET_KEY` or auto-generated `data/secret.key`). Attack scenarios gain two new dimensions: a **Mode** switch (realtime keeps today's forward-running scheduler; historical pre-stages every event with backdated timestamps so the full attack story is immediately drainable by collectors) and a **Visibility** switch (private = only the launching user's collector token sees the backlog). Every scenario now also carries an auto-generated, expandable **Setup notes** card explaining which collectors / push profiles to configure for the run to play out end-to-end. See [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the full v4.0 → v5.1 chronology and the (container-only) upgrade path.
 
 ---
 
@@ -120,7 +120,7 @@ ApiGenie speaks **two completely different APIs on the same port** — confusing
 | API surface | Examples | How you authenticate |
 |-------------|----------|----------------------|
 | **Source-data endpoints** (the whole point of ApiGenie — generate logs for a pipeline) | `/api/v1/logs`, `/web/api/v2.1/threats`, `/siem/v1/events/cg`, `/v1.0/auditLogs/directoryAudits`, … | The header the real vendor expects: `Authorization: SSWS …`, `Authorization: ApiToken …`, `Authorization: Bearer …`, `X-ApiKeys: …`, HTTP Basic, etc. The credential value identifies the *caller* — either a reserved demo token (public profile) or a **per-user identifier** the user registered in the portal. |
-| **Control-plane** (`/admin/api/*` and `/portal/api/*`) | `/admin/api/me`, `/admin/api/rbac/users`, `/admin/api/detection-rules`, `/admin/api/me/s1-console`, … | The `ag_session` cookie issued by `POST /admin/login` or `POST /portal/login`. |
+| **Control-plane** (`/admin/api/*` and `/portal/api/*`) | `/admin/api/me`, `/admin/api/rbac/users`, `/admin/api/detection-rules`, `/admin/api/s1/test`, … | The `ag_session` cookie issued by `POST /admin/login` or `POST /portal/login`. **Per-user SentinelOne override (v5.1):** additionally send `X-S1-Console-URL` and `X-S1-Console-Token` headers; values stored client-side in `localStorage`. |
 
 The source-data token authenticates the *caller* for log-shaping (which profile / detection rules to inject). The session cookie authenticates the *operator* for control-plane changes. They never overlap.
 
@@ -152,9 +152,9 @@ collector → Authorization: SSWS alice-okta-personal-001
 
 No match? Falls back to the public profile binding (reserved demo tokens like `apigenie-valid-token-001` always hit the public profile).
 
-### Per-user SentinelOne console (Phase 3.5)
+### Per-user SentinelOne console (v5.1 — browser-only)
 
-Every registered user can configure their **own** S1 console URL + API token via the portal **My Account** tab (or `PUT /admin/api/me/s1-console`). When set, every `/admin/api/s1/*` request made by that user (or by an admin acting-as them) queries **their** tenant — not the global one configured by the admin. Resolution is implemented in `s1_detection_library._resolved_settings()` and triggered automatically by a request-scoped caller-context middleware in [`app.py`](app.py). Two SEs / customers / analysts sharing the same ApiGenie deployment can now point at their own consoles without coordination.
+Every registered user can configure their **own** S1 console URL + API token via the portal **My Account** tab. As of v5.1 the credentials are stored **only in the browser** (`localStorage` keys `apigenie.s1.console_url` and `apigenie.s1.api_token`) and forwarded on every authenticated request as the headers `X-S1-Console-URL` and `X-S1-Console-Token`. A global `fetch` wrapper installed at admin shell load handles the header injection transparently. Server-side, `s1_detection_library._resolved_settings()` reads them from a request-scoped `ContextVar` set by the middleware in [`app.py`](app.py), then falls back to the admin-global console (Fernet-encrypted at rest) when no headers are present. **The server never persists a per-user S1 token.** Two SEs / customers / analysts sharing the same ApiGenie deployment can each point at their own S1 console without coordination, and a leaked SQLite file carries zero real tokens.
 
 ### RBAC quickstart (~5 minutes)
 
@@ -405,10 +405,10 @@ Both `/admin/api/*` and `/portal/api/*` are gated by the `ag_session` cookie (se
 | `/portal/login` · `/portal/logout` | User portal login form / session destroy | — |
 | `/portal/set-password?token=…` | One-shot handoff page where new users / password-recovery flows land | — |
 | `/admin/api/me` | Current session identity + effective permissions + has_avatar flag | no |
-| `/admin/api/me/account` | Self-service profile snapshot (email, console_url, has_console_token, is_builtin_admin) — **Phase 3.5** | no |
+| `/admin/api/me/account` | Self-service profile snapshot (email, is_builtin_admin) — **Phase 3.5** | no |
 | `/admin/api/me/email` | `PUT` to change your own email — **Phase 3.5** | no |
 | `/admin/api/me/password` | `PUT` to change your own password (verifies current) — **Phase 3.5** | no |
-| `/admin/api/me/s1-console` | `GET`/`PUT`/`DELETE` your personal SentinelOne console URL + API token — **Phase 3.5** | no |
+| ~~`/admin/api/me/s1-console`~~ | **Removed in v5.1.** Per-user S1 console is now stored in browser `localStorage` and sent on each request via `X-S1-Console-URL` / `X-S1-Console-Token` headers. | n/a |
 | `/admin/api/act-as` | `GET`/`POST`/`DELETE` the admin "Viewing as" switcher | implicit (is_admin) |
 | `/admin/api/users/me/avatar` | `POST` (multipart) / `DELETE` your own avatar — **Phase 3** | no |
 | `/admin/api/users/{uid}/avatar` | `GET` any user's avatar (PNG) | no |
@@ -438,7 +438,7 @@ Both `/admin/api/*` and `/portal/api/*` are gated by the `ag_session` cookie (se
 
 | Path | Purpose | Notes |
 |------|---------|-------|
-| `/admin/api/s1/settings` | `GET`/`POST` the **global** console settings | per-user override in `/admin/api/me/s1-console` (Phase 3.5) |
+| `/admin/api/s1/settings` | `GET`/`POST` the **admin-global** console settings (token Fernet-encrypted at rest since v5.1) | per-user override sent as `X-S1-Console-URL` / `X-S1-Console-Token` headers (v5.1) |
 | `/admin/api/s1/test` | Connection check (uses *resolved* settings — global or per-user) | — |
 | `/admin/api/s1/data-sources` | Discoverable data-source list | — |
 | `/admin/api/s1/rules[/for-phase]` · `/admin/api/s1/custom-rules` | Query the catalog & custom rules | — |

@@ -218,68 +218,66 @@ docker exec apigenie python -m pytest tests/ -v
 
 ---
 
-### Exercise I — Audit per-user S1 console overrides (Phase 3.5)
+### Exercise I — Per-user S1 console overrides are unauditable by design (v5.1)
 
-**Goal.** Find out which users have configured their own SentinelOne console and prove that ApiGenie actually honours each one when serving `/admin/api/s1/*`.
+**Goal.** Understand why, since v5.1, *there is no server-side audit trail for per-user S1 console overrides* — and what an admin can still see, control, and verify.
 
-**Why.** Once you let users self-configure their S1 endpoint (User Lab Exercise 11), an admin needs visibility — both for support ("why are Alice's rules empty?") and for tenancy hygiene before retiring a console.
+**Why.** Until v5.0, per-user S1 settings lived in the `users` table (`console_url`, `console_token`). v5.1 removed both columns and moved the entire credential lifecycle into the operator's browser `localStorage` (User Lab Exercise 11). This is a deliberate security posture: a leaked SQLite file no longer carries any real S1 token. The trade-off is that admins **cannot inventory per-user S1 overrides server-side anymore** — the data does not exist on the server.
 
 **Steps.**
 
-1. **Inventory who has a personal override.** Per-user S1 settings live in the `users` table (`console_url`, `console_token`) — the same SQLite file as everything RBAC-related. Token columns are never echoed by the API; query the DB directly:
+1. **Confirm the columns are gone.** Inspect the `users` schema:
 
    ```bash
    docker exec apigenie sqlite3 /var/lib/apigenie/apigenie.db \
-     "SELECT username, COALESCE(NULLIF(console_url,''),'(none)') AS console_url, \
-             CASE WHEN console_token!='' THEN 'yes' ELSE 'no' END AS has_token \
-      FROM users ORDER BY username;"
+     "PRAGMA table_info(users);"
    ```
 
-   You should see one row per registered user. `(none) / no` means that user falls back to the global S1 settings.
+   Neither `console_url` nor `console_token` (nor `s1_console_url` / `s1_api_token`) appear. If you upgraded from v5.0 they may persist as stale columns; `accounts.py` ignores them.
 
-2. **Verify a personal override end-to-end without leaking the token.** Switch to "Viewing as" Alice from the admin user-switcher, then ask the very settings endpoint that the UI uses:
+2. **Confirm the v5.0 endpoints stay removed.** Run:
 
    ```bash
-   # As admin, log in
    curl -sk -c /tmp/jar -X POST \
      -d "username=admin&password=<admin-pw>" https://<your-domain>/admin/login >/dev/null
 
-   # Flip the act-as switcher to Alice
-   ALICE_ID=$(docker exec apigenie sqlite3 /var/lib/apigenie/apigenie.db \
-       "SELECT id FROM users WHERE username='alice';")
-   curl -sk -b /tmp/jar -X POST -H "Content-Type: application/json" \
-     -d "{\"user_id\":\"$ALICE_ID\"}" https://<your-domain>/admin/api/act-as
+   curl -sk -b /tmp/jar -o /dev/null -w '%{http_code}\n' \
+     https://<your-domain>/admin/api/me/s1-console
+   # expect: 404
 
-   # Now query Alice's S1 console — token is intentionally NOT returned
-   curl -sk -b /tmp/jar https://<your-domain>/admin/api/me/s1-console | jq
-   # { "is_builtin_admin": false, "console_url": "https://alice.sentinelone.net",
-   #   "has_console_token": true }
-
-   # And a real S1 call as Alice goes through HER console: the response source
-   # is now her tenant, not the global one
-   curl -sk -b /tmp/jar https://<your-domain>/admin/api/s1/test | jq
+   curl -sk -b /tmp/jar -X PUT -o /dev/null -w '%{http_code}\n' \
+     -H 'Content-Type: application/json' -d '{"console_url":"x"}' \
+     https://<your-domain>/admin/api/me/s1-console
+   # expect: 404 or 405
    ```
 
-3. **Force a user back to the global console.** Either ask the user to click **Clear override** in My Account, or do it as their stand-in:
+   These regressions are pinned by `tests/test_rbac_phase35_endpoints.py`.
+
+3. **See what an admin *can* still control.** The admin-global S1 console URL + API token (used as the fallback when no `X-S1-Console-*` headers are sent) is still admin-managed under **System Settings → SentinelOne console**. Since v5.1 the token is **Fernet-encrypted at rest** in `data/s1_settings.json` (field `api_token_enc`); the key comes from `APIGENIE_SECRET_KEY` or `data/secret.key`.
+
+4. **Verify caller-context resolution still works.** A request that carries `X-S1-Console-URL` + `X-S1-Console-Token` headers must hit *that* console for the lifetime of the request, regardless of session user. Reproduce from a script:
 
    ```bash
-   curl -sk -b /tmp/jar -X DELETE \
-     https://<your-domain>/admin/api/me/s1-console | jq
-   # { "ok": true }
+   curl -sk -b /tmp/jar \
+     -H 'X-S1-Console-URL: https://alice.sentinelone.net' \
+     -H 'X-S1-Console-Token: <alice-token>' \
+     https://<your-domain>/admin/api/s1/test | jq
    ```
 
-4. **Drop the acting-as session when finished** (otherwise every other admin action stays scoped to Alice):
+   The response source is Alice's tenant. The same call without the headers falls back to the admin-global console. Both code paths are exercised by `tests/test_rbac_phase35_endpoints.py::TestCallerContextMiddleware`.
 
-   ```bash
-   curl -sk -b /tmp/jar -X DELETE https://<your-domain>/admin/api/act-as
-   ```
+5. **Helping a user debug "why are my rules empty?".** Walk the user through their browser:
+
+   - DevTools → *Application* → *Local Storage* → are `apigenie.s1.console_url` and `apigenie.s1.api_token` set?
+   - Network tab on any `/admin/api/s1/*` request → are the `X-S1-Console-URL` / `X-S1-Console-Token` headers present?
+   - If they want to fall back to admin-global, click **Clear from this browser** on the *My SentinelOne console* card.
 
 **Pass criteria.**
 
-- The SQLite query enumerates every override without ever surfacing the API token (the token column is intentionally hidden by `accounts._user_row` in API responses; reading it directly from the DB is the admin's audit trail of last resort).
-- After step 2, the `console_url` returned by `/admin/api/me/s1-console` matches what Alice set herself.
-- After step 3, the next `/admin/api/me/s1-console` GET returns `console_url: ""` and `has_console_token: false`; `/admin/api/s1/*` calls then transparently fall back to the global console.
-- Resolution order is locked in by `tests/test_rbac_phase35_self_service.py::TestS1ResolvedSettings` and the middleware integration test `tests/test_rbac_phase35_endpoints.py::TestCallerContextMiddleware::test_admin_api_request_sets_caller_to_session_user`.
+- `PRAGMA table_info(users)` shows no S1 columns are used by the code paths.
+- `GET /admin/api/me/s1-console` returns 404; `PUT` / `DELETE` return 404 or 405.
+- A call with the `X-S1-Console-*` headers resolves to the requested console; a call without them falls back to the admin-global token (which is Fernet-encrypted on disk).
+- The admin cannot list "who has set their own S1 console" — by design. The only remaining audit surface is the admin's own `localStorage` and the per-request access log.
 
 ---
 
@@ -292,7 +290,7 @@ docker exec apigenie python -m pytest tests/ -v
 | Detection rule never fires for Alice | Rule's `owner_id` is null but visibility is `private` | `tests/test_rbac_phase2_5_detection.py` |
 | "Viewing as" banner sticky after logout | Frontend cookie deleted but session record kept | clear `ag_session` cookie; restart the container |
 | Avatar uploads return 422 | Multipart `file=` field missing — bad client | check `Content-Type: multipart/form-data` |
-| `/admin/api/me/s1-console` PUT 200 but rules still come from global | Token was sent empty *and* URL also empty → entry got cleared instead of saved | re-PUT with a non-empty `api_token`; see `accounts.update_user` console_url/console_token semantics |
+| `/admin/api/me/s1-console` returns 404 (v5.1+) | Endpoint intentionally removed; per-user S1 lives only in the browser `localStorage` and rides on `X-S1-Console-*` request headers | User Guide Exercise 11; pin test `tests/test_rbac_phase35_endpoints.py` |
 | `/admin/api/me/password` 400 "the built-in admin must use /admin/api/change-password" | Signed in as the built-in admin (no DB row) | use System Settings → Change Password, or `POST /admin/api/change-password` |
 | Admin acting-as a user calls `/me/password` and changes their *own* password instead of the target | Working as designed — that endpoint never honours acting-as | use `POST /admin/api/rbac/users/{uid}/password` or `POST /admin/api/rbac/users/{uid}/reset-link` |
 
@@ -634,31 +632,29 @@ PUT    /admin/api/s1/rules/{id}/enable     — enable rule on S1
 PUT    /admin/api/s1/rules/{id}/disable    — disable rule on S1
 ```
 
-> **Per-user override (Phase 3.5).** Every `/admin/api/s1/*` request is automatically routed through the caller's *personal* S1 console + token if they have configured one via **My Account → My SentinelOne console** (or `PUT /admin/api/me/s1-console`). Resolution order is implemented in `s1_detection_library._resolved_settings`:
-> 1. If a caller is bound (every `/admin/api/` request binds one via the `_portal_role_guard` middleware in `app.py`), and that user has a non-empty `console_url` **and** `console_token`, those win.
-> 2. Otherwise, fall back to the global settings written via `POST /admin/api/s1/settings`.
+> **Per-user override (v5.1).** Every `/admin/api/s1/*` request is automatically routed through the caller's *personal* S1 console + token **only if the browser sent the request headers `X-S1-Console-URL` and `X-S1-Console-Token`**. The headers are populated by the admin shell's global `fetch` wrapper from the user's `localStorage` (see User Guide Exercise 11). Resolution order is implemented in `s1_detection_library._resolved_settings()`:
+> 1. If the request carries non-empty `X-S1-Console-URL` and `X-S1-Console-Token` headers (read into a `ContextVar` by the middleware in `app.py`), those win.
+> 2. Otherwise, fall back to the admin-global settings written via `POST /admin/api/s1/settings`. The token persists in `data/s1_settings.json` as `api_token_enc`, Fernet-encrypted with the key from `APIGENIE_SECRET_KEY` or `data/secret.key`.
 >
-> This means an admin acting-as a user will execute S1 calls against the **user's** tenant, and two different users sharing the same ApiGenie deployment can each point at their own S1 console without coordinating.
+> Because the per-user override travels with the *browser* and not the *session*, an admin acting-as a user **does not** automatically execute S1 calls against the target user's tenant — the admin's own browser `localStorage` always wins. There is no server-side cross-user S1 sharing by design.
 
-### Self-service account (Phase 3.5)
+### Self-service account (Phase 3.5, updated for v5.1)
 
-Every registered user can edit their own email, password, and per-user SentinelOne console. The built-in admin (no DB row) gets `is_builtin_admin: true` from `GET /me/account` and is steered to System Settings + `/admin/api/change-password` instead.
+Every registered user can edit their own email and password through the user portal. The per-user SentinelOne console URL + API token moved out of the server entirely in v5.1: they live only in the operator's browser `localStorage` (see User Guide Exercise 11) and ride on every request as the headers `X-S1-Console-URL` / `X-S1-Console-Token`. The built-in admin (no DB row) gets `is_builtin_admin: true` from `GET /me/account` and is steered to System Settings + `/admin/api/change-password` instead.
 
 ```
-GET    /admin/api/me/account               — { username, email, console_url, has_console_token, is_builtin_admin }
+GET    /admin/api/me/account               — { username, email, is_builtin_admin }
 PUT    /admin/api/me/email                 — { "email": "you@example.com" }
 PUT    /admin/api/me/password               — { "current": "...", "new": "..." }  (min 8 chars; verifies current)
-GET    /admin/api/me/s1-console            — { console_url, has_console_token }   (token NEVER returned)
-PUT    /admin/api/me/s1-console            — { "console_url": "...", "api_token": "..." }  (blank token = keep)
-DELETE /admin/api/me/s1-console            — clears the per-user override entirely
 ```
+
+The v5.0-era `GET/PUT/DELETE /admin/api/me/s1-console` endpoints are **removed**; calls return `404`/`405`. The regression is pinned by `tests/test_rbac_phase35_endpoints.py`.
 
 **Semantics that matter for admins:**
 
-- `/me/email` and `/me/s1-console` honour the **acting-as** target — when you flip the user-switcher to Alice, those endpoints mutate **Alice's** row. (Useful for emergency reconfig.)
+- `/me/email` honours the **acting-as** target — when you flip the user-switcher to Alice, that endpoint mutates **Alice's** row. (Useful for emergency reconfig.)
 - `/me/password` does **not** honour acting-as. It always mutates the *real* signed-in account so an admin cannot silently rewrite a user's password through the self-service path. To reset another user's password as admin, use the dedicated `POST /admin/api/rbac/users/{uid}/password` (no current-password challenge) or generate a one-shot recovery link via `POST /admin/api/rbac/users/{uid}/reset-link`.
-- The token is **write-only**. `GET /me/s1-console` returns `has_console_token: true|false` so the UI knows whether something is saved, but the value never leaves the server. To rotate it, PUT a non-empty `api_token`; to keep it, PUT an empty string.
-- `PUT /me/s1-console` strips the trailing `/` on `console_url` before persisting.
+- **Per-user S1 console is browser-resident only.** Admins can no longer audit who has configured an override server-side (Exercise I in this guide). The trade-off is a much smaller blast radius for SQLite leaks.
 
 ### Profiles & Push
 
