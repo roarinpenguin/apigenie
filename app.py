@@ -107,6 +107,17 @@ async def lifespan(app: FastAPI):
             listeners_grpc.start()
         except Exception as exc:
             logger.warning(f"Could not start OTLP gRPC server: {exc}")
+    # WEF push runner (v5.2). Iterates enabled WEF bindings and pushes
+    # SOAP/WS-Eventing envelopes to each configured Windows Event
+    # Collector at the per-binding rate. Disabled when the env var is
+    # set to 0/false so unit tests and air-gapped demos can opt out.
+    if os.environ.get("APIGENIE_WEF_RUNNER_ENABLED", "true").lower() != "false":
+        try:
+            import wef_runner
+            await wef_runner.get_runner().start()
+            logger.info("WEF push runner started")
+        except Exception as exc:
+            logger.warning(f"Could not start WEF runner: {exc}")
     yield
     if _publishers_enabled:
         try:
@@ -123,6 +134,11 @@ async def lifespan(app: FastAPI):
     try:
         import sysmon
         sysmon.stop()
+    except Exception:
+        pass
+    try:
+        import wef_runner
+        await wef_runner.get_runner().stop()
     except Exception:
         pass
     try:
