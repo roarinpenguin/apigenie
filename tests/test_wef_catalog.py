@@ -28,10 +28,21 @@ EXPECTED_CHANNELS = {
     "Microsoft-Windows-Sysmon/Operational",
 }
 
-# Required keys on every EVENT_CATALOG entry. These mirror the contract
-# every other catalog-aware source in `sources/` already follows
-# (see sources/azure_platform.py for the closest analogue).
-REQUIRED_ENTRY_KEYS = {"event_id", "channel", "name", "provider", "level", "weight"}
+# Required keys on every EVENT_CATALOG entry.
+#
+# The first three (id / label / default_weight) match the convention every
+# other catalog-aware source already follows (see sources/azure_platform.py)
+# so WEF plugs natively into event_mix.merge_catalog_with_mix and the admin
+# Event Mix card renders without any WEF-specific branch.
+#
+# The remaining four (channel / event_id / provider / level) are
+# WEF-specific metadata the envelope builder needs to emit a real Windows
+# EventLog XML record. They live alongside, not in place of, the standard
+# catalog fields.
+REQUIRED_ENTRY_KEYS = {
+    "id", "label", "default_weight",
+    "channel", "event_id", "provider", "level",
+}
 
 # Allowed Windows EventLog severity levels (per the EventLog XML schema).
 ALLOWED_LEVELS = {"Critical", "Error", "Warning", "Information", "Verbose"}
@@ -69,6 +80,27 @@ def test_event_ids_are_positive_integers():
     for entry in catalog:
         assert isinstance(entry["event_id"], int)
         assert entry["event_id"] > 0
+
+
+def test_catalog_ids_follow_channel_event_id_pattern():
+    """The catalog ``id`` string is the key used by ``event_mix`` overrides.
+    Pinning the canonical ``"<channel>:<event_id>"`` shape lets the admin
+    UI build override keys deterministically without consulting the
+    catalog row by row."""
+    catalog = _catalog()
+    for entry in catalog:
+        expected_id = f"{entry['channel']}:{entry['event_id']}"
+        assert entry["id"] == expected_id, (
+            f"Entry id={entry['id']!r} does not match "
+            f"channel:event_id = {expected_id!r}"
+        )
+
+
+def test_catalog_ids_are_unique():
+    catalog = _catalog()
+    ids = [entry["id"] for entry in catalog]
+    duplicates = {i for i in ids if ids.count(i) > 1}
+    assert not duplicates, f"Duplicate catalog ids: {duplicates}"
 
 
 def test_levels_are_from_the_allowed_set():
@@ -115,11 +147,11 @@ def test_sysmon_channel_includes_process_create_event_id_1():
 
 # ── Weights ────────────────────────────────────────────────────────────
 
-def test_weights_are_non_negative_floats_and_some_are_strictly_positive():
+def test_default_weights_are_non_negative_and_some_are_strictly_positive():
     catalog = _catalog()
-    weights = [float(entry["weight"]) for entry in catalog]
+    weights = [float(entry["default_weight"]) for entry in catalog]
     assert all(w >= 0 for w in weights)
-    assert sum(weights) > 0, "Catalog weights all zero — distribution is degenerate"
+    assert sum(weights) > 0, "Catalog default_weights all zero — distribution is degenerate"
 
 
 # ── Source-id alias ───────────────────────────────────────────────────
