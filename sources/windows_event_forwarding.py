@@ -1054,22 +1054,87 @@ def resolve_cert_files(binding_id: str | None,
 
 # ── Catalog-aware event generator ────────────────────────────────────
 
+# Per-field profile substitution recipes. Each entry maps a catalog
+# ``data_field`` name to ``(picker, attr)``:
+#
+# * ``picker`` ∈ ``{"user", "machine"}`` — selects which profile pool
+#   to draw from. ``ProfileContext.pick_user`` / ``pick_machine`` honour
+#   the blend ratio: they return ``None`` when the per-call dice says
+#   "noise", in which case the field falls back to the placeholder
+#   (preserves the noise-ratio semantics every catalog-aware source uses).
+# * ``attr`` — the entity dict key whose value lands in the event.
+#   Missing attrs (incomplete profile entries) also fall back to the
+#   placeholder so a half-populated profile can't crash the runner.
+#
+# Phase E intentionally only covers the workhorse Security-channel
+# fields the SIEM-side detection rules correlate on. Fields without a
+# recipe (LogonType, Status, PrivilegeList, Image, Process*, Service*)
+# keep the placeholder behaviour — they're not entity-driven and
+# carrying them through the profile would just bloat the profile
+# schema for no analyst-side win.
+_FIELD_RECIPES: dict[str, tuple[str, str]] = {
+    # User-identity columns — same recipe regardless of which catalog
+    # event spells the column.
+    "TargetUserName":    ("user", "username"),
+    "SubjectUserName":   ("user", "username"),
+    "AccountName":       ("user", "username"),
+    "MemberName":        ("user", "username"),
+    "PrincipalUserName": ("user", "username"),
+    "OldTargetUserName": ("user", "username"),
+    "NewTargetUserName": ("user", "username"),
+    # Domain columns.
+    "TargetDomainName":  ("user", "domain"),
+    "SubjectDomainName": ("user", "domain"),
+    # Workstation / host columns.
+    "WorkstationName":   ("user", "primary_workstation"),
+    "Workstation":       ("user", "primary_workstation"),
+    "ClientName":        ("machine", "primary_workstation"),
+    # IP columns.
+    "IpAddress":         ("user", "workstation_ip"),
+    "ClientAddress":     ("machine", "ip"),
+    # Server-of-reference columns.
+    "TargetServerName":  ("user", "server_of_reference"),
+}
+
+
 def _materialize_event(entry: dict[str, Any],
                        record_id: int,
-                       rng: random.Random) -> dict[str, Any]:
+                       rng: random.Random,
+                       ctx: Any = None) -> dict[str, Any]:
     """Turn a catalog *entry* into a concrete event dict.
 
     The data fields declared in the catalog (e.g. TargetUserName, Image,
     SubjectUserName) are filled with deterministic placeholder values
     derived from *rng* so two seeded runs produce identical envelopes.
-    Real profile-driven substitution (real usernames, machine names,
-    C2 IPs) lands when WEF is wired into ``profiles.get_context()`` —
-    out of scope for v5.2.
+
+    When *ctx* is a :class:`profiles.ProfileContext` and the field has
+    a recipe in :data:`_FIELD_RECIPES`, the value is drawn from the
+    profile's user / machine pool instead. The ``ProfileContext``
+    pickers honour the blend ratio internally — ``ratio=0`` reduces to
+    the placeholder behaviour, ``ratio=100`` always substitutes. Fields
+    without a recipe, or with a recipe whose entity attribute is
+    missing on this profile, fall back to the placeholder so a
+    half-populated profile can't crash the runner.
+
+    The *ctx* parameter is annotated ``Any`` (not
+    ``ProfileContext | None``) to keep this module free of a circular
+    import; runtime callers in the WEF runner pass the real object.
     """
-    data = {
-        field: f"{field.lower()}-{rng.randrange(1, 1_000_000)}"
-        for field in entry.get("data_fields", [])
-    }
+    data: dict[str, str] = {}
+    for field in entry.get("data_fields", []):
+        value: str | None = None
+        recipe = _FIELD_RECIPES.get(field)
+        if ctx is not None and recipe is not None:
+            picker_name, attr = recipe
+            picker = getattr(ctx, f"pick_{picker_name}", None)
+            entity = picker() if callable(picker) else None
+            if entity is not None:
+                v = entity.get(attr)
+                if v:
+                    value = str(v)
+        if value is None:
+            value = f"{field.lower()}-{rng.randrange(1, 1_000_000)}"
+        data[field] = value
     return {
         "event_id": entry["event_id"],
         "channel": entry["channel"],
@@ -1086,6 +1151,7 @@ def generate_events(count: int,
                     mix_overrides: dict[str, dict[str, Any]] | None = None,
                     seed: int | None = 42,
                     channels_enabled: list[str] | None = None,
+                    ctx: Any = None,
                     ) -> list[dict[str, Any]]:
     """Sample *count* events from :data:`EVENT_CATALOG` with weighted choice.
 
@@ -1156,7 +1222,7 @@ def generate_events(count: int,
     for record_id in range(1, count + 1):
         # rng.choices returns a list of size k; k=1 gives us one entry.
         entry = rng.choices(entries, weights=weights, k=1)[0]
-        events.append(_materialize_event(entry, record_id, rng))
+        events.append(_materialize_event(entry, record_id, rng, ctx=ctx))
     return events
 
 
@@ -1247,10 +1313,26 @@ class WEFEmitter:
         if events is not None:
             ev_list = list(events)
         elif event_count is not None:
+            # Resolve the binding's profile reference (if any) into a
+            # ProfileContext at emit time, not construct time, so the
+            # binding survives an out-of-band profile delete without
+            # entering an error state. context_for_profile_id returns
+            # None for missing/empty profile_id; generate_events then
+            # falls back to placeholder substitution. Local import keeps
+            # this module free of a circular at module-import time.
+            ctx = None
+            pid = self._cfg.get("profile_id")
+            if pid:
+                try:
+                    import profiles as _profiles
+                    ctx = _profiles.context_for_profile_id(pid)
+                except Exception:  # pragma: no cover — defence in depth
+                    ctx = None
             ev_list = generate_events(
                 count=int(event_count),
                 mix_overrides=self._cfg.get("mix_overrides"),
                 channels_enabled=self._cfg.get("channels_enabled"),
+                ctx=ctx,
             )
         else:
             ev_list = []

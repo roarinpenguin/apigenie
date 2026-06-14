@@ -1911,6 +1911,14 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
             <div style="font-size:.7rem;color:rgba(224,170,255,.4);margin-top:4px">
               Each batch samples a uniform mix across the selected channels.
             </div></div>
+          <div class="form-row"><label>Log profile (optional)</label>
+            <select id="wef-profile-id"><option value="">— None — placeholder values</option></select>
+            <div style="font-size:.7rem;color:rgba(224,170,255,.4);margin-top:4px">
+              When set, ``TargetUserName`` / ``WorkstationName`` / ``IpAddress``
+              fields draw from the profile's user &amp; machine pools instead
+              of synthetic placeholders. Deleting the profile leaves this
+              binding running in placeholder mode (no error state).
+            </div></div>
           <div class="form-row" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
             <div><label>Rate (events/min)</label>
               <input type="number" id="wef-rate" value="60" min="1" max="60000"/></div>
@@ -8031,6 +8039,7 @@ const WEF_CHANNELS = [
 
 var _wefList = [];          // list of binding rows (last GET)
 var _wefDraft = null;       // { id?, name, config, password? } being edited
+var _wefProfiles = [];      // [{id, name}] cached for the binding editor dropdown
 
 async function loadWefBindings() {
   var box = document.getElementById('wef-list');
@@ -8043,6 +8052,16 @@ async function loadWefBindings() {
     _wefList = d.bindings || [];
     _wefRenderList();
   } catch(e) { box.innerHTML = '<p class="empty">Error: ' + e + '</p>'; }
+  // Log profiles dropdown — best-effort, never blocks the list render.
+  // Missing API / 403 leaves the cache empty; the modal still works with
+  // just the "None" option.
+  try {
+    var pr = await fetch('/admin/api/profiles', {credentials:'same-origin'});
+    if (pr.ok) {
+      var pd = await pr.json();
+      _wefProfiles = pd.profiles || [];
+    }
+  } catch(e) { /* keep previous cache */ }
 }
 
 function _wefRenderList() {
@@ -8176,6 +8195,31 @@ function _wefFillForm() {
   }
   // Channels
   _wefRenderChannels(c.channels_enabled || ['Security']);
+  // Log profile dropdown — rebuilt every open so a new profile created
+  // in another tab shows up without forcing the operator to reload.
+  _wefRenderProfiles(c.profile_id || '');
+}
+
+function _wefRenderProfiles(selectedId) {
+  var sel = document.getElementById('wef-profile-id');
+  if (!sel) return;
+  var opts = ['<option value="">— None — placeholder values</option>'];
+  _wefProfiles.forEach(function(p) {
+    var pid = String(p.id || '');
+    var nm  = String(p.name || pid);
+    opts.push('<option value="' + escAttr(pid) + '"' +
+              (pid === selectedId ? ' selected' : '') +
+              '>' + escHtml(nm) + '</option>');
+  });
+  // If the saved profile_id no longer exists in the cache (deleted out
+  // of band), keep it visible as a "(missing)" entry so the operator
+  // knows the binding is now in placeholder fallback mode rather than
+  // silently switching to "None".
+  if (selectedId && !_wefProfiles.some(function(p) { return String(p.id) === selectedId; })) {
+    opts.push('<option value="' + escAttr(selectedId) + '" selected>' +
+              escHtml(selectedId) + ' (missing — falls back to placeholder)</option>');
+  }
+  sel.innerHTML = opts.join('');
 }
 
 function _wefRenderChannels(selected) {
@@ -8201,6 +8245,8 @@ function _wefCollectConfig() {
   var authRadio = document.querySelector('input[name="wef-auth"]:checked');
   var channels = Array.from(document.querySelectorAll('#wef-channels input[type="checkbox"]:checked'))
                       .map(function(cb) { return cb.dataset.channel; });
+  var profSel = document.getElementById('wef-profile-id');
+  var profId  = profSel ? (profSel.value || '').trim() : '';
   return {
     target_host: document.getElementById('wef-host').value.trim(),
     target_port: parseInt(document.getElementById('wef-port').value, 10),
@@ -8212,6 +8258,7 @@ function _wefCollectConfig() {
     batch_size: parseInt(document.getElementById('wef-batch').value, 10) || 10,
     jitter_pct: parseInt(document.getElementById('wef-jitter').value, 10) || 0,
     channels_enabled: channels.length ? channels : ['Security'],
+    profile_id: profId || null,
   };
 }
 
