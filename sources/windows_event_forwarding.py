@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import base64
 import os
+import random
 import uuid
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -1051,36 +1052,112 @@ def resolve_cert_files(binding_id: str | None,
     return None
 
 
-# ── Push emitter ──────────────────────────────────────────────────────
+# ── Catalog-aware event generator ────────────────────────────────────
 
-def _stub_events_for_push(n: int) -> list[dict[str, Any]]:
-    """Return *n* minimal valid events suitable for ``build_envelope``.
+def _materialize_event(entry: dict[str, Any],
+                       record_id: int,
+                       rng: random.Random) -> dict[str, Any]:
+    """Turn a catalog *entry* into a concrete event dict.
 
-    Used by ``WEFEmitter.push_batch(event_count=N)`` until step 5 wires
-    in the catalog-aware ``generate_events()`` with mix overrides and
-    seed determinism. The current implementation is *just* good enough
-    for the wire-shape tests in tests/test_wef_push_loop.py to pass —
-    each event picks the first Sysmon process-create catalog entry and
-    fills in static profile-like fields.
+    The data fields declared in the catalog (e.g. TargetUserName, Image,
+    SubjectUserName) are filled with deterministic placeholder values
+    derived from *rng* so two seeded runs produce identical envelopes.
+    Real profile-driven substitution (real usernames, machine names,
+    C2 IPs) lands when WEF is wired into ``profiles.get_context()`` —
+    out of scope for v5.2.
     """
-    base_entry = next(
-        (e for e in EVENT_CATALOG
-         if e["channel"] == CHANNEL_SYSMON and e["event_id"] == 1),
-        EVENT_CATALOG[0],
-    )
-    return [
-        {
-            "event_id": base_entry["event_id"],
-            "channel": base_entry["channel"],
-            "provider": base_entry["provider"],
-            "computer": "DC01.lab.local",
-            "level": base_entry["level"],
-            "time_created": "2026-06-13T10:00:00.000Z",
-            "event_record_id": i + 1,
-            "data": {"Image": "C:\\Windows\\System32\\cmd.exe"},
-        }
-        for i in range(int(n))
-    ]
+    data = {
+        field: f"{field.lower()}-{rng.randrange(1, 1_000_000)}"
+        for field in entry.get("data_fields", [])
+    }
+    return {
+        "event_id": entry["event_id"],
+        "channel": entry["channel"],
+        "provider": entry["provider"],
+        "level": entry.get("level", "Information"),
+        "computer": "DC01.lab.local",
+        "time_created": "2026-06-13T10:00:00.000Z",
+        "event_record_id": record_id,
+        "data": data,
+    }
+
+
+def generate_events(count: int,
+                    mix_overrides: dict[str, dict[str, Any]] | None = None,
+                    seed: int | None = 42,
+                    channels_enabled: list[str] | None = None,
+                    ) -> list[dict[str, Any]]:
+    """Sample *count* events from :data:`EVENT_CATALOG` with weighted choice.
+
+    Parameters
+    ----------
+    count
+        Number of events to produce. ``0`` returns an empty list.
+    mix_overrides
+        Per-entry admin overrides keyed by ``"<channel>:<event_id>"``
+        (the canonical key shape every catalog-aware source already
+        uses in ``event_mix.py``). Each value is a dict with optional
+        keys:
+
+        * ``enabled`` — when False, the entry is excluded from the pool
+          (disabled completely).
+        * ``weight`` — overrides the catalog's ``default_weight``.
+          Non-positive values disable the entry too.
+
+        Unrecognised keys are ignored so the schema can evolve without
+        forcing this module to change.
+    seed
+        Seed for the per-call ``random.Random`` instance. Same seed →
+        identical ``(event_id, channel)`` sequence. ``None`` falls back
+        to non-deterministic system entropy.
+    channels_enabled
+        Binding-level coarse filter. When supplied, only catalog entries
+        whose ``channel`` is in this list survive. Composes with
+        ``mix_overrides`` (channel filter first, then per-entry).
+
+    Returns
+    -------
+    list of event dicts ready for :func:`build_envelope`.
+
+    Returns an empty list when every catalog entry has been filtered
+    out (the caller — push loop — decides whether to log this as a
+    binding-level error).
+    """
+    if count <= 0:
+        return []
+
+    overrides = mix_overrides or {}
+    pool: list[tuple[dict[str, Any], float]] = []
+
+    for entry in EVENT_CATALOG:
+        if channels_enabled is not None and entry["channel"] not in channels_enabled:
+            continue
+        key = f"{entry['channel']}:{entry['event_id']}"
+        ov = overrides.get(key) or {}
+        if ov.get("enabled") is False:
+            continue
+        weight = ov.get("weight", entry.get("default_weight", 0))
+        try:
+            weight = float(weight)
+        except (TypeError, ValueError):
+            continue
+        if weight <= 0:
+            continue
+        pool.append((entry, weight))
+
+    if not pool:
+        return []
+
+    rng = random.Random(seed)
+    entries = [p[0] for p in pool]
+    weights = [p[1] for p in pool]
+
+    events: list[dict[str, Any]] = []
+    for record_id in range(1, count + 1):
+        # rng.choices returns a list of size k; k=1 gives us one entry.
+        entry = rng.choices(entries, weights=weights, k=1)[0]
+        events.append(_materialize_event(entry, record_id, rng))
+    return events
 
 
 class WEFEmitter:
@@ -1170,7 +1247,11 @@ class WEFEmitter:
         if events is not None:
             ev_list = list(events)
         elif event_count is not None:
-            ev_list = _stub_events_for_push(int(event_count))
+            ev_list = generate_events(
+                count=int(event_count),
+                mix_overrides=self._cfg.get("mix_overrides"),
+                channels_enabled=self._cfg.get("channels_enabled"),
+            )
         else:
             ev_list = []
 
@@ -1305,5 +1386,6 @@ __all__ = [
     "load_cert_bundle",
     "delete_cert_bundle",
     "resolve_cert_files",
+    "generate_events",
     "WEFEmitter",
 ]
