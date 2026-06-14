@@ -1854,6 +1854,18 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
         </p>
         <div id="wef-list" style="min-height:120px"><p class="empty">Loading…</p></div>
       </div>
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span>Recent activity</span>
+          <button class="btn-sm" style="padding:3px 10px;font-size:.68rem" onclick="loadWefHistory()">↻ Refresh</button>
+        </div>
+        <p style="font-size:.72rem;color:rgba(224,170,255,.4);margin:-4px 0 8px">
+          Cross-binding push log (last 50 attempts). One row per
+          <code>push_once</code> call — runner loop, <b>Test</b> button, or
+          scheduled batch. Cleared on container restart.
+        </p>
+        <div id="wef-history"><p class="empty">No recent pushes yet.</p></div>
+      </div>
     </div>
 
     <!-- WEF Binding Editor Modal -->
@@ -8062,6 +8074,47 @@ async function loadWefBindings() {
       _wefProfiles = pd.profiles || [];
     }
   } catch(e) { /* keep previous cache */ }
+  // Cross-binding "Recent activity" feed (Phase F). Loaded alongside
+  // the bindings so the operator sees one consistent view per refresh.
+  loadWefHistory();
+}
+
+async function loadWefHistory() {
+  var box = document.getElementById('wef-history');
+  if (!box) return;
+  try {
+    var r = await fetch('/admin/api/wef/history?limit=50', {credentials:'same-origin'});
+    if (!r.ok) { return; /* silent — empty state stays */ }
+    var d = await r.json();
+    var entries = d.history || [];
+    if (!entries.length) {
+      box.innerHTML = '<p class="empty">No recent pushes yet.</p>';
+      return;
+    }
+    box.innerHTML = entries.map(_wefHistoryEntryHtml).join('');
+  } catch(e) { /* silent — keep last successful render */ }
+}
+
+function _wefHistoryEntryHtml(e) {
+  // Mirror _alertHistoryEntryHtml visual shape so the two activity
+  // feeds (alerts / WEF) feel like one product surface.
+  var ok = !!e.ok;
+  var clr = ok ? '#2ecc71' : '#ff5050';
+  var dot = ok ? '✓' : '✗';
+  var sc = (e.status_code === null || e.status_code === undefined) ? '' : ('HTTP ' + e.status_code);
+  var errBit = e.error ? ' <span style="color:#ff8080">' + escHtml(String(e.error)) + '</span>' : '';
+  var nameBit = e.binding_name
+    ? ('<code style="font-size:.66rem;color:#c77dff">' + escHtml(String(e.binding_name)) + '</code>')
+    : '';
+  var ageBit = _wefFmtAge(e.ts);
+  return '<div style="display:flex;gap:8px;align-items:center;padding:5px 8px;border-bottom:1px solid rgba(199,125,255,.08);font-size:.7rem">' +
+         '<span style="color:' + clr + ';width:16px">' + dot + '</span>' +
+         '<span style="color:rgba(224,170,255,.5);min-width:90px">' + escHtml(ageBit) + '</span>' +
+         nameBit +
+         '<span style="color:rgba(224,170,255,.4)">' + (e.sent || 0) + ' sent</span>' +
+         '<span style="color:rgba(224,170,255,.4)">' + escHtml(sc) + '</span>' +
+         errBit +
+         '</div>';
 }
 
 function _wefRenderList() {
@@ -8327,6 +8380,9 @@ async function testWef(bid) {
     } else {
       toast('Test push failed: ' + (d.error || ('HTTP ' + d.status_code)), true);
     }
+    // loadWefBindings also refreshes the activity feed via loadWefHistory,
+    // so the operator's test push lands in the Recent activity card
+    // without a manual refresh click.
     await loadWefBindings();
   } catch(e) { toast('Test failed: ' + e, true); }
 }
@@ -12408,3 +12464,45 @@ async def api_wef_bindings_test(bid: str,
     import wef_runner
     result = wef_runner.get_runner().push_once(bid)
     return JSONResponse(result)
+
+
+@router.get("/api/wef/history")
+async def api_wef_history_global(limit: int = 50,
+                                 ag_session: str | None = Cookie(None)):
+    """Cross-binding "Recent activity" feed (Phase F).
+
+    Each entry carries its ``binding_id`` + ``binding_name`` so the
+    UI can render which binding produced it without a second lookup.
+    Mirrors ``/admin/api/alerts/history`` — same auth model (session
+    cookie only, no per-row visibility gate because binding names
+    are not secrets and the feed is bounded to ``_HISTORY_MAX``
+    entries process-wide).
+    """
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import wef_runner
+    capped = max(1, min(int(limit or 50), wef_runner._HISTORY_MAX))
+    entries = wef_runner.get_history(limit=capped)
+    return JSONResponse({"history": entries, "count": len(entries)})
+
+
+@router.get("/api/wef/bindings/{bid}/history")
+async def api_wef_history_per_binding(bid: str,
+                                      limit: int = 50,
+                                      ag_session: str | None = Cookie(None)):
+    """Per-binding push history — the disclosure pane on each binding
+    card. Adds the standard get + ownership check on top of the
+    session cookie so a viewer can't peek into a private binding's
+    activity (the row itself is owner-gated, and so is its history)."""
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import wef_bindings
+    bnd = wef_bindings.get_binding(bid)
+    if not bnd:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_see_obj(bnd, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    import wef_runner
+    capped = max(1, min(int(limit or 50), wef_runner._HISTORY_MAX))
+    entries = wef_runner.get_history(bid, limit=capped)
+    return JSONResponse({"history": entries, "count": len(entries)})

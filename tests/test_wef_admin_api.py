@@ -82,6 +82,9 @@ def test_endpoints_require_session(client):
         ("POST", "/admin/api/wef/bindings/wef-x/cert"),
         ("PUT", "/admin/api/wef/bindings/wef-x/enabled"),
         ("POST", "/admin/api/wef/bindings/wef-x/test"),
+        # Phase F: history endpoints follow the same auth model.
+        ("GET", "/admin/api/wef/history"),
+        ("GET", "/admin/api/wef/bindings/wef-x/history"),
     ]:
         r = client.request(method, url, json={})
         assert r.status_code == 401, (method, url, r.status_code)
@@ -303,3 +306,88 @@ def test_create_denied_without_entitlement(client, make_user):
     # 403 = RBAC gate fired. 401 here would mean the session itself
     # was rejected (which would be a different bug to investigate).
     assert r.status_code == 403, (r.status_code, r.text[:200])
+
+
+# ── Phase F: push history endpoints ───────────────────────────────────
+
+def test_global_history_starts_empty(client):
+    """A fresh process exposes an empty global feed \u2014 the UI relies on
+    the `count: 0` to render the "No recent pushes" empty state."""
+    import wef_runner
+    wef_runner.clear_history()
+    _login_admin(client)
+    r = client.get("/admin/api/wef/history")
+    assert r.status_code == 200
+    body = r.json()
+    assert body == {"history": [], "count": 0}
+
+
+def test_test_push_populates_global_history(client):
+    """Running the /test endpoint must surface a row in the global
+    feed \u2014 same writer that drives the per-binding badge."""
+    import wef_runner
+    wef_runner.clear_history()
+    _login_admin(client)
+    bnd = _create(client, target_host="127.0.0.1", target_port=1,
+                  basic_username="x")
+    client.post(f"/admin/api/wef/bindings/{bnd['id']}/test")
+    r = client.get("/admin/api/wef/history")
+    assert r.status_code == 200
+    entries = r.json()["history"]
+    assert entries, "test push must produce a history row"
+    assert entries[0]["binding_id"] == bnd["id"]
+    assert entries[0]["binding_name"] == bnd["name"]
+    # Closed port \u2192 ok=False with a populated error string.
+    assert entries[0]["ok"] is False
+    assert entries[0]["error"]
+
+
+def test_per_binding_history_returns_only_that_binding(client):
+    """Two bindings + two test pushes \u2192 the per-binding history endpoint
+    must filter down to one row each, while the global feed shows both."""
+    import wef_runner
+    wef_runner.clear_history()
+    _login_admin(client)
+    a = _create(client, name="A", target_host="127.0.0.1",
+                target_port=1, basic_username="x")
+    b = _create(client, name="B", target_host="127.0.0.1",
+                target_port=1, basic_username="x")
+    client.post(f"/admin/api/wef/bindings/{a['id']}/test")
+    client.post(f"/admin/api/wef/bindings/{b['id']}/test")
+    ra = client.get(f"/admin/api/wef/bindings/{a['id']}/history")
+    rb = client.get(f"/admin/api/wef/bindings/{b['id']}/history")
+    assert ra.status_code == 200 and rb.status_code == 200
+    entries_a = ra.json()["history"]
+    entries_b = rb.json()["history"]
+    assert {e["binding_id"] for e in entries_a} == {a["id"]}
+    assert {e["binding_id"] for e in entries_b} == {b["id"]}
+    # Global feed sees both.
+    glob = client.get("/admin/api/wef/history").json()["history"]
+    assert {e["binding_id"] for e in glob} == {a["id"], b["id"]}
+
+
+def test_per_binding_history_returns_404_for_unknown(client):
+    """A history request against a deleted/unknown binding must 404 \u2014
+    same code the /bindings/{bid} GET returns so the UI can recover."""
+    _login_admin(client)
+    r = client.get("/admin/api/wef/bindings/wef-nope/history")
+    assert r.status_code == 404
+
+
+def test_history_limit_is_clamped(client):
+    """A caller asking for limit=10_000 must NOT get more than
+    `_HISTORY_MAX` rows back \u2014 protects the response size."""
+    import wef_runner
+    wef_runner.clear_history()
+    _login_admin(client)
+    # Synthesise more rows than _HISTORY_MAX so the clamp is observable.
+    for i in range(wef_runner._HISTORY_MAX + 5):
+        wef_runner.record_push(
+            "bid-X", ok=True, sent=i, status_code=200,
+            binding_name="X",
+        )
+    r = client.get("/admin/api/wef/history?limit=10000")
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["history"]) == wef_runner._HISTORY_MAX
+    assert body["count"] == wef_runner._HISTORY_MAX

@@ -144,6 +144,17 @@ def _isolated_state(tmp_path, monkeypatch):
         # the redirect and the module-level default path is used.
         pass
 
+    # --- wef runner push history: drop the in-memory ring (v5.2 Phase F) ---
+    # The history ring is a module-level singleton (deque) on wef_runner;
+    # without an explicit reset every test's _global feed would inherit
+    # entries from earlier tests. Mirrors how detection_rules._last_fired
+    # is cleared above.
+    try:
+        import wef_runner
+        wef_runner.clear_history()
+    except ImportError:
+        pass
+
     yield
 
     if accounts._conn is not None:

@@ -44,6 +44,8 @@ import asyncio
 import logging
 import random
 import threading
+from collections import deque
+from datetime import UTC, datetime
 from typing import Any, Callable
 
 import wef_bindings
@@ -60,6 +62,103 @@ RECONCILE_INTERVAL_S = 5.0
 # Floor for the per-binding inter-batch sleep so a misconfigured
 # rate_per_min=600000 doesn't busy-loop the event loop.
 MIN_INTERVAL_S = 0.1
+
+
+# ── In-memory push history ring buffer (Phase F) ──────────────────────
+#
+# Companion to the persistent ``wef_bindings.status`` block — that one
+# stores a single snapshot (last_push_at / last_status_code / last_error
+# / sent_total) per binding so the operator can spot the "is it working
+# right now?" answer in one glance. The history below stores the most
+# recent ``_HISTORY_MAX`` outcomes per binding plus a cross-binding
+# ``_global`` feed so the admin UI can render an alert-push-style
+# "Recent activity" list. Storage is intentionally in-memory:
+#
+# * This is "what just happened" telemetry, not audit. A container
+#   restart starts the feed fresh; the persistent status block keeps
+#   the durable counters.
+# * deque(maxlen=…) gives O(1) FIFO eviction with no manual trimming.
+# * Memory ceiling is small and bounded: ``_HISTORY_MAX * (n_bindings + 1)``
+#   short dicts. 50 entries × 100 bindings ≈ 5 000 dicts, well below
+#   anything that warrants a disk-backed store.
+#
+# The contract matches ``alert_push._history`` so a future "unified
+# egress activity" feed can merge the two surfaces by source label
+# without per-source schema bridging.
+
+_HISTORY_MAX = 50
+_history: dict[str, deque[dict[str, Any]]] = {}
+_history_lock = threading.Lock()
+
+
+def record_push(binding_id: str,
+                *,
+                ok: bool,
+                sent: int,
+                status_code: int | None = None,
+                error: str | None = None,
+                binding_name: str | None = None) -> None:
+    """Append one push outcome to *binding_id*'s ring and to ``_global``.
+
+    Called from :meth:`WEFRunner.push_once` at every recorded outcome —
+    success, non-2xx, emitter exception, BindingConfigError — so the
+    history feed sees the same rows the persistent status block does.
+
+    The entry shape is the dict the admin UI's
+    ``_wefHistoryEntryHtml`` renders. Timestamp surfaces as an ISO-8601
+    UTC string so the JS side can ``Date.parse()`` it without a
+    timezone-inference dance.
+    """
+    entry = {
+        "ts": datetime.now(UTC).isoformat(timespec="milliseconds"),
+        "ok": bool(ok),
+        "sent": int(sent or 0),
+        "status_code": status_code,
+        "error": error,
+        "binding_id": binding_id,
+        "binding_name": binding_name or "",
+    }
+    with _history_lock:
+        buf = _history.setdefault(binding_id, deque(maxlen=_HISTORY_MAX))
+        buf.appendleft(entry)
+        glob = _history.setdefault("_global", deque(maxlen=_HISTORY_MAX))
+        glob.appendleft(entry)
+
+
+def get_history(binding_id: str = "_global",
+                *,
+                limit: int = _HISTORY_MAX) -> list[dict[str, Any]]:
+    """Return up to *limit* most-recent entries for *binding_id*.
+
+    Pass ``binding_id="_global"`` (default) for the cross-binding feed.
+    Returns an empty list when nothing has been recorded yet so the
+    caller can render a "No recent pushes" empty state.
+    """
+    with _history_lock:
+        buf = _history.get(binding_id)
+        if not buf:
+            return []
+        return list(buf)[:max(0, int(limit))]
+
+
+def clear_history(binding_id: str | None = None) -> None:
+    """Drop the in-memory history.
+
+    With *binding_id=None* (default), wipes every ring — used by the
+    conftest fixture so per-test state doesn't leak across tests. With
+    a specific binding id, drops just that binding's ring AND removes
+    its matching rows from ``_global`` so the cross-binding feed stays
+    consistent (mirrors ``alert_push.clear_history``).
+    """
+    with _history_lock:
+        if binding_id is None:
+            _history.clear()
+            return
+        _history.pop(binding_id, None)
+        glob = _history.get("_global")
+        if glob is not None:
+            kept = [e for e in glob if e.get("binding_id") != binding_id]
+            _history["_global"] = deque(kept, maxlen=_HISTORY_MAX)
 
 
 EmitterFactory = Callable[..., Any]
@@ -92,8 +191,10 @@ class WEFRunner:
         Returns a result dict shaped like :meth:`WEFEmitter.push_batch`'s
         return value, plus an optional ``error`` key when the cycle
         failed before/during the push. Always records the outcome via
-        :func:`wef_bindings.record_push_result` so the admin UI sees
-        the latest status, regardless of success/failure.
+        :func:`wef_bindings.record_push_result` AND
+        :func:`record_push` (in-memory history ring) so both the
+        per-binding status badge and the cross-binding "Recent activity"
+        feed see the same row.
         """
         cfg = wef_bindings.effective_config(bid)
         if cfg is None:
@@ -107,6 +208,13 @@ class WEFRunner:
                 "error": "binding not found",
             }
 
+        # Snapshot the human-readable name once per cycle so the history
+        # entry can render without a second lookup. Best-effort: a
+        # binding deleted between effective_config and get_binding still
+        # gets a history row, just with an empty binding_name.
+        _row = wef_bindings.get_binding(bid) or {}
+        binding_name = _row.get("name") or ""
+
         try:
             emitter = self._get_or_create_emitter(bid, cfg)
         except BindingConfigError as exc:
@@ -114,6 +222,8 @@ class WEFRunner:
             wef_bindings.record_push_result(
                 bid, sent=0, status_code=None, error=msg,
             )
+            record_push(bid, ok=False, sent=0, status_code=None, error=msg,
+                        binding_name=binding_name)
             return {"sent": 0, "status_code": None, "ok": False,
                     "error": msg}
         except Exception as exc:                          # pragma: no cover
@@ -124,6 +234,8 @@ class WEFRunner:
             wef_bindings.record_push_result(
                 bid, sent=0, status_code=None, error=msg,
             )
+            record_push(bid, ok=False, sent=0, status_code=None, error=msg,
+                        binding_name=binding_name)
             return {"sent": 0, "status_code": None, "ok": False,
                     "error": msg}
 
@@ -136,6 +248,8 @@ class WEFRunner:
             wef_bindings.record_push_result(
                 bid, sent=0, status_code=None, error=msg,
             )
+            record_push(bid, ok=False, sent=0, status_code=None, error=msg,
+                        binding_name=binding_name)
             return {"sent": 0, "status_code": None, "ok": False,
                     "error": msg}
 
@@ -143,12 +257,13 @@ class WEFRunner:
         err = None if ok else (
             f"non-2xx status {result.get('status_code')}"
         )
+        sent = int(result.get("sent") or 0)
+        status_code = result.get("status_code")
         wef_bindings.record_push_result(
-            bid,
-            sent=int(result.get("sent") or 0),
-            status_code=result.get("status_code"),
-            error=err,
+            bid, sent=sent, status_code=status_code, error=err,
         )
+        record_push(bid, ok=ok, sent=sent, status_code=status_code,
+                    error=err, binding_name=binding_name)
         # Pass the runner-shaped result back (with the synthesised error
         # string) so callers don't need to derive ok-vs-error themselves.
         return {**result, "error": err}
@@ -325,4 +440,8 @@ __all__ = [
     "RECONCILE_INTERVAL_S",
     "MIN_INTERVAL_S",
     "get_runner",
+    # Phase F: push history ring buffer
+    "record_push",
+    "get_history",
+    "clear_history",
 ]
