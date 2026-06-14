@@ -123,6 +123,27 @@ def _isolated_state(tmp_path, monkeypatch):
     except ImportError:
         pass
 
+    # --- wef bindings + cert storage: per-test JSON file + cert dir (v5.2) ---
+    # The cert dir lives on the wef *source* module (storage of PEM
+    # bundles); the bindings JSON lives on wef_bindings (storage of
+    # binding rows). Both are redirected so a test that creates a
+    # binding doesn't leak state into the next test's view.
+    try:
+        from sources import windows_event_forwarding as _wef_src
+        monkeypatch.setattr(_wef_src, "CERT_STORAGE_DIR",
+                            tmp_path / "source_certs" / "wef")
+    except ImportError:
+        pass
+    try:
+        import wef_bindings
+        monkeypatch.setattr(wef_bindings, "DATA_ROOT", tmp_path)
+        monkeypatch.setattr(wef_bindings, "BINDINGS_FILE",
+                            tmp_path / "wef_bindings.json")
+    except ImportError:
+        # wef_bindings lands in v5.2 Phase A; older suites just skip
+        # the redirect and the module-level default path is used.
+        pass
+
     yield
 
     if accounts._conn is not None:
