@@ -48,13 +48,20 @@ Operators reshape this distribution through the Event Mix admin UI.
 from __future__ import annotations
 
 import base64
+import os
 import uuid
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from typing import Any
 
 import httpx
 
-from crypto import try_decrypt
+from crypto import (
+    InvalidToken,
+    decrypt as _crypto_decrypt_str,
+    encrypt as _crypto_encrypt_str,
+    try_decrypt,
+)
 
 
 # ── Channels ──────────────────────────────────────────────────────────
@@ -857,21 +864,190 @@ def validate_binding_config(cfg: dict[str, Any]) -> list[str]:
     return errors
 
 
-# ── Per-binding cert resolution (full implementation in step 4) ──────
+# ── Per-binding cert storage (Fernet-encrypted PEM at rest) ──────────
+
+# Storage root for per-binding client cert bundles. Each binding gets its
+# own pair of files:
+#
+#   <CERT_STORAGE_DIR>/<binding_id>.pem.enc  — durable, Fernet-encrypted
+#   <CERT_STORAGE_DIR>/<binding_id>.pem      — runtime plaintext (0600),
+#                                               materialised on demand by
+#                                               resolve_cert_files() and
+#                                               removed by delete_cert_bundle().
+#
+# Encryption-at-rest mirrors v5.1 Phase B for the admin-global S1 token:
+# a host disk dump (laptop sync, EBS snapshot, leaked SQLite backup) must
+# not yield a usable client cert. The runtime plaintext copy exists
+# because OpenSSL / httpx need a real file path for the TLS handshake;
+# it lives behind 0600 perms and is removed when the binding is deleted.
+_DATA_DIR = Path(os.environ.get("APIGENIE_DATA_DIR", "/var/lib/apigenie"))
+CERT_STORAGE_DIR = _DATA_DIR / "source_certs" / "wef"
+
+
+class CertDecryptionError(ValueError):
+    """Raised when a per-binding cert bundle on disk cannot be decrypted.
+
+    Typical causes: the Fernet key (``APIGENIE_SECRET_KEY`` /
+    ``data/secret.key``) was rotated without re-encrypting cert bundles,
+    or the ciphertext on disk was truncated / corrupted.
+
+    Subclasses :class:`ValueError` so existing admin handlers that catch
+    ``ValueError`` around cert IO (and surface a generic "could not load
+    cert" inline error) keep working without code changes.
+    """
+
+
+def _encrypt_bytes(payload: bytes) -> bytes:
+    """Encrypt *payload* via the shared Fernet key.
+
+    crypto.encrypt operates on UTF-8 strings; we base64-wrap the binary
+    PEM payload to a printable string first so it round-trips cleanly
+    through the string API without touching the existing crypto module's
+    public surface.
+    """
+    if not payload:
+        return b""
+    b64 = base64.b64encode(payload).decode("ascii")
+    return _crypto_encrypt_str(b64).encode("ascii")
+
+
+def _decrypt_bytes(token: bytes) -> bytes:
+    """Inverse of :func:`_encrypt_bytes`.
+
+    Raises :class:`CertDecryptionError` on any Fernet validation failure
+    so callers can disable the binding cleanly instead of producing a
+    bad TLS handshake.
+    """
+    if not token:
+        return b""
+    try:
+        b64 = _crypto_decrypt_str(token.decode("ascii"))
+    except (InvalidToken, UnicodeDecodeError, ValueError) as exc:
+        raise CertDecryptionError(
+            "WEF cert bundle ciphertext failed to decrypt — has "
+            "APIGENIE_SECRET_KEY been rotated, or is the file truncated?"
+        ) from exc
+    try:
+        return base64.b64decode(b64.encode("ascii"))
+    except (ValueError, TypeError) as exc:
+        raise CertDecryptionError(
+            "WEF cert bundle plaintext is not valid base64 — file may "
+            "have been written by an incompatible version"
+        ) from exc
+
+
+def _enc_path(binding_id: str) -> Path:
+    return CERT_STORAGE_DIR / f"{binding_id}.pem.enc"
+
+
+def _pem_path(binding_id: str) -> Path:
+    return CERT_STORAGE_DIR / f"{binding_id}.pem"
+
+
+def save_cert_bundle(binding_id: str, pem_bytes: bytes) -> Path:
+    """Encrypt *pem_bytes* and write it to the per-binding store.
+
+    Returns the path of the on-disk ciphertext (``.pem.enc``). The
+    durable file is mode 0600 so even a misconfigured Docker volume
+    permission can't hand the ciphertext to other host users.
+
+    The companion runtime plaintext path (``.pem``) is NOT written here;
+    it's materialised on demand by :func:`resolve_cert_files` the first
+    time the emitter sends. This keeps the bundle encrypted at rest in
+    the steady state where the binding exists but no events flow yet.
+    """
+    CERT_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    path = _enc_path(binding_id)
+    path.write_bytes(_encrypt_bytes(pem_bytes))
+    try:
+        os.chmod(path, 0o600)
+    except OSError:  # pragma: no cover — Windows / mounted FS
+        pass
+    return path
+
+
+def load_cert_bundle(binding_id: str) -> bytes | None:
+    """Decrypt and return the per-binding PEM bytes, or ``None`` if no
+    bundle has been saved for this binding.
+
+    Raises :class:`CertDecryptionError` on a corrupted / key-mismatched
+    ciphertext so the admin UI can disable the binding instead of
+    silently producing a bad handshake.
+    """
+    path = _enc_path(binding_id)
+    if not path.is_file():
+        return None
+    return _decrypt_bytes(path.read_bytes())
+
+
+def delete_cert_bundle(binding_id: str) -> bool:
+    """Remove the per-binding ciphertext and its runtime plaintext copy.
+
+    Returns ``True`` if at least one of the files existed and was
+    removed, ``False`` if neither existed (idempotent — the admin UI
+    can call this on every binding-delete without special-casing the
+    "binding never had a cert" state).
+    """
+    removed = False
+    for path in (_enc_path(binding_id), _pem_path(binding_id)):
+        if path.is_file():
+            try:
+                path.unlink()
+                removed = True
+            except OSError:
+                pass
+    return removed
+
 
 def resolve_cert_files(binding_id: str | None,
                        server_pem_fallback: Any = None,
-                       ) -> tuple[Any, Any] | None:
-    """Return ``(cert_path, key_path)`` for *binding_id*'s mTLS bundle.
+                       ) -> tuple[Path, Path] | None:
+    """Resolve mTLS material for *binding_id* into ``(cert, key)`` paths.
 
-    Step 3 ships a STUB that always returns ``None``: the full
-    implementation (per-binding encrypted PEM under
-    ``data/source_certs/wef/<binding_id>.pem.enc`` with fallback to
-    ``data/tls/server.pem``) lands in step 4. WEFEmitter calls this
-    function indirectly via the module attribute so test_wef_auth can
-    monkeypatch it; the stub keeps the public symbol stable for that
-    monkeypatch to work today.
+    Resolution order:
+
+    1. **Per-binding bundle** — if ``<CERT_STORAGE_DIR>/<binding_id>.pem.enc``
+       exists, decrypt it and materialise the plaintext at the companion
+       ``.pem`` path (mode 0600) so OpenSSL can mmap it during the TLS
+       handshake. Returns ``(pem_path, pem_path)`` — the same combined
+       file is fine for both cert and key, matching the existing
+       ``data/tls/server.pem`` convention.
+    2. **Server PEM fallback** — if *server_pem_fallback* points to an
+       existing file, return ``(fallback, fallback)``. Lets operators
+       reuse the apigenie server cert for bindings that don't need a
+       dedicated client cert.
+    3. **Nothing usable** — return ``None``. The caller (push loop) then
+       raises :class:`BindingConfigError` so the binding goes to
+       ``error`` state in the Activity panel.
+
+    Re-materialises the plaintext on every call so a key-rotation that
+    happened between two pushes is picked up immediately.
     """
+    if binding_id:
+        enc_path = _enc_path(binding_id)
+        if enc_path.is_file():
+            try:
+                pem_bytes = _decrypt_bytes(enc_path.read_bytes())
+            except CertDecryptionError:
+                # Corruption surfaces as "no resolvable cert"; the
+                # WEFEmitter then raises BindingConfigError with the
+                # binding_id, so the admin UI knows which binding to
+                # disable.
+                return None
+            pem_path = _pem_path(binding_id)
+            CERT_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+            pem_path.write_bytes(pem_bytes)
+            try:
+                os.chmod(pem_path, 0o600)
+            except OSError:  # pragma: no cover
+                pass
+            return pem_path, pem_path
+
+    if server_pem_fallback:
+        fallback = Path(server_pem_fallback)
+        if fallback.is_file():
+            return fallback, fallback
+
     return None
 
 
@@ -1123,6 +1299,11 @@ __all__ = [
     "BindingConfigError",
     "normalize_binding_config",
     "validate_binding_config",
+    "CERT_STORAGE_DIR",
+    "CertDecryptionError",
+    "save_cert_bundle",
+    "load_cert_bundle",
+    "delete_cert_bundle",
     "resolve_cert_files",
     "WEFEmitter",
 ]
