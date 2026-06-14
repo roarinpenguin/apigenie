@@ -1,0 +1,7 @@
+/* API Genie — purple accents for MarkText
+   Recolors links and inline code from MarkText's default (green) accent to
+   the API Genie logo purple. Apply via MarkText Preferences → customCss
+   (already injected into ~/Library/Application Support/marktext/preferences.json). */
+a, a:visited { color: #7B2FF7 !important; }
+a:hover      { color: #9D4EDD !important; }
+code, .ag-inline-code { color: #7B2FF7 !important; }
