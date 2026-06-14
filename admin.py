@@ -382,6 +382,20 @@ def _perm_requirement(path: str, method: str) -> tuple[str, tuple[str, ...]] | N
             return (C.WEBHOOKS, (P.MODIFY,))
         if m == "DELETE":
             return (C.WEBHOOKS, (P.DELETE,))
+    # WEF Bindings (v5.2): operational verbs (cert/test/enabled) are
+    # MANAGE/MODIFY because they change runtime behaviour, not the
+    # binding shape; data verbs follow the standard CRUD gates.
+    if path == "/admin/api/wef/bindings":
+        if m == "POST":
+            return (C.WEF_BINDINGS, (P.CREATE,))
+    elif path.startswith("/admin/api/wef/bindings/"):
+        if path.endswith("/cert") or path.endswith("/test") \
+                or path.endswith("/enabled"):
+            return (C.WEF_BINDINGS, (P.MANAGE, P.MODIFY))
+        if m in ("PUT", "PATCH"):
+            return (C.WEF_BINDINGS, (P.MODIFY,))
+        if m == "DELETE":
+            return (C.WEF_BINDINGS, (P.DELETE,))
     return None
 
 
@@ -11728,3 +11742,229 @@ async def api_s1_import_rule(request: Request, ag_session: str | None = Cookie(N
         "enabled": True,
     })
     return JSONResponse(rule)
+
+
+# ── WEF bindings API (v5.2) ──────────────────────────────────────────
+#
+# Each binding row represents one Windows Event Collector this ApiGenie
+# instance will push synthesised WEF events to. Storage lives in
+# wef_bindings.py; the runner (wef_runner.py) consumes the rows on a
+# background loop. The routes below are the admin-UI / programmatic
+# CRUD surface. RBAC is gated centrally by _perm_requirement above
+# (Category.WEF_BINDINGS); per-route we just do auth + ownership.
+
+@router.get("/api/wef/bindings")
+async def api_wef_bindings_list(ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import wef_bindings
+    uid, is_admin = _session_identity(ag_session)
+    bindings = wef_bindings.list_bindings(owner_id=None if is_admin else uid)
+    items = list(bindings.values())
+    return JSONResponse({"bindings": items, "count": len(items)})
+
+
+@router.post("/api/wef/bindings")
+async def api_wef_bindings_create(request: Request,
+                                  ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import wef_bindings
+    try:
+        body = await request.json()
+    except Exception as exc:
+        return JSONResponse({"error": f"invalid JSON body: {exc}"},
+                            status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "body must be a JSON object"},
+                            status_code=400)
+    uid, is_admin = _session_identity(ag_session)
+    # Built-in admin (uid=None) writes a global/public-by-default
+    # binding; real users own their bindings privately.
+    owner = None if is_admin and uid is None else uid
+    try:
+        bnd = wef_bindings.create_binding(body, owner_id=owner)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return JSONResponse(bnd, status_code=201)
+
+
+@router.get("/api/wef/bindings/{bid}")
+async def api_wef_bindings_get(bid: str,
+                               ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import wef_bindings
+    bnd = wef_bindings.get_binding(bid)
+    if not bnd:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_see_obj(bnd, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    return JSONResponse(bnd)
+
+
+@router.put("/api/wef/bindings/{bid}")
+async def api_wef_bindings_update(bid: str, request: Request,
+                                  ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import wef_bindings
+    bnd = wef_bindings.get_binding(bid)
+    if not bnd:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_write_obj(bnd, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    try:
+        body = await request.json()
+    except Exception as exc:
+        return JSONResponse({"error": f"invalid JSON body: {exc}"},
+                            status_code=400)
+    try:
+        updated = wef_bindings.update_binding(bid, body)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    if updated is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    # Config edits invalidate the runner's cached emitter — reconcile
+    # immediately so the next push uses the new config without waiting
+    # for the supervisor tick.
+    try:
+        import wef_runner
+        wef_runner.get_runner().reconcile_sync()
+    except Exception:
+        pass
+    return JSONResponse(updated)
+
+
+@router.delete("/api/wef/bindings/{bid}")
+async def api_wef_bindings_delete(bid: str,
+                                  ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import wef_bindings
+    bnd = wef_bindings.get_binding(bid)
+    if not bnd:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_write_obj(bnd, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    wef_bindings.delete_binding(bid)
+    # Drop the now-orphaned emitter from the runner cache.
+    try:
+        import wef_runner
+        wef_runner.get_runner().reconcile_sync()
+    except Exception:
+        pass
+    return JSONResponse({"ok": True, "id": bid})
+
+
+@router.post("/api/wef/bindings/{bid}/cert")
+async def api_wef_bindings_cert_upload(bid: str, request: Request,
+                                       ag_session: str | None = Cookie(None)):
+    """Upload a client-certificate PEM bundle for an mTLS binding.
+
+    JSON body shape: ``{"pem": "<base64-encoded combined cert+key PEM>"}``.
+    We accept the base64 wrapper (not raw multipart) so this endpoint
+    has no python-multipart dependency — the UI uses ``FileReader``
+    + ``btoa`` to encode before POSTing.
+    """
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import base64
+    import wef_bindings
+    from sources import windows_event_forwarding as _wef_src
+    bnd = wef_bindings.get_binding(bid)
+    if not bnd:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_write_obj(bnd, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"error": "expected JSON {'pem': '<base64 PEM bundle>'}"},
+            status_code=400,
+        )
+    b64 = (body or {}).get("pem", "")
+    if not b64:
+        return JSONResponse({"error": "missing 'pem' field"},
+                            status_code=400)
+    try:
+        pem_bytes = base64.b64decode(b64)
+    except Exception as exc:
+        return JSONResponse(
+            {"error": f"'pem' must be base64-encoded: {exc}"},
+            status_code=400,
+        )
+    if not pem_bytes or b"-----BEGIN" not in pem_bytes:
+        return JSONResponse(
+            {"error": "uploaded file does not look like a PEM bundle"},
+            status_code=400,
+        )
+    _wef_src.save_cert_bundle(bid, pem_bytes)
+    updated = wef_bindings.update_binding(
+        bid, {"config": {**bnd["config"], "cert_uploaded": True}},
+    )
+    # Drop any cached emitter so the next push re-resolves the cert.
+    try:
+        import wef_runner
+        wef_runner.get_runner().reconcile_sync()
+    except Exception:
+        pass
+    return JSONResponse(updated or bnd)
+
+
+@router.put("/api/wef/bindings/{bid}/enabled")
+async def api_wef_bindings_set_enabled(bid: str, request: Request,
+                                       ag_session: str | None = Cookie(None)):
+    """Start / stop a binding in the runner. Body: ``{"enabled": bool}``."""
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import wef_bindings
+    bnd = wef_bindings.get_binding(bid)
+    if not bnd:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_write_obj(bnd, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"error": "expected JSON {'enabled': bool}"},
+            status_code=400,
+        )
+    enabled = bool((body or {}).get("enabled"))
+    updated = wef_bindings.set_enabled(bid, enabled)
+    if updated is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    # Reconcile so the runner picks up the change within the
+    # round-trip rather than waiting for the next supervisor tick.
+    try:
+        import wef_runner
+        wef_runner.get_runner().reconcile_sync()
+    except Exception:
+        pass
+    return JSONResponse(updated)
+
+
+@router.post("/api/wef/bindings/{bid}/test")
+async def api_wef_bindings_test(bid: str,
+                                ag_session: str | None = Cookie(None)):
+    """One synchronous push cycle — the "Test push" admin button.
+
+    Doesn't require ``enabled=True`` so an operator can validate a
+    freshly-saved binding before flipping it live. The runner's
+    ``push_once`` swallows every emitter exception and records the
+    outcome via ``record_push_result``, so this endpoint always
+    returns a JSON result dict (never raises).
+    """
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import wef_bindings
+    bnd = wef_bindings.get_binding(bid)
+    if not bnd:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_write_obj(bnd, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    import wef_runner
+    result = wef_runner.get_runner().push_once(bid)
+    return JSONResponse(result)
