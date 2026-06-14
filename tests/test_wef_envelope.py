@@ -131,6 +131,15 @@ def test_body_contains_one_event_element_per_input():
     )
 
 
+def _local_name(tag: str) -> str:
+    """Strip the ``{namespace}`` prefix from a Clark-notation tag.
+
+    Stdlib ``xml.etree.ElementTree.QName`` does NOT expose a
+    ``.localname`` attribute (only lxml does); use this helper instead.
+    """
+    return tag.split("}", 1)[-1] if "}" in tag else tag
+
+
 def test_each_event_has_system_section_with_required_subfields():
     xml = _build([_sample_event()])
     root = ET.fromstring(xml)
@@ -138,7 +147,7 @@ def test_each_event_has_system_section_with_required_subfields():
     system = win_event.find(f"{{{NS_WIN_EVENT}}}System")
     assert system is not None, "<System> missing"
     required = {"EventID", "TimeCreated", "Channel", "Computer", "Provider"}
-    children = {ET.QName(child).localname for child in system}
+    children = {_local_name(child.tag) for child in system}
     missing = required - children
     assert not missing, f"<System> missing required children: {missing}"
 

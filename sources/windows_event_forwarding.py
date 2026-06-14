@@ -47,6 +47,8 @@ Operators reshape this distribution through the Event Mix admin UI.
 """
 from __future__ import annotations
 
+import uuid
+import xml.etree.ElementTree as ET
 from typing import Any
 
 
@@ -631,6 +633,144 @@ EVENT_CATALOG: list[dict[str, Any]] = [
 ]
 
 
+# ── Wire-protocol constants (WS-Management / WS-Eventing / EventLog) ─
+
+# Canonical namespace URIs — must NOT drift; real Windows Event Collector
+# subscriptions validate these strictly against the official Microsoft
+# WS-Management profile. Anchoring them as module constants keeps the
+# envelope builder and the tests on the same single source of truth.
+NS_SOAP12 = "http://www.w3.org/2003/05/soap-envelope"
+NS_ADDRESSING = "http://www.w3.org/2005/08/addressing"
+NS_WSMAN = "http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd"
+NS_EVENTING = "http://schemas.xmlsoap.org/ws/2004/08/eventing"
+NS_WIN_EVENT = "http://schemas.microsoft.com/win/2004/08/events/event"
+
+# WS-Eventing action URI carried in the wsa:Action header. A real WEC
+# subscription dispatches incoming SOAP envelopes by this exact string.
+WS_EVENTING_ACTION = "http://schemas.xmlsoap.org/ws/2004/08/eventing/Events"
+
+# Content-Type the SOAP 1.2 outbound POST advertises. Pinned here so the
+# push loop (step 3) and the test suite share one definition.
+SOAP_CONTENT_TYPE = "application/soap+xml;charset=UTF-8"
+
+# Windows EventLog severity → numeric Level code, per the EventLog XML
+# schema. The EventLog viewer renders these strings; the wire format uses
+# the integer.
+_LEVEL_CODES: dict[str, str] = {
+    "Critical": "1",
+    "Error": "2",
+    "Warning": "3",
+    "Information": "4",
+    "Verbose": "5",
+}
+
+
+# ── Envelope builder ──────────────────────────────────────────────────
+
+def build_envelope(events: list[dict[str, Any]],
+                   message_id: str | None = None) -> str:
+    """Wrap *events* in a SOAP 1.2 / WS-Eventing envelope.
+
+    Each item in *events* is a dict produced by the WEF event generator
+    (step 5) or supplied directly by Attack Scenarios when draining a
+    historical backlog. Required keys on each event:
+
+    * ``event_id``       — int, Windows EventID
+    * ``channel``        — str, EventLog channel name
+    * ``provider``       — str, Provider Name
+    * ``computer``       — str, FQDN of the emitting DC
+    * ``time_created``   — str, ISO-8601 UTC timestamp (with trailing Z)
+    * ``event_record_id``— int, monotonically increasing within the
+                           emitting host
+    * ``data``           — dict[str, str], EventData ``Data Name`` fields
+                           (substituted from the profile's user / machine
+                           / C2 inventory)
+
+    Optional:
+
+    * ``level``          — str, one of Critical / Error / Warning /
+                           Information / Verbose. Defaults to Information.
+
+    The returned string is a UTF-8 XML document the push loop posts
+    verbatim as the HTTP body with ``Content-Type: SOAP_CONTENT_TYPE``.
+
+    ``message_id`` is auto-generated as ``uuid:<uuid4>`` when not
+    supplied; pass an explicit value when the caller (e.g. tests, or
+    Attack Scenarios replaying a historical envelope) needs a stable
+    correlation id.
+    """
+    if message_id is None:
+        message_id = f"uuid:{uuid.uuid4()}"
+
+    envelope = ET.Element(f"{{{NS_SOAP12}}}Envelope")
+
+    # Header — wsa:Action + wsa:MessageID. A real production envelope
+    # would also include wsa:To and wsman:ResourceURI; we leave those for
+    # a later spec-pinning pass once a real WEC reports any issue.
+    header = ET.SubElement(envelope, f"{{{NS_SOAP12}}}Header")
+    action = ET.SubElement(header, f"{{{NS_ADDRESSING}}}Action")
+    action.text = WS_EVENTING_ACTION
+    msgid = ET.SubElement(header, f"{{{NS_ADDRESSING}}}MessageID")
+    msgid.text = message_id
+
+    # Body — <Events> wrapper carrying one <Event> per input. The
+    # wrapper namespace is the WS-Eventing one; the inner <Event>
+    # elements switch to the Windows EventLog namespace so the records
+    # are byte-identical to what Windows itself would emit.
+    body = ET.SubElement(envelope, f"{{{NS_SOAP12}}}Body")
+    events_wrap = ET.SubElement(body, f"{{{NS_EVENTING}}}Events")
+    for ev in events:
+        _build_event_xml(events_wrap, ev)
+
+    return ET.tostring(
+        envelope, encoding="utf-8", xml_declaration=True,
+    ).decode("utf-8")
+
+
+def _build_event_xml(parent: ET.Element, ev: dict[str, Any]) -> None:
+    """Append a single Windows EventLog ``<Event>`` to *parent*.
+
+    Field order inside ``<System>`` follows the canonical Windows
+    EventLog XML schema so downstream consumers that parse positionally
+    (rare but not unheard of) still see the expected structure.
+    ``xml.etree`` handles XML-special character escaping on element
+    text and attribute values, so caller-supplied data with literal
+    ``<``, ``>`` or ``&`` round-trips safely.
+    """
+    e = ET.SubElement(parent, f"{{{NS_WIN_EVENT}}}Event")
+
+    system = ET.SubElement(e, f"{{{NS_WIN_EVENT}}}System")
+
+    provider = ET.SubElement(system, f"{{{NS_WIN_EVENT}}}Provider")
+    provider.set("Name", str(ev.get("provider", "")))
+
+    eid = ET.SubElement(system, f"{{{NS_WIN_EVENT}}}EventID")
+    eid.text = str(ev.get("event_id", ""))
+
+    level = ET.SubElement(system, f"{{{NS_WIN_EVENT}}}Level")
+    level.text = _LEVEL_CODES.get(str(ev.get("level", "Information")), "4")
+
+    time_created = ET.SubElement(system, f"{{{NS_WIN_EVENT}}}TimeCreated")
+    time_created.set("SystemTime", str(ev.get("time_created", "")))
+
+    record_id = ET.SubElement(system, f"{{{NS_WIN_EVENT}}}EventRecordID")
+    record_id.text = str(ev.get("event_record_id", 0))
+
+    channel = ET.SubElement(system, f"{{{NS_WIN_EVENT}}}Channel")
+    channel.text = str(ev.get("channel", ""))
+
+    computer = ET.SubElement(system, f"{{{NS_WIN_EVENT}}}Computer")
+    computer.text = str(ev.get("computer", ""))
+
+    data = ev.get("data") or {}
+    if data:
+        event_data = ET.SubElement(e, f"{{{NS_WIN_EVENT}}}EventData")
+        for name, value in data.items():
+            d = ET.SubElement(event_data, f"{{{NS_WIN_EVENT}}}Data")
+            d.set("Name", str(name))
+            d.text = str(value)
+
+
 __all__ = [
     "CHANNELS",
     "CHANNEL_SECURITY",
@@ -640,4 +780,12 @@ __all__ = [
     "CHANNEL_POWERSHELL",
     "CHANNEL_SYSMON",
     "EVENT_CATALOG",
+    "NS_SOAP12",
+    "NS_ADDRESSING",
+    "NS_WSMAN",
+    "NS_EVENTING",
+    "NS_WIN_EVENT",
+    "WS_EVENTING_ACTION",
+    "SOAP_CONTENT_TYPE",
+    "build_envelope",
 ]
