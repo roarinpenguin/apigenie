@@ -42,14 +42,18 @@ def _capturing_client(status: int = 202, body: bytes = b""):
 
 def _binding_config(**overrides) -> dict:
     """Default binding config with mTLS off (so the loop just uses the
-    mock transport unmodified)."""
+    mock transport unmodified) and no Basic credentials configured (so
+    these wire-shape tests don't engage the auth path — covered
+    separately in tests/test_wef_auth.py). The 'no auth configured'
+    state is signalled by leaving both basic_username and
+    basic_password_enc empty; tests that need real auth set both."""
     base = {
         "target_host": "wec.lab.example.com",
         "target_port": 5986,
         "target_path": "/wsman/SubscriptionManager/WEC",
         "auth_method": "basic",
-        "basic_username": "wec-svc",
-        "basic_password_enc": None,  # tests that need real auth set this
+        "basic_username": None,
+        "basic_password_enc": None,
         "tls_verify": True,
         "ca_bundle_path": None,
         "rate_per_min": 60,

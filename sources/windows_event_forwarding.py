@@ -47,9 +47,14 @@ Operators reshape this distribution through the Event Mix admin UI.
 """
 from __future__ import annotations
 
+import base64
 import uuid
 import xml.etree.ElementTree as ET
 from typing import Any
+
+import httpx
+
+from crypto import try_decrypt
 
 
 # ── Channels ──────────────────────────────────────────────────────────
@@ -771,6 +776,333 @@ def _build_event_xml(parent: ET.Element, ev: dict[str, Any]) -> None:
             d.text = str(value)
 
 
+# ── Binding configuration ─────────────────────────────────────────────
+
+class BindingConfigError(Exception):
+    """Raised when a WEF binding cannot be brought online.
+
+    Examples: ``auth_method`` outside the supported set, Basic auth
+    declared with a username but no password, mTLS declared with no
+    resolvable client cert bundle.
+
+    The admin UI catches this exception around binding-card save and
+    surfaces the message inline; the push loop catches it around emitter
+    construction and marks the binding as ``error`` in the Activity
+    panel without taking the whole loop down.
+    """
+
+
+# The closed set of supported auth methods. Kerberos / Negotiate are
+# explicitly out per the v5.2 spec (§"Non-goals").
+_VALID_AUTH_METHODS: set[str] = {"basic", "client_cert"}
+
+
+def normalize_binding_config(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of *cfg* with fields not relevant to the chosen
+    ``auth_method`` cleared.
+
+    Called from the admin save handler so a binding that was switched
+    from mTLS to Basic (or vice-versa) doesn't carry stale secrets the
+    operator can no longer audit through the UI. Idempotent.
+    """
+    out = dict(cfg)
+    method = out.get("auth_method")
+    if method == "client_cert":
+        # Switched to mTLS — drop any leftover Basic credentials.
+        out["basic_username"] = None
+        out["basic_password_enc"] = None
+    elif method == "basic":
+        # Switched to Basic — clear the per-binding cert flag so the
+        # UI no longer claims a cert is in play. The cert bundle on disk
+        # is removed separately by ``delete_cert_bundle`` from the admin
+        # handler (step 4).
+        out["cert_uploaded"] = False
+    return out
+
+
+def validate_binding_config(cfg: dict[str, Any]) -> list[str]:
+    """Return a list of human-readable error strings describing *cfg*.
+
+    Soft check used by the admin UI to flag misconfigurations inline
+    before the binding goes live. Distinct from the hard
+    ``BindingConfigError`` raised by ``WEFEmitter.__init__`` — this
+    function never raises.
+    """
+    errors: list[str] = []
+    method = cfg.get("auth_method")
+    if method not in _VALID_AUTH_METHODS:
+        errors.append(
+            f"auth_method must be one of {sorted(_VALID_AUTH_METHODS)}; "
+            f"got {method!r}"
+        )
+        return errors  # further checks are method-specific
+
+    if method == "basic":
+        username = (cfg.get("basic_username") or "").strip()
+        if not username:
+            errors.append(
+                "basic_username is required when auth_method='basic'"
+            )
+
+    if not (cfg.get("target_host") or "").strip():
+        errors.append("target_host is required")
+
+    try:
+        port = int(cfg.get("target_port", 0))
+        if not (1 <= port <= 65535):
+            raise ValueError
+    except (TypeError, ValueError):
+        errors.append("target_port must be an integer in 1..65535")
+
+    return errors
+
+
+# ── Per-binding cert resolution (full implementation in step 4) ──────
+
+def resolve_cert_files(binding_id: str | None,
+                       server_pem_fallback: Any = None,
+                       ) -> tuple[Any, Any] | None:
+    """Return ``(cert_path, key_path)`` for *binding_id*'s mTLS bundle.
+
+    Step 3 ships a STUB that always returns ``None``: the full
+    implementation (per-binding encrypted PEM under
+    ``data/source_certs/wef/<binding_id>.pem.enc`` with fallback to
+    ``data/tls/server.pem``) lands in step 4. WEFEmitter calls this
+    function indirectly via the module attribute so test_wef_auth can
+    monkeypatch it; the stub keeps the public symbol stable for that
+    monkeypatch to work today.
+    """
+    return None
+
+
+# ── Push emitter ──────────────────────────────────────────────────────
+
+def _stub_events_for_push(n: int) -> list[dict[str, Any]]:
+    """Return *n* minimal valid events suitable for ``build_envelope``.
+
+    Used by ``WEFEmitter.push_batch(event_count=N)`` until step 5 wires
+    in the catalog-aware ``generate_events()`` with mix overrides and
+    seed determinism. The current implementation is *just* good enough
+    for the wire-shape tests in tests/test_wef_push_loop.py to pass —
+    each event picks the first Sysmon process-create catalog entry and
+    fills in static profile-like fields.
+    """
+    base_entry = next(
+        (e for e in EVENT_CATALOG
+         if e["channel"] == CHANNEL_SYSMON and e["event_id"] == 1),
+        EVENT_CATALOG[0],
+    )
+    return [
+        {
+            "event_id": base_entry["event_id"],
+            "channel": base_entry["channel"],
+            "provider": base_entry["provider"],
+            "computer": "DC01.lab.local",
+            "level": base_entry["level"],
+            "time_created": "2026-06-13T10:00:00.000Z",
+            "event_record_id": i + 1,
+            "data": {"Image": "C:\\Windows\\System32\\cmd.exe"},
+        }
+        for i in range(int(n))
+    ]
+
+
+class WEFEmitter:
+    """Outbound WEF push emitter for a single ``source_binding`` row.
+
+    One instance per active WEF binding, owned by the scheduler. The
+    emitter is push-only: it does NOT open a listener port. Each
+    ``push_batch()`` call builds a SOAP / WS-Eventing envelope and POSTs
+    it to the configured WEC endpoint with the binding-specific auth
+    material attached.
+
+    The constructor performs the *hard* configuration checks
+    (raises :class:`BindingConfigError` on a clearly broken binding) so
+    a misconfigured row can't sit silently in the scheduler. mTLS cert
+    resolution is deferred to first send: the binding may legitimately
+    be saved before the operator uploads the PEM bundle, and we don't
+    want the UI save to fail in that intermediate state.
+
+    Parameters
+    ----------
+    binding_config
+        The JSON blob stored in ``source_bindings.config`` for this
+        binding. See docs/ROADMAP_2026-06-12.md §"Storage" for the
+        schema.
+    http_client
+        Optional pre-built :class:`httpx.Client`. Tests inject a
+        ``MockTransport``-backed client here so they can capture the
+        outbound request shape without standing up a TLS endpoint.
+        When omitted, a fresh ``httpx.Client()`` is created lazily on
+        first send.
+    binding_id
+        The DB id of the binding row. Required for mTLS so
+        :func:`resolve_cert_files` can find the per-binding cert
+        bundle.
+    """
+
+    def __init__(self,
+                 binding_config: dict[str, Any],
+                 http_client: httpx.Client | None = None,
+                 binding_id: str | None = None) -> None:
+        self._cfg: dict[str, Any] = dict(binding_config)
+        self._binding_id = binding_id
+        self._http = http_client
+        self._owns_http = http_client is None  # we'd close it on stop
+        self._stopped = False
+
+        method = self._cfg.get("auth_method")
+        if method not in _VALID_AUTH_METHODS:
+            raise BindingConfigError(
+                f"WEF binding: unsupported auth_method {method!r}; "
+                f"must be one of {sorted(_VALID_AUTH_METHODS)}"
+            )
+
+        if method == "basic":
+            username = (self._cfg.get("basic_username") or "").strip()
+            password_enc = (self._cfg.get("basic_password_enc") or "")
+            if username and not password_enc:
+                raise BindingConfigError(
+                    "WEF binding: auth_method='basic' with "
+                    "basic_username set requires basic_password_enc to "
+                    "be non-empty"
+                )
+        # client_cert: cert resolution deferred to push_batch so the UI
+        # can save the binding before the operator uploads the PEM.
+
+    # ── Public API ────────────────────────────────────────────────
+
+    def push_batch(self,
+                   events: list[dict[str, Any]] | None = None,
+                   event_count: int | None = None,
+                   ) -> dict[str, Any]:
+        """POST one or more SOAP envelopes to the configured WEC.
+
+        Either *events* (explicit list, e.g. a historical-scenario
+        backlog drain) or *event_count* (synthetic generation) must be
+        provided. The full list is split into envelopes sized by the
+        binding's ``batch_size``; each envelope becomes one HTTP POST.
+
+        Returns a dict ``{sent: int, status_code: int|None, ok: bool}``.
+        ``ok`` is True iff every POST returned 2xx.
+        """
+        if self._stopped:
+            raise RuntimeError(
+                "WEFEmitter is stopped; create a new instance to resume"
+            )
+
+        if events is not None:
+            ev_list = list(events)
+        elif event_count is not None:
+            ev_list = _stub_events_for_push(int(event_count))
+        else:
+            ev_list = []
+
+        if not ev_list:
+            return {"sent": 0, "status_code": None, "ok": True}
+
+        url = self._build_url()
+        headers, post_kwargs = self._build_request_kwargs()
+
+        client = self._client()
+
+        batch_size = int(self._cfg.get("batch_size") or 1)
+        if batch_size <= 0:
+            batch_size = 1
+
+        sent = 0
+        last_status: int | None = None
+        all_ok = True
+
+        for i in range(0, len(ev_list), batch_size):
+            batch = ev_list[i:i + batch_size]
+            body = build_envelope(batch)
+            resp = client.post(
+                url, content=body, headers=headers, **post_kwargs,
+            )
+            last_status = resp.status_code
+            if not (200 <= resp.status_code < 300):
+                all_ok = False
+            sent += len(batch)
+
+        return {"sent": sent, "status_code": last_status, "ok": all_ok}
+
+    def stop(self) -> None:
+        """Mark the emitter stopped. Idempotent.
+
+        The scheduler calls this on binding delete / app shutdown.
+        Subsequent ``push_batch`` calls raise ``RuntimeError`` so a
+        scheduler bug that keeps the loop alive past delete surfaces
+        loudly instead of silently re-emitting.
+        """
+        if self._stopped:
+            return
+        self._stopped = True
+        if self._owns_http and self._http is not None:
+            try:
+                self._http.close()
+            except Exception:
+                # Close-during-shutdown errors are non-fatal — the
+                # scheduler is about to drop this instance anyway.
+                pass
+
+    # ── Internals ─────────────────────────────────────────────────
+
+    def _client(self) -> httpx.Client:
+        if self._http is None:
+            self._http = httpx.Client()
+        return self._http
+
+    def _build_url(self) -> str:
+        host = (self._cfg.get("target_host") or "").strip()
+        port = int(self._cfg.get("target_port") or 5986)
+        path = self._cfg.get("target_path") or "/wsman/SubscriptionManager/WEC"
+        # Per the v5.2 spec: port 5985 is the plain-HTTP WinRM default;
+        # everything else (5986 + custom) is HTTPS.
+        scheme = "http" if port == 5985 else "https"
+        return f"{scheme}://{host}:{port}{path}"
+
+    def _build_request_kwargs(self) -> tuple[dict[str, str],
+                                              dict[str, Any]]:
+        """Return ``(headers, post_kwargs)`` for the outbound POST.
+
+        Headers always contain Content-Type. Authorization is added
+        only for Basic auth with both username + password configured.
+        ``post_kwargs`` carries the ``cert=(certfile, keyfile)`` tuple
+        for mTLS so httpx attaches the client cert on the TLS handshake.
+        """
+        headers: dict[str, str] = {"Content-Type": SOAP_CONTENT_TYPE}
+        post_kwargs: dict[str, Any] = {}
+
+        method = self._cfg.get("auth_method")
+        if method == "basic":
+            username = (self._cfg.get("basic_username") or "").strip()
+            password_enc = self._cfg.get("basic_password_enc") or ""
+            if username and password_enc:
+                password = try_decrypt(password_enc)
+                token = base64.b64encode(
+                    f"{username}:{password}".encode("utf-8"),
+                ).decode("ascii")
+                headers["Authorization"] = f"Basic {token}"
+        elif method == "client_cert":
+            # Late-binding: pick up whatever resolve_cert_files()
+            # returns NOW (so a test monkeypatch on the module attribute
+            # is honoured even if WEFEmitter was constructed earlier).
+            resolved = resolve_cert_files(
+                self._binding_id, server_pem_fallback=None,
+            )
+            if resolved is None:
+                raise BindingConfigError(
+                    f"WEF binding: auth_method='client_cert' but no "
+                    f"cert bundle resolvable for binding_id="
+                    f"{self._binding_id!r}"
+                )
+            cert_path, key_path = resolved
+            post_kwargs["cert"] = (str(cert_path), str(key_path))
+
+        return headers, post_kwargs
+
+
 __all__ = [
     "CHANNELS",
     "CHANNEL_SECURITY",
@@ -788,4 +1120,9 @@ __all__ = [
     "WS_EVENTING_ACTION",
     "SOAP_CONTENT_TYPE",
     "build_envelope",
+    "BindingConfigError",
+    "normalize_binding_config",
+    "validate_binding_config",
+    "resolve_cert_files",
+    "WEFEmitter",
 ]
