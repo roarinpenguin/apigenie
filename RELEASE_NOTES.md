@@ -2,6 +2,272 @@
 
 ---
 
+## v5.2 — *Windows Event Forwarding as a first-class push source*
+
+> *Released June 2026.* One body of work in this release: **a complete
+> outbound WEF / WEC push surface** that turns ApiGenie into a fleet
+> of fake Windows Domain Controllers, each pushing real SOAP /
+> WS-Eventing envelopes at a real Windows Event Collector with real
+> auth (Basic over TLS, or mTLS with a Fernet-encrypted client cert
+> bundle on disk). Six phases, one architecture, one new admin tab.
+>
+> The previous releases let operators *pull* from 16 HTTP APIs and
+> *push* to 16 Log Push destinations. v5.2 closes the matrix on the
+> Windows side: the typical "DC pushes Security 4624 / 4625 / 4768 /
+> Sysmon / PowerShell to the SIEM via a WEF subscription" demo path
+> is now native, profile-aware, RBAC-gated, and visible in a Recent
+> Activity feed alongside the alert-push feed.
+
+### At a glance
+
+- **A new RBAC category — `WEF Bindings`.** Five permissions
+  (`view` / `create` / `modify` / `delete` / `manage`) gate every
+  /admin/api/wef/* endpoint. Default entitlements grant `view` to
+  everyone authenticated, `create`/`modify`/`delete` to operators,
+  `manage` to admins.
+- **Per-binding storage with encryption at rest.** Each binding row
+  carries the target WEC `host` + `port` + `path`, the auth method
+  (`basic` or `client_cert`), and a `status` block (`last_push_at` /
+  `last_status_code` / `last_error` / `sent_total`). Basic-auth
+  passwords are Fernet-encrypted using the v5.1 key chain
+  (`APIGENIE_SECRET_KEY` or `data/secret.key`). mTLS client-cert PEM
+  bundles ride a parallel per-source storage path
+  (`data/source_certs/wef/<binding-id>.pem.enc`) decrypted to a
+  short-lived temp file only for the duration of an OpenSSL TLS
+  handshake.
+- **Async push runner integrated with the FastAPI lifespan.** A
+  module-level singleton (`wef_runner.WEFRunner`) starts on
+  application startup and stops on shutdown. The supervisor task
+  reconciles the enabled set every 5 s; per-binding push tasks pace
+  themselves by `rate_per_min` + `jitter_pct`. Error isolation is
+  per-binding: a broken WEC can never starve another binding or
+  take down the supervisor.
+- **Catalog-aware event generation across six channels.** The
+  built-in `EVENT_CATALOG` covers ~200 of the most security-relevant
+  Event IDs across Security / System / Directory Service / DNS
+  Server / Windows-PowerShell-Operational / Microsoft-Windows-Sysmon
+  Operational. Every catalog entry declares `data_fields` so the
+  generator can fill `TargetUserName` / `WorkstationName` /
+  `IpAddress` / `Image` etc. with deterministic values the SIEM-side
+  detection rules correlate on.
+- **Profile-driven substitution.** When a binding references a log
+  profile (optional, set in the WEF modal's new Log profile
+  dropdown), the catalog data fields draw from the profile's
+  user / machine pools instead of synthetic placeholders. The same
+  user that shows up in your Okta / CloudTrail / m365 pulls now
+  shows up in WEF 4624 / 4625 events — cross-source correlation
+  works out of the box.
+- **Per-binding & cross-binding push history.** A new in-memory ring
+  (50 most recent attempts per binding + a `_global` deque) feeds a
+  Recent activity card on the WEF tab, identical to the alert-push
+  activity feed. Every `push_once` outcome (success, non-2xx, push
+  exception, factory error) lands in both rings; a `clear_history`
+  endpoint and a per-test fixture keep state hygiene tight.
+- **Admin UI tab + Bindings editor modal.** New `WEF Bindings` tab
+  with a binding list, status badges, Start/Stop/Test/Edit/Delete
+  actions, and the Recent activity card. The editor modal hosts
+  `target_host` / `target_port` / `target_path`, an auth-method
+  radio (Basic / mTLS) that swaps in the relevant sub-form, the
+  Channels multi-select, the new Log profile dropdown, and the
+  rate/batch/jitter row. Cert upload (mTLS) is a per-binding
+  POST `/cert` with PEM base64 in the body — never touches the
+  primary binding JSON.
+
+### What's new in detail
+
+#### Phase A — Storage (`a81cd22`)
+
+A new `wef_bindings.py` module modelled after `webhooks.py` /
+`alert_push.py`:
+
+- `create_binding`, `get_binding`, `list_bindings`, `update_binding`,
+  `delete_binding`, `set_enabled`, `record_push_result`.
+- Owner-scoped visibility (`private` / `public`) using the existing
+  `_can_see_obj` / `_can_write_obj` helpers.
+- A status block populated by the runner so the UI sees the latest
+  throughput / error without a second store.
+- A new `Category.WEF_BINDINGS` × 5 permissions added to the
+  `accounts` RBAC tables, plus the default entitlement grants.
+
+JSON on-disk at `data/wef_bindings.json`. Basic-auth passwords stored
+as `basic_password_enc` (Fernet ciphertext) so a leaked snapshot
+yields nothing usable.
+
+#### Phase B — Push runner + FastAPI lifespan (`57493ca`)
+
+`wef_runner.py` adds the bridge between storage and emitter:
+
+- Sync primitives — `push_once(bid)`, `reconcile_sync()`,
+  `stop_all()` — are the deterministic surface tests exercise.
+- Async lifecycle — `start()` / `stop()` — wraps the sync
+  primitives in an asyncio supervisor + per-binding push tasks
+  paced by `rate_per_min` + `jitter_pct`.
+- Every exception is caught at the per-binding boundary, recorded
+  via `wef_bindings.record_push_result(error=str(exc))`, and the
+  loop continues. The supervisor never dies; one broken WEC can't
+  starve other bindings.
+
+The FastAPI lifespan handler in `app.py` calls
+`await get_runner().start()` on startup and
+`await get_runner().stop()` on shutdown, idempotent both ways.
+
+#### Phase C — Admin REST API + RBAC (`1265d5f`)
+
+Eight endpoints under `/admin/api/wef/bindings`:
+
+| Verb | Path | Permission |
+|------|------|------------|
+| GET  | `/admin/api/wef/bindings`            | session only |
+| POST | `/admin/api/wef/bindings`            | `WEF_BINDINGS.create` |
+| GET  | `/admin/api/wef/bindings/{bid}`      | session + `_can_see_obj` |
+| PUT  | `/admin/api/wef/bindings/{bid}`      | `WEF_BINDINGS.modify` |
+| DELETE | `/admin/api/wef/bindings/{bid}`    | `WEF_BINDINGS.delete` |
+| POST | `/admin/api/wef/bindings/{bid}/cert` | `WEF_BINDINGS.manage` |
+| PUT  | `/admin/api/wef/bindings/{bid}/enabled` | `WEF_BINDINGS.manage` |
+| POST | `/admin/api/wef/bindings/{bid}/test` | `WEF_BINDINGS.manage` |
+
+Permission requirements live in `_perm_requirement(path, method)`
+alongside the Webhooks gates. The `/cert` endpoint accepts a JSON
+body with `pem` base64-encoded; the bundle is validated, encrypted,
+and persisted via the source's `save_cert_bundle` so the binding
+JSON never carries any PEM bytes.
+
+#### Phase D — Admin UI tab (`a2e5632`)
+
+A new `WEF Bindings` tab in the admin shell with:
+
+- A binding list card. Per row: name, target `host:port`, channel
+  count, current rate, auth-method badge (Basic / mTLS), enabled
+  badge, latest status pill ("never pushed" / "200 · 1234 sent · 12s
+  ago" / "503 · last error: …"), and four action buttons
+  (Test / Start / Edit / Delete).
+- An editor modal with: name, host/port/path, TLS verify checkbox,
+  auth-method radio that swaps Basic ↔ mTLS sub-forms, password
+  field (Fernet-encrypted at rest, never re-sent on GET), cert file
+  picker with a "✓ Certificate already uploaded" indicator on
+  re-edit, Channels multi-select, and a rate / batch / jitter row.
+- `tests/test_admin_js_syntax.py` regression — parses the embedded
+  JS via Esprima at test time so a malformed handler can't ship
+  unnoticed.
+
+#### Phase E — Profile-driven data substitution (`8566678`)
+
+Closes the explicit `# Real profile-driven substitution ... out of
+scope for v5.2` TODO in `sources/windows_event_forwarding.py`. Four
+layers, one direction:
+
+- A new `_FIELD_RECIPES` table maps each catalog `data_field`
+  (`TargetUserName`, `SubjectUserName`, `AccountName`, `MemberName`,
+  `PrincipalUserName`, `OldTargetUserName`, `NewTargetUserName`,
+  `TargetDomainName`, `SubjectDomainName`, `WorkstationName`,
+  `Workstation`, `ClientName`, `IpAddress`, `ClientAddress`,
+  `TargetServerName`) to `(picker, attr)` where `picker ∈
+  {user, machine}` selects the `ProfileContext` pool and `attr`
+  is the entity dict key.
+- `_materialize_event(entry, record_id, rng, ctx=None)` grows an
+  optional `ctx` kwarg. When supplied and a recipe matches,
+  `ctx.pick_user()` / `pick_machine()` returns an entity or `None`
+  (noise) and we read the recipe attribute. Missing recipe, noise
+  pick, missing attribute, unset `profile_id` all fall back to the
+  pre-F placeholder. Back-compat: omitting `ctx` produces
+  identical bytes to the old materializer.
+- `generate_events(count, ..., ctx=None)` threads `ctx` through to
+  the materializer.
+- `WEFEmitter.push_batch` resolves the binding's
+  `config.profile_id` into a `ProfileContext` at emit time (not
+  `__init__`) so a binding survives an out-of-band profile delete
+  without entering an error state. A new
+  `profiles.context_for_profile_id(profile_id, source='wef',
+  ratio=100)` helper short-circuits the source→profile binding
+  table walk that `get_context` does, because WEF stores its
+  profile reference inline on the binding row.
+- Admin UI: a new Log profile (optional) form-row in the WEF modal
+  with a dropdown defaulting to "— None — placeholder values". A
+  saved `profile_id` that no longer matches any cached profile
+  (deleted out of band) surfaces as `<id> (missing — falls back to
+  placeholder)` so the operator knows the binding is now in
+  placeholder fallback mode rather than silently switching back to
+  None.
+
+#### Phase F — Push history ring buffer + activity feed (`e1bad2a`)
+
+A bounded in-memory ring per binding + a synthetic `_global` deque
+for the cross-binding feed, modelled 1:1 on
+`alert_push._history` so the two egress surfaces (alerts / WEF)
+feel like one product:
+
+- `wef_runner.record_push(binding_id, *, ok, sent, status_code,
+  error, binding_name)` writes to both per-binding and `_global`
+  rings (`deque(maxlen=50)`).
+- `wef_runner.get_history(binding_id='_global', *, limit=50)`
+  returns newest-first.
+- `wef_runner.clear_history(binding_id=None)` wipes everything
+  (test fixture) or just one binding's ring while pruning matching
+  entries from `_global`.
+- `push_once` writes to `record_push` alongside the existing
+  `wef_bindings.record_push_result` write, at every recorded
+  outcome (success, non-2xx, push exception, factory
+  `BindingConfigError`, generic factory exception). The "binding
+  not found" early-return stays history-free.
+- Two new GETs: `/admin/api/wef/history` (cross-binding feed,
+  session-only auth like `/admin/api/alerts/history`) and
+  `/admin/api/wef/bindings/{bid}/history` (per-binding, adds the
+  standard `_can_see_obj` ownership gate). Both clamp the `limit`
+  query parameter to `_HISTORY_MAX` so a hostile client can't ask
+  for 10 000 rows.
+- New Recent activity card under the WEF Bindings list with a
+  Refresh button. `loadWefBindings` now triggers `loadWefHistory`
+  so a tab open / refresh / Test-push click refreshes both
+  surfaces in one round-trip.
+
+### Test plan
+
+- **+78 new regression tests across the six phases.** Total WEF
+  suite: **146 passing in ~3 s** (storage / runner / cert_storage /
+  auth / push_loop / envelope / catalog / event_mix /
+  profile_integration / history / admin_api / admin_js_syntax).
+- **Zero regression in the v5.1 surface.** The 31 pre-existing
+  failures in `test_otel_*` and `test_rbac_phase3_avatars` (missing
+  optional `protobuf` / `Pillow` deps) persist as before — they
+  pre-date this branch and are unrelated to WEF.
+
+### Upgrade notes
+
+- **No DB migration.** WEF bindings live in their own JSON file
+  (`data/wef_bindings.json`), created lazily on first write. The
+  RBAC tables auto-back-fill the new `Category.WEF_BINDINGS` row
+  on first `accounts._ensure_schema()` run.
+- **No new env vars.** The Fernet key chain
+  (`APIGENIE_SECRET_KEY` / `data/secret.key`) introduced in v5.1
+  protects both Basic-auth passwords and the per-binding client
+  cert bundles. No additional configuration needed.
+- **No new volume mount.** Binding rows piggyback on the existing
+  `./data/` mount; per-binding cert bundles land under
+  `./data/source_certs/wef/`, auto-created on first upload.
+- **First-time entitlement check.** After upgrading, the admin
+  shell exposes a new `WEF Bindings` tab — visible to every user
+  with at least `view` on the new category. Operators who should
+  also be able to create / start / stop bindings need the
+  `WEF Bindings: manage` permission added to their entitlement.
+  Built-in admins inherit it automatically.
+
+### What's next
+
+- **v5.3 — Multi-factor authentication (TOTP).** Bumped from v5.2
+  to v5.3 to make room for the WEF body of work. Same plan, same
+  rollout phases (mandatory for admin from day one, optional →
+  mandatory for users across the two patch releases). Reuses the
+  v5.1 Phase B Fernet key chain to encrypt MFA seeds. Full plan
+  in [`docs/ROADMAP_2026-06-12.md`](docs/ROADMAP_2026-06-12.md).
+- **Unified egress activity feed.** Phase F's history entry shape
+  matches `alert_push._history`'s entry shape on purpose. A
+  follow-up will merge the two feeds into a single "Recent egress
+  activity" pane on the home dashboard, tagged by source label
+  (`wef` / `alert_push` / `webhook`) so the operator can see every
+  outbound from a single page.
+
+---
+
 ## v5.1 — *Security hardening + time-shifted attack stories*
 
 > *Released June 2026.* Three bodies of work land in one release, all

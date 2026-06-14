@@ -59,6 +59,9 @@ Actively send generated logs to external destinations (S1 DPM/Observo, S1 AI SIE
 | 14 | **Corelight / Zeek NDR** | conn.log, dns.log, http.log, ssl.log, files.log, notice.log, weird.log, x509.log, smtp.log, dpd.log |
 | 15 | **CyberArk EPM / PAM** | Credential checkout/checkin, privileged sessions, policy violations, password changes, safe operations, admin audit |
 | 16 | **Stamus Networks SSP (Suricata)** | IDS/IPS alerts, flow, DNS, HTTP, TLS, fileinfo, anomaly, stats (Suricata EVE JSON) |
+| 17 | **Windows Event Forwarding (WEF / WEC)** | SOAP / WS-Eventing push to a real Windows Event Collector. ~200 Event IDs across Security · System · Directory Service · DNS Server · Windows-PowerShell-Operational · Microsoft-Windows-Sysmon Operational. Per-binding Basic-over-TLS or mTLS auth (Fernet-encrypted PEM bundle on disk). Profile-aware substitution for `TargetUserName` / `WorkstationName` / `IpAddress` / … so WEF events correlate with the rest of the simulated environment. |
+
+> **Windows Event Forwarding (#17)** has a dedicated **WEF Bindings** tab in the Admin UI (not under Log Push). Each binding is a background async push loop with its own rate / batch / jitter / channels and a Recent activity card showing the last 50 push attempts. See the v5.2 entry in [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the full architecture.
 
 ### Streaming sources
 
