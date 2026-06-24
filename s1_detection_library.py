@@ -297,7 +297,8 @@ def _api_put(path: str, body: dict[str, Any]) -> dict[str, Any]:
         return {"error": "S1 console not configured"}
 
     url = f"{base}{path}"
-    data = json.dumps(body).encode("utf-8")
+    payload = json.dumps(body)
+    data = payload.encode("utf-8")
     req = urllib.request.Request(url, data=data, method="PUT", headers={
         "Authorization": f"ApiToken {token}",
         "Content-Type": "application/json",
@@ -307,9 +308,11 @@ def _api_put(path: str, body: dict[str, Any]) -> dict[str, Any]:
         with urllib.request.urlopen(req, timeout=15) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")[:500]
-        log.warning("S1 API PUT error %s %s: %s", e.code, path, body)
-        return {"error": f"HTTP {e.code}", "detail": body}
+        err_body = e.read().decode("utf-8", errors="replace")[:500]
+        # Echo the request body too — S1 5xx without it is undebuggable.
+        log.warning("S1 API PUT error %s %s req=%s resp=%s",
+                    e.code, path, payload[:500], err_body)
+        return {"error": f"HTTP {e.code}", "detail": err_body}
     except Exception as e:
         return {"error": str(e)}
 
