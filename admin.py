@@ -1917,8 +1917,10 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
           console (and uses <b>your</b> API token) instead of the global one.
           <b style="color:#e0aaff">Stored only in this browser</b> (localStorage)
           and sent on every request as <code>X-S1-Console-URL</code> /
-          <code>X-S1-Console-Token</code> headers — the server never writes it
-          to disk. Clearing your browser data also clears the override.
+          <code>X-S1-Console-Token</code> headers (plus the optional
+          <code>X-S1-Account-ID</code> / <code>X-S1-Site-ID</code> below)
+          — the server never writes it to disk. Clearing your browser data
+          also clears the override.
         </p>
         <div class="row" style="gap:10px;flex-wrap:wrap;margin-bottom:8px">
           <input id="acct-s1-url" type="text" placeholder="https://yourtenant.sentinelone.net"
@@ -1926,6 +1928,18 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
           <input id="acct-s1-token" type="password" placeholder="API token (paste to set/replace)"
                  style="flex:2;min-width:260px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.3);border-radius:8px;padding:7px 12px;color:var(--mist);font-family:inherit;font-size:.88rem;outline:none"/>
         </div>
+        <div class="row" style="gap:10px;flex-wrap:wrap;margin-bottom:8px">
+          <input id="acct-s1-account-id" type="text" placeholder="Account ID (optional — required for site-scoped tokens)"
+                 style="flex:1;min-width:200px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.3);border-radius:8px;padding:7px 12px;color:var(--mist);font-family:inherit;font-size:.88rem;outline:none"/>
+          <input id="acct-s1-site-id" type="text" placeholder="Site ID (optional — only for site-scoped tokens)"
+                 style="flex:1;min-width:200px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.3);border-radius:8px;padding:7px 12px;color:var(--mist);font-family:inherit;font-size:.88rem;outline:none"/>
+        </div>
+        <p style="font-size:.7rem;color:rgba(224,170,255,.4);margin:0 0 8px">
+          Site-scoped tokens (format <code>&lt;account_id&gt;:&lt;site_id&gt;</code>)
+          cannot auto-discover via <code>/accounts</code>. Leave blank to let
+          ApiGenie discover the scope via <code>/web/api/v2.1/user</code>; pin
+          explicitly when you want to skip that round-trip.
+        </p>
         <div class="row" style="gap:10px">
           <button class="btn-sm" onclick="saveAccountS1()">Save to this browser</button>
           <button class="btn-sm" onclick="clearAccountS1()" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.3);color:#e0aaff">Forget on this browser</button>
@@ -2151,6 +2165,18 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
             <input id="s1-console-url" type="text" placeholder="https://usea1-purple.sentinelone.net" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/></div>
           <div><label style="font-size:.72rem;color:rgba(224,170,255,.5)">API Token</label>
             <input id="s1-api-token" type="password" placeholder="Service User API Token" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/></div>
+          <div style="display:flex;gap:8px">
+            <div style="flex:1"><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Account ID <span style="color:rgba(224,170,255,.35);font-weight:400">(optional)</span></label>
+              <input id="s1-account-id" type="text" placeholder="Pin to skip /user discovery" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/></div>
+            <div style="flex:1"><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Site ID <span style="color:rgba(224,170,255,.35);font-weight:400">(optional)</span></label>
+              <input id="s1-site-id" type="text" placeholder="Site-scoped tokens only" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/></div>
+          </div>
+          <p style="font-size:.66rem;color:rgba(224,170,255,.4);margin:-2px 0 0">
+            Both fields are optional. Site-scoped tokens (format
+            <code>&lt;account_id&gt;:&lt;site_id&gt;</code>) cannot auto-discover via
+            <code>/web/api/v2.1/accounts</code>; either pin both above or let
+            ApiGenie infer them at first use via <code>/web/api/v2.1/user</code>.
+          </p>
           <div style="display:flex;gap:8px;align-items:center">
             <button class="btn-sm" onclick="saveS1Settings()">Save</button>
             <button class="btn-sm" style="background:rgba(36,0,70,.6);border:1px solid rgba(199,125,255,.2)" onclick="testS1Connection()">Test Connection</button>
@@ -2855,6 +2881,12 @@ async function loadSettings() {
     var sd = await sr.json();
     if (sd.console_url) document.getElementById('s1-console-url').value = sd.console_url;
     if (sd.has_token) document.getElementById('s1-api-token').placeholder = '********** (saved)';
+    // Pinned scope — surfaced verbatim so a site-scoped operator can see /
+    // edit / clear it. Empty values mean "discover via /user at first use".
+    var aidEl = document.getElementById('s1-account-id');
+    var sidEl = document.getElementById('s1-site-id');
+    if (aidEl) aidEl.value = sd.account_id || '';
+    if (sidEl) sidEl.value = sd.site_id || '';
     document.getElementById('s1-status').innerHTML = sd.configured
       ? '<span style="color:#2ecc71">Configured</span>'
       : '<span style="color:rgba(224,170,255,.3)">Not configured</span>';
@@ -2870,9 +2902,19 @@ async function loadSettings() {
 async function saveS1Settings() {
   var url = document.getElementById('s1-console-url').value.trim();
   var token = document.getElementById('s1-api-token').value.trim();
+  var aidEl = document.getElementById('s1-account-id');
+  var sidEl = document.getElementById('s1-site-id');
+  var accountId = aidEl ? aidEl.value.trim() : '';
+  var siteId    = sidEl ? sidEl.value.trim() : '';
   if (!url) { alert('Console URL required'); return; }
   var body = {console_url: url};
   if (token) body.api_token = token;
+  // Always send the scope fields (even when empty) so the operator can
+  // clear a previously pinned value to re-enable auto-discovery. The
+  // server distinguishes "key absent" (don't touch the saved field) from
+  // "key present, empty string" (clear) — see admin api_s1_settings_save.
+  body.account_id = accountId;
+  body.site_id    = siteId;
   try {
     var r = await fetch('/admin/api/s1/settings', {method:'POST', credentials:'same-origin',
       headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
@@ -4547,16 +4589,22 @@ function _acctMsg(id, ok, text) {
 // the global fetch wrapper to stamp X-S1-Console-{URL,Token} on every
 // same-origin request, which the FastAPI middleware then loads into a
 // ContextVar (see app.py + s1_detection_library.set_request_override).
-var S1_LS_URL   = 'apigenie.s1.console_url';
-var S1_LS_TOKEN = 'apigenie.s1.api_token';
+var S1_LS_URL        = 'apigenie.s1.console_url';
+var S1_LS_TOKEN      = 'apigenie.s1.api_token';
+var S1_LS_ACCOUNT_ID = 'apigenie.s1.account_id';
+var S1_LS_SITE_ID    = 'apigenie.s1.site_id';
 
 function _s1GetLocal() {
   try {
     return {
-      url:   localStorage.getItem(S1_LS_URL)   || '',
-      token: localStorage.getItem(S1_LS_TOKEN) || '',
+      url:        localStorage.getItem(S1_LS_URL)        || '',
+      token:      localStorage.getItem(S1_LS_TOKEN)      || '',
+      account_id: localStorage.getItem(S1_LS_ACCOUNT_ID) || '',
+      site_id:    localStorage.getItem(S1_LS_SITE_ID)    || '',
     };
-  } catch (e) { return {url:'', token:''}; }
+  } catch (e) {
+    return {url:'', token:'', account_id:'', site_id:''};
+  }
 }
 
 async function loadAccount() {
@@ -4567,7 +4615,8 @@ async function loadAccount() {
     document.getElementById('acct-username').textContent = d.username || '—';
     document.getElementById('acct-uid').textContent = d.user_id || '—';
     document.getElementById('acct-email').value = d.email || '';
-    // S1 console URL + token come from localStorage now, never from the API.
+    // S1 console URL + token (+ optional scope) come from localStorage now,
+    // never from the API.
     var ls = _s1GetLocal();
     document.getElementById('acct-s1-url').value = ls.url;
     var tokInput = document.getElementById('acct-s1-token');
@@ -4575,6 +4624,10 @@ async function loadAccount() {
     tokInput.placeholder = ls.token
       ? '********** (saved in this browser — paste to replace)'
       : 'API token (paste to set)';
+    var aidEl = document.getElementById('acct-s1-account-id');
+    var sidEl = document.getElementById('acct-s1-site-id');
+    if (aidEl) aidEl.value = ls.account_id;
+    if (sidEl) sidEl.value = ls.site_id;
     document.getElementById('acct-builtin-note').style.display =
       d.is_builtin_admin ? 'block' : 'none';
     // Email + password forms are still server-backed, so they stay disabled
@@ -4585,7 +4638,7 @@ async function loadAccount() {
       .forEach(function(i){
         var n = document.getElementById(i); if (n) n.disabled = disable;
       });
-    ['acct-s1-url','acct-s1-token'].forEach(function(i){
+    ['acct-s1-url','acct-s1-token','acct-s1-account-id','acct-s1-site-id'].forEach(function(i){
       var n = document.getElementById(i); if (n) n.disabled = false;
     });
   } catch(e) {}
@@ -4629,6 +4682,10 @@ function saveAccountS1() {
   // sent to the server through a dedicated endpoint.
   var url = document.getElementById('acct-s1-url').value.trim();
   var tok = document.getElementById('acct-s1-token').value;
+  var aidEl = document.getElementById('acct-s1-account-id');
+  var sidEl = document.getElementById('acct-s1-site-id');
+  var accountId = aidEl ? aidEl.value.trim() : '';
+  var siteId    = sidEl ? sidEl.value.trim() : '';
   if (!url) {
     _acctMsg('acct-s1-msg', false, 'Console URL is required.');
     return;
@@ -4642,6 +4699,18 @@ function saveAccountS1() {
       // Only overwrite the token if the user actually typed something —
       // keeps the "saved in this browser" behaviour when they edit the URL.
       localStorage.setItem(S1_LS_TOKEN, tok);
+    }
+    // Scope hints — always write through, including empty values, so the
+    // operator can clear a previously pinned site by emptying the field.
+    if (accountId) {
+      localStorage.setItem(S1_LS_ACCOUNT_ID, accountId);
+    } else {
+      localStorage.removeItem(S1_LS_ACCOUNT_ID);
+    }
+    if (siteId) {
+      localStorage.setItem(S1_LS_SITE_ID, siteId);
+    } else {
+      localStorage.removeItem(S1_LS_SITE_ID);
     }
     var ls = _s1GetLocal();
     if (!ls.token) {
@@ -4658,10 +4727,12 @@ function saveAccountS1() {
 }
 
 function clearAccountS1() {
-  if (!confirm('Forget your S1 console URL + token on this browser?')) return;
+  if (!confirm('Forget your S1 console URL + token (and pinned scope) on this browser?')) return;
   try {
     localStorage.removeItem(S1_LS_URL);
     localStorage.removeItem(S1_LS_TOKEN);
+    localStorage.removeItem(S1_LS_ACCOUNT_ID);
+    localStorage.removeItem(S1_LS_SITE_ID);
     _acctMsg('acct-s1-msg', true,
       'Forgotten on this browser — falling back to the admin-global S1 settings.');
     loadAccount();
@@ -4694,6 +4765,14 @@ function clearAccountS1() {
           var hdrs = new Headers(init.headers || (input && input.headers) || {});
           if (!hdrs.has('X-S1-Console-URL'))   hdrs.set('X-S1-Console-URL',   ls.url);
           if (!hdrs.has('X-S1-Console-Token')) hdrs.set('X-S1-Console-Token', ls.token);
+          // Optional scope hints — site-scoped tokens carry both, others
+          // skip them and let the server discover via /user.
+          if (ls.account_id && !hdrs.has('X-S1-Account-ID')) {
+            hdrs.set('X-S1-Account-ID', ls.account_id);
+          }
+          if (ls.site_id && !hdrs.has('X-S1-Site-ID')) {
+            hdrs.set('X-S1-Site-ID', ls.site_id);
+          }
           init.headers = hdrs;
         }
       }
@@ -11546,9 +11625,17 @@ async def api_s1_settings_get(ag_session: str | None = Cookie(None)):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     import s1_detection_library as s1
     settings = s1.get_settings()
-    return JSONResponse({"configured": s1.is_configured(),
-                         "console_url": settings.get("console_url", ""),
-                         "has_token": bool(settings.get("api_token"))})
+    return JSONResponse({
+        "configured":  s1.is_configured(),
+        "console_url": settings.get("console_url", ""),
+        "has_token":   bool(settings.get("api_token")),
+        # Pinned scope — surfaced verbatim so the UI can show / edit / clear.
+        # Site-scoped tokens (format ``<account_id>:<site_id>``) cannot
+        # auto-discover via /accounts; pinning both fields here lets the
+        # admin avoid the /user round-trip entirely.
+        "account_id":  settings.get("account_id", ""),
+        "site_id":     settings.get("site_id", ""),
+    })
 
 
 @router.post("/api/s1/settings")
@@ -11560,10 +11647,20 @@ async def api_s1_settings_save(request: Request, ag_session: str | None = Cookie
         body = await request.json()
     except Exception:
         return JSONResponse({"error": "invalid JSON"}, status_code=400)
-    s1.save_settings({
+    update: dict[str, Any] = {
         "console_url": body.get("console_url", "").rstrip("/"),
-        "api_token": body.get("api_token", ""),
-    })
+        "api_token":   body.get("api_token", ""),
+    }
+    # account_id / site_id follow the "absent vs empty" contract: the JS
+    # handler always sends them (possibly empty) so the operator can clear
+    # a pinned value; an external caller omitting the key leaves the saved
+    # field untouched. This prevents an unrelated save (URL-only) from
+    # wiping a previously pinned scope.
+    if "account_id" in body:
+        update["account_id"] = (body.get("account_id") or "").strip()
+    if "site_id" in body:
+        update["site_id"] = (body.get("site_id") or "").strip()
+    s1.save_settings(update)
     return JSONResponse({"ok": True})
 
 

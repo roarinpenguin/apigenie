@@ -200,11 +200,19 @@ async def _portal_role_guard(request: Request, call_next):
     s1_override_token = None
     s1_console_url = request.headers.get("x-s1-console-url") or ""
     s1_console_tok = request.headers.get("x-s1-console-token") or ""
+    # Optional per-request scope override. Site-scoped tokens (format
+    # ``<account_id>:<site_id>``) cannot auto-discover via ``/accounts``;
+    # the browser carries the scope explicitly so downstream queries
+    # target the right tenant without an extra round-trip to /user.
+    s1_account_id = request.headers.get("x-s1-account-id") or ""
+    s1_site_id    = request.headers.get("x-s1-site-id")    or ""
     if s1_console_url and s1_console_tok:
         try:
             import s1_detection_library as _s1lib
             s1_override_token = _s1lib.set_request_override(
-                s1_console_url, s1_console_tok)
+                s1_console_url, s1_console_tok,
+                account_id=s1_account_id, site_id=s1_site_id,
+            )
         except Exception:
             s1_override_token = None
 
