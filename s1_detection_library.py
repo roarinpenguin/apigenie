@@ -427,11 +427,22 @@ def query_rules(source: str | None = None, mitre_tactic: str | None = None,
         query: Free-text search across name, description, query content
         limit: Max rules to return (1-1000)
     """
-    acct = get_account_id()
-    if not acct:
-        return {"error": "Could not determine S1 account ID", "rules": [], "total": 0}
+    # Resolve scope the same way the write path does — a site-scoped
+    # token must filter by siteIds, NOT accountIds. The detection-library
+    # /rules endpoint rejects "higher scope" filters with HTTP 400 /
+    # code 4000010, so passing accountIds here for a site-scoped token
+    # produces the user-visible failure on the S1 Rules tab.
+    scope = _resolve_scope_for_write()
+    if not scope:
+        return {"error": "Could not determine S1 scope (no account/site available)",
+                "rules": [], "total": 0}
+    scope_level, scope_id = scope
 
-    params: dict[str, str] = {"accountIds": acct, "limit": str(limit)}
+    params: dict[str, str] = {"limit": str(limit)}
+    if scope_level == "site":
+        params["siteIds"] = scope_id
+    else:
+        params["accountIds"] = scope_id
 
     if source:
         s1_source = SOURCE_KEY_TO_S1.get(source, source)
@@ -526,14 +537,20 @@ def test_connection() -> dict[str, Any]:
         return {"connected": False, "error": resp["error"]}
     info = resp.get("data", {})
     # Resolve scope FIRST so the rule-count query targets the right
-    # account regardless of whether it was pinned or auto-discovered.
+    # account/site regardless of whether it was pinned or auto-discovered.
+    # Same rationale as query_rules: a site-scoped token must filter by
+    # siteIds; passing accountIds yields HTTP 400 code 4000010.
     acct = get_account_id()
     sid = get_site_id()
     scope = discover_token_scope().get("scope", "")
     rule_count = 0
-    if acct:
-        count_resp = _api_get("/web/api/v2.1/detection-library/rules", {
-            "accountIds": acct, "countOnly": "true"})
+    resolved_for_count = _resolve_scope_for_write()
+    if resolved_for_count:
+        level, sid_for_count = resolved_for_count
+        count_filter = ({"siteIds": sid_for_count} if level == "site"
+                        else {"accountIds": sid_for_count})
+        count_resp = _api_get("/web/api/v2.1/detection-library/rules",
+                              {**count_filter, "countOnly": "true"})
         rule_count = count_resp.get("pagination", {}).get("totalItems", 0)
     return {
         "connected":             True,

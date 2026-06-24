@@ -475,3 +475,74 @@ class TestPlatformRuleScopeAware:
         assert "error" in out
         # The message must reference 'scope' so the operator can act on it.
         assert "scope" in out["error"].lower()
+
+
+# ── query_rules / detection-library reads ────────────────────────────
+
+class TestQueryRulesScopeAware:
+    """The detection-library /rules listing endpoint enforces the same
+    scope discipline as the platform-rule writes: a site-scoped token
+    that filters with ``accountIds=<acct>`` is rejected by S1 with HTTP
+    400 / code 4000010 ('User <uid>:site can not create rule with
+    higher scope <acct>:account'). The fix uses ``siteIds=<site_id>``
+    for site-scoped tokens and keeps ``accountIds=<acct>`` for
+    account/global ones."""
+
+    def test_uses_siteIds_filter_for_site_scoped_token(self, s1, fake_api):
+        routes, calls = fake_api
+        routes["/web/api/v2.1/detection-library/rules"] = (
+            {"data": [{"id": "rule-1", "name": "..."}], "pagination": {"totalItems": 1}})
+        tok = s1.set_request_override(
+            "https://alice.sentinelone.net", "alice-token",
+            account_id="ACCT", site_id="SITE",
+        )
+        try:
+            out = s1.query_rules(limit=5)
+            assert "error" not in out
+            assert out["total"] == 1
+        finally:
+            s1.clear_request_override(tok)
+        gets = [c for c in calls
+                if c[0] == "GET" and c[1] == "/web/api/v2.1/detection-library/rules"]
+        assert len(gets) == 1
+        _, _, params = gets[0]
+        assert params.get("siteIds") == "SITE", (
+            "site-scoped token must filter by siteIds, not accountIds")
+        assert "accountIds" not in params, (
+            "passing accountIds for a site-scoped token triggers HTTP 400 "
+            "code 4000010 'higher scope' on the S1 console")
+
+    def test_uses_accountIds_filter_when_no_site(self, s1, fake_api):
+        """Account-scoped (or global) token: keep the legacy accountIds
+        filter so we don't regress consoles that have always worked."""
+        routes, calls = fake_api
+        routes["/web/api/v2.1/detection-library/rules"] = (
+            {"data": [], "pagination": {"totalItems": 0}})
+        tok = s1.set_request_override(
+            "https://alice.sentinelone.net", "alice-token",
+            account_id="ACCT-ONLY",
+        )
+        try:
+            s1.query_rules(limit=5)
+        finally:
+            s1.clear_request_override(tok)
+        gets = [c for c in calls
+                if c[0] == "GET" and c[1] == "/web/api/v2.1/detection-library/rules"]
+        assert len(gets) == 1
+        _, _, params = gets[0]
+        assert params.get("accountIds") == "ACCT-ONLY"
+        assert "siteIds" not in params
+
+    def test_returns_clear_error_when_no_scope(self, s1, fake_api):
+        """Same error contract as enable_rule when the resolver can't
+        produce any scope."""
+        routes, _ = fake_api
+        routes["/web/api/v2.1/user"] = {"error": "HTTP 401"}
+        routes["/web/api/v2.1/accounts"] = {"data": []}
+        s1.save_settings({"console_url": "https://x.sentinelone.net",
+                          "api_token": "x-token"})
+        out = s1.query_rules(limit=5)
+        assert "error" in out
+        assert "scope" in out["error"].lower()
+        assert out["rules"] == []
+        assert out["total"] == 0
