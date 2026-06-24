@@ -157,3 +157,36 @@ def test_route_subscriptions_content_yields_self_reachable_contentUri():
         assert r2.status_code == 200, (
             f"follow-up GET on the contentUri must succeed; "
             f"path={parsed.path} status={r2.status_code} body={r2.text[:200]}")
+
+
+def test_route_honors_x_forwarded_proto_and_host():
+    """In production apigenie runs behind nginx which terminates TLS
+    and forwards to FastAPI over plain HTTP. Without consulting the
+    X-Forwarded-* headers we'd hand the collector an ``http://...``
+    contentUri even though the client originally connected on TLS —
+    which either redirects, double-hops, or outright fails for
+    collectors that enforce HTTPS on contentUri fetches.
+    """
+    from fastapi.testclient import TestClient
+
+    import app as apigenie_app
+
+    client = TestClient(apigenie_app.app)
+    tenant = "my-roarin-111-m365tenant"
+    headers = {
+        "Authorization":     "Bearer eyJ.fake.jwt",
+        "X-Forwarded-Proto": "https",
+        "X-Forwarded-Host":  "apigenie-poc.roarinpenguin.com",
+    }
+    r = client.get(
+        f"/api/v1.0/{tenant}/activity/feed/subscriptions/content",
+        params={"contentType": "Audit.General"},
+        headers=headers,
+    )
+    assert r.status_code == 200, r.text
+    blobs = r.json()
+    assert blobs, "the route must return at least one content blob"
+    for blob in blobs:
+        uri = blob["contentUri"]
+        assert uri.startswith("https://apigenie-poc.roarinpenguin.com/"), (
+            f"X-Forwarded-Proto/Host must be honored; got: {uri}")

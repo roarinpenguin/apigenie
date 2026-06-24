@@ -420,7 +420,17 @@ async def m365_content_feed(
     # contentUri so the follow-up GET stays on apigenie. The legacy
     # behaviour (manage.office.com URLs) made the collector see
     # HTTP 401 from real Microsoft on every blob fetch.
-    base_url = f"{request.url.scheme}://{request.url.netloc}"
+    #
+    # We honor X-Forwarded-Proto / X-Forwarded-Host because in prod
+    # apigenie runs behind nginx and FastAPI sees plain HTTP; without
+    # those headers we'd hand the collector an http:// URI and force
+    # an unnecessary redirect (or an outright failure for collectors
+    # that enforce TLS on contentUri fetches).
+    proto = (request.headers.get("x-forwarded-proto")
+             or request.url.scheme)
+    host = (request.headers.get("x-forwarded-host")
+            or request.url.netloc)
+    base_url = f"{proto}://{host}"
     data = m365_content(
         content_type=contentType,
         base_url=base_url,
