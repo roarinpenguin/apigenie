@@ -1,0 +1,35 @@
+# Bind-mounted at runtime, not needed in the image. The build context send
+# fails when certbot/letsencrypt drops a root-owned 0700 subdir under
+# certs/ (e.g. certs/accounts) — excluding the whole tree fixes
+# `error from sender: open /home/.../certs/accounts: permission denied`
+# without requiring sudo for `docker compose build`.
+certs/
+data/
+
+# Python noise
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local dev / OS
+.DS_Store
+.idea/
+.vscode/
+
+# VCS — git history is not needed inside the image
+.git/
+.gitignore
+
+# Heavy artefacts that have no business inside the runtime image
+docs/RELEASE_NOTES.pdf
+node_modules/
+
+# Local secrets — must NEVER end up baked into a layer
+secret.key
+*.pem
+*.key
+*.crt
