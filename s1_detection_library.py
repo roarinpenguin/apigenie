@@ -309,7 +309,11 @@ def _api_put(path: str, body: dict[str, Any]) -> dict[str, Any]:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
         err_body = e.read().decode("utf-8", errors="replace")[:500]
-        # Echo the request body too — S1 5xx without it is undebuggable.
+        # Echo the outgoing body too: S1 mgmt API 4xx/5xx responses are
+        # often opaque (e.g. code 5000010 'Server could not process the
+        # request' returned for inheritance-locked scopes) and the only
+        # way to recover the diagnostic is correlating request+response
+        # at the same site.
         log.warning("S1 API PUT error %s %s req=%s resp=%s",
                     e.code, path, payload[:500], err_body)
         return {"error": f"HTTP {e.code}", "detail": err_body}
@@ -500,6 +504,91 @@ def get_platform_rule(rule_id: str) -> dict[str, Any] | None:
     return None
 
 
+_SETTINGS_PATH = "/web/api/v2.1/detection-library/platform-rules/settings"
+
+
+def get_platform_settings() -> dict[str, Any]:
+    """Read the platform-rules settings for the current scope.
+
+    Returns a dict with at least ``scopeLevel``, ``scopeId`` and
+    ``disableInheritance`` (the inheritance-lock flag). When
+    ``disableInheritance`` is ``False`` the operator's scope inherits
+    its activation state from the parent scope and per-rule writes at
+    this level fail server-side with an opaque HTTP 500 (S1 code
+    ``5000010``). The UI uses this helper to decide whether to offer
+    an "Unlock at this scope" affordance instead of letting the user
+    discover the lock through a cryptic failure.
+    """
+    scope = _resolve_scope_for_write()
+    if not scope:
+        return {"error": "Could not determine S1 scope (no account/site available)"}
+    scope_level, scope_id = scope
+    resp = _api_get(_SETTINGS_PATH, {
+        "scopeLevel": scope_level,
+        "scopeId":    scope_id,
+    })
+    if "error" in resp:
+        return resp
+    # S1 wraps the payload in ``data`` for this endpoint; unwrap so the
+    # caller doesn't have to know the envelope shape.
+    return resp.get("data", resp)
+
+
+def set_platform_inheritance(disable_inheritance: bool) -> dict[str, Any]:
+    """Toggle the inheritance lock at the current scope.
+
+    ``disable_inheritance=True`` opts the current scope OUT of its
+    parent's platform-rule settings — required before any per-rule
+    enable/disable at site or account level can succeed. Returns
+    whatever S1 sends back (typically the updated settings dict).
+    """
+    scope = _resolve_scope_for_write()
+    if not scope:
+        return {"error": "Could not determine S1 scope (no account/site available)"}
+    scope_level, scope_id = scope
+    return _api_put(_SETTINGS_PATH, {
+        "scopeLevel":         scope_level,
+        "scopeId":            scope_id,
+        "disableInheritance": bool(disable_inheritance),
+    })
+
+
+def _check_inheritance_unlocked() -> dict[str, Any] | None:
+    """Pre-flight for :func:`enable_rule` and :func:`disable_rule`.
+
+    Returns ``None`` when the per-rule write may proceed (scope has
+    its own platform settings, OR the settings lookup itself failed
+    so we can't confirm the lock — falling through to S1's own error
+    response is then the lesser evil).
+
+    Returns a structured error dict ``{"error": ..., "code":
+    "inheritance_locked", "scope": "<level>:<id>"}`` when S1 confirms
+    the scope is still inheriting from its parent. The
+    ``inheritance_locked`` code lets the UI distinguish this
+    user-actionable state from a generic 500 and offer an "Unlock"
+    button instead of just showing the failure.
+    """
+    settings = get_platform_settings()
+    if "error" in settings:
+        # Transient or permissions failure on /settings — don't block
+        # the write; let S1 itself produce the authoritative error.
+        return None
+    # disableInheritance==True means "this scope manages its own
+    # settings", which is the state in which per-rule writes succeed.
+    if settings.get("disableInheritance"):
+        return None
+    scope_level = settings.get("scopeLevel") or "?"
+    scope_id    = settings.get("scopeId") or "?"
+    return {
+        "error": (f"This {scope_level} scope inherits platform-rule "
+                  f"settings from its parent. Unlock inheritance at "
+                  f"{scope_level}={scope_id} before enabling or "
+                  f"disabling rules here."),
+        "code":  "inheritance_locked",
+        "scope": f"{scope_level}:{scope_id}",
+    }
+
+
 def enable_rule(rule_id: str) -> dict[str, Any]:
     """Enable a platform detection rule.
 
@@ -510,10 +599,18 @@ def enable_rule(rule_id: str) -> dict[str, Any]:
     array. The legacy nested ``{data: {platformRuleId}, filter: {...}}``
     envelope was silently accepted by S1 (200 OK) but ignored, which is
     the user-visible "enable bounces back to disabled" bug.
+
+    Before sending the write, performs a pre-flight check against
+    ``/platform-rules/settings`` to surface the
+    ``inheritance_locked`` state cleanly — otherwise S1 swallows the
+    write and returns an undebuggable HTTP 500.
     """
     scope = _resolve_scope_for_write()
     if not scope:
         return {"error": "Could not determine S1 scope (no account/site available)"}
+    locked = _check_inheritance_unlocked()
+    if locked is not None:
+        return locked
     scope_level, scope_id = scope
     return _api_put("/web/api/v2.1/detection-library/platform-rules/enable", {
         "scopeLevel":      scope_level,
@@ -527,6 +624,9 @@ def disable_rule(rule_id: str) -> dict[str, Any]:
     scope = _resolve_scope_for_write()
     if not scope:
         return {"error": "Could not determine S1 scope (no account/site available)"}
+    locked = _check_inheritance_unlocked()
+    if locked is not None:
+        return locked
     scope_level, scope_id = scope
     return _api_put("/web/api/v2.1/detection-library/platform-rules/disable", {
         "scopeLevel":      scope_level,

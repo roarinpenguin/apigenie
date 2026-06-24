@@ -3326,17 +3326,79 @@ async function loadPhaseRules(scenarioId, phaseId, source, mitreTactic, containe
 }
 
 async function toggleS1Rule(btn, ruleId, action) {
+  // Original label so we can restore on any error path.
+  const origLabel = action === 'enable' ? 'Enable' : 'Disable';
   btn.disabled = true;
   btn.textContent = '...';
   try {
-    await fetch('/admin/api/s1/rules/' + ruleId + '/' + action, {method:'POST', credentials:'same-origin'});
-    toast('Rule ' + action + 'd');
-    btn.parentElement.parentElement.querySelector('[style*="color"]').textContent = action === 'enable' ? '\\u25cf' : '\\u25cb';
-    btn.textContent = action === 'enable' ? 'Disable' : 'Enable';
-    btn.onclick = function() { toggleS1Rule(btn, ruleId, action === 'enable' ? 'disable' : 'enable'); };
-    btn.style.background = action === 'enable' ? 'rgba(120,30,40,.3)' : 'rgba(30,120,40,.3)';
-    btn.style.color = action === 'enable' ? '#ff8080' : '#80ff80';
-  } catch(e) { btn.textContent = 'Error'; }
+    const r = await fetch('/admin/api/s1/rules/' + ruleId + '/' + action,
+                          {method:'POST', credentials:'same-origin'});
+    const j = await r.json().catch(function(){ return {}; });
+    // Inheritance-locked: offer to unlock the scope, then retry. This
+    // is the user-visible counterpart of the S1 HTTP 500 / code
+    // 5000010 that used to make the button silently bounce back to
+    // Disabled on the next refresh.
+    if (j && j.code === 'inheritance_locked') {
+      const ok = window.confirm(
+        'This scope inherits its rule activation state from the parent. ' +
+        'Per-rule enable/disable will not take effect until you opt this ' +
+        'scope out of inheritance.\\n\\n' +
+        'Unlock scope ' + (j.scope || '?') + ' now and retry?');
+      if (ok) {
+        const u = await fetch('/admin/api/s1/platform-settings/unlock',
+                              {method:'POST', credentials:'same-origin'});
+        const uj = await u.json().catch(function(){ return {}; });
+        if (uj && uj.error) {
+          toast('Unlock failed: ' + uj.error, true);
+          btn.textContent = origLabel;
+          btn.disabled = false;
+          return;
+        }
+        toast('Scope unlocked. Retrying ' + action + '...');
+        // Retry the original action now that the scope is unlocked.
+        const r2 = await fetch('/admin/api/s1/rules/' + ruleId + '/' + action,
+                               {method:'POST', credentials:'same-origin'});
+        const j2 = await r2.json().catch(function(){ return {}; });
+        if (j2 && j2.error) {
+          toast(action + ' failed after unlock: ' + j2.error, true);
+          btn.textContent = origLabel;
+          btn.disabled = false;
+          return;
+        }
+        // Fall through to the success path below using the retry response.
+        return _afterToggleSuccess(btn, ruleId, action);
+      }
+      btn.textContent = origLabel;
+      btn.disabled = false;
+      return;
+    }
+    if (j && j.error) {
+      toast(action + ' failed: ' + j.error, true);
+      btn.textContent = origLabel;
+      btn.disabled = false;
+      return;
+    }
+    _afterToggleSuccess(btn, ruleId, action);
+  } catch(e) {
+    toast(action + ' error: ' + e, true);
+    btn.textContent = origLabel;
+    btn.disabled = false;
+  }
+}
+
+function _afterToggleSuccess(btn, ruleId, action) {
+  toast('Rule ' + action + 'd');
+  // Best-effort indicator update; harmless if the layout doesn't match.
+  try {
+    const dot = btn.parentElement.parentElement.querySelector('[style*="color"]');
+    if (dot) dot.textContent = action === 'enable' ? '\\u25cf' : '\\u25cb';
+  } catch(_) {}
+  btn.textContent = action === 'enable' ? 'Disable' : 'Enable';
+  btn.onclick = function() {
+    toggleS1Rule(btn, ruleId, action === 'enable' ? 'disable' : 'enable');
+  };
+  btn.style.background = action === 'enable' ? 'rgba(120,30,40,.3)' : 'rgba(30,120,40,.3)';
+  btn.style.color = action === 'enable' ? '#ff8080' : '#80ff80';
   btn.disabled = false;
 }
 
@@ -11720,6 +11782,34 @@ async def api_s1_rule_disable(rule_id: str, ag_session: str | None = Cookie(None
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     import s1_detection_library as s1
     return JSONResponse(s1.disable_rule(rule_id))
+
+
+@router.get("/api/s1/platform-settings")
+async def api_s1_platform_settings(ag_session: str | None = Cookie(None)):
+    """Return the current scope's platform-rule inheritance state.
+
+    The UI uses this to decide whether to offer an "Unlock at this
+    scope" affordance: when ``disableInheritance`` is False the scope
+    cannot enable/disable rules locally (S1 returns an opaque HTTP 500
+    on the per-rule write) and the operator must opt out of parent
+    inheritance first."""
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import s1_detection_library as s1
+    return JSONResponse(s1.get_platform_settings())
+
+
+@router.post("/api/s1/platform-settings/unlock")
+async def api_s1_platform_settings_unlock(ag_session: str | None = Cookie(None)):
+    """Opt the current scope OUT of parent platform-rule inheritance.
+
+    Equivalent to ``PUT /web/api/v2.1/detection-library/platform-rules/settings``
+    with ``disableInheritance=true``. Required once per scope before any
+    per-rule enable/disable can take effect at that scope."""
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import s1_detection_library as s1
+    return JSONResponse(s1.set_platform_inheritance(True))
 
 
 @router.get("/api/s1/custom-rules")

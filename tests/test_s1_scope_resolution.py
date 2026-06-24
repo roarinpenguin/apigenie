@@ -562,3 +562,203 @@ class TestQueryRulesScopeAware:
         assert "scope" in out["error"].lower()
         assert out["rules"] == []
         assert out["total"] == 0
+
+
+# ── platform-rule settings: inheritance lock ─────────────────────────
+
+class TestPlatformSettingsInheritance:
+    """Bug discovered live 2026-06-24: S1 returns an opaque HTTP 500
+    ``code 5000010 'Server could not process the request.'`` when a
+    site-scoped operator tries to enable/disable a rule that inherits
+    its activation state from the parent account scope.
+
+    The S1 console exposes this as an "inheritance lock" — the site
+    scope must explicitly opt out of parent inheritance
+    (``disableInheritance=true`` on
+    ``PUT /web/api/v2.1/detection-library/platform-rules/settings``)
+    before any per-rule write at site level can succeed.
+
+    The fix gives the operator a clean signal: a pre-flight GET on
+    ``/platform-rules/settings`` for the current scope, and a
+    structured error code ``inheritance_locked`` (with the parent
+    scope visible) instead of letting the 500 leak through. Pairs
+    with a settings-write helper so the UI can offer "Unlock at this
+    scope" without falling back to raw curl."""
+
+    def test_get_platform_settings_passes_scope(self, s1, fake_api):
+        routes, calls = fake_api
+        routes["/web/api/v2.1/detection-library/platform-rules/settings"] = {
+            "data": {
+                "scopeLevel":         "site",
+                "scopeId":            "SITE",
+                "disableInheritance": True,
+            }
+        }
+        tok = s1.set_request_override(
+            "https://alice.sentinelone.net", "alice-token",
+            account_id="ACCT", site_id="SITE",
+        )
+        try:
+            out = s1.get_platform_settings()
+            assert out["disableInheritance"] is True
+            assert out["scopeLevel"] == "site"
+            assert out["scopeId"] == "SITE"
+        finally:
+            s1.clear_request_override(tok)
+        gets = [c for c in calls
+                if c[0] == "GET"
+                and c[1] == "/web/api/v2.1/detection-library/platform-rules/settings"]
+        assert len(gets) == 1
+        _, _, params = gets[0]
+        # The settings endpoint takes scopeLevel + scopeId as query params,
+        # not as a body — this is unlike the platform-rules/enable PUT.
+        assert params.get("scopeLevel") == "site"
+        assert params.get("scopeId") == "SITE"
+
+    def test_get_platform_settings_returns_clear_error_when_no_scope(self, s1, fake_api):
+        routes, _ = fake_api
+        routes["/web/api/v2.1/user"] = {"error": "HTTP 401"}
+        routes["/web/api/v2.1/accounts"] = {"data": []}
+        s1.save_settings({"console_url": "https://x.sentinelone.net",
+                          "api_token": "x-token"})
+        out = s1.get_platform_settings()
+        assert "error" in out
+        assert "scope" in out["error"].lower()
+
+    def test_set_platform_inheritance_sends_correct_body(self, s1, fake_api):
+        routes, calls = fake_api
+        routes["/web/api/v2.1/detection-library/platform-rules/settings"] = {
+            "data": {
+                "scopeLevel":         "site",
+                "scopeId":            "SITE",
+                "disableInheritance": True,
+            }
+        }
+        tok = s1.set_request_override(
+            "https://alice.sentinelone.net", "alice-token",
+            account_id="ACCT", site_id="SITE",
+        )
+        try:
+            out = s1.set_platform_inheritance(disable_inheritance=True)
+            assert "error" not in out
+        finally:
+            s1.clear_request_override(tok)
+        puts = [c for c in calls
+                if c[0] == "PUT"
+                and c[1] == "/web/api/v2.1/detection-library/platform-rules/settings"]
+        assert len(puts) == 1
+        _, _, body = puts[0]
+        # disableInheritance + scopeLevel are required per the swagger
+        # PlatformSettingsSchema; scopeId is required at site/account.
+        assert body.get("disableInheritance") is True
+        assert body.get("scopeLevel") == "site"
+        assert body.get("scopeId") == "SITE"
+
+    def test_enable_rule_short_circuits_when_inheritance_locked(self, s1, fake_api):
+        """When disableInheritance is False at the operator's scope, the
+        rule activation actually happens at the parent scope, and a per-rule
+        write at the child scope returns S1's opaque HTTP 500 with no useful
+        detail. We must catch this *before* calling /enable and return a
+        structured, actionable error so the UI can offer 'unlock'."""
+        routes, calls = fake_api
+        # Parent inheritance is still active for this site:
+        routes["/web/api/v2.1/detection-library/platform-rules/settings"] = {
+            "data": {
+                "scopeLevel":         "site",
+                "scopeId":            "SITE",
+                "disableInheritance": False,
+            }
+        }
+        # If the pre-flight check is missing or wrong, the test catches
+        # the PUT going out and fails — the platform-rules/enable route
+        # is deliberately NOT stubbed.
+        tok = s1.set_request_override(
+            "https://alice.sentinelone.net", "alice-token",
+            account_id="ACCT", site_id="SITE",
+        )
+        try:
+            out = s1.enable_rule("rule-xyz")
+        finally:
+            s1.clear_request_override(tok)
+        assert "error" in out
+        assert out.get("code") == "inheritance_locked"
+        # The error message must name the scope so the operator knows
+        # where to act.
+        msg = out["error"].lower()
+        assert "inherit" in msg
+        # The pre-flight GET on /settings must have happened, and the
+        # PUT on /enable must NOT have happened.
+        assert any(c[0] == "GET" and c[1].endswith("/platform-rules/settings")
+                   for c in calls)
+        assert not any(c[0] == "PUT" and c[1].endswith("/platform-rules/enable")
+                       for c in calls)
+
+    def test_disable_rule_short_circuits_when_inheritance_locked(self, s1, fake_api):
+        routes, calls = fake_api
+        routes["/web/api/v2.1/detection-library/platform-rules/settings"] = {
+            "data": {
+                "scopeLevel":         "site",
+                "scopeId":            "SITE",
+                "disableInheritance": False,
+            }
+        }
+        tok = s1.set_request_override(
+            "https://alice.sentinelone.net", "alice-token",
+            account_id="ACCT", site_id="SITE",
+        )
+        try:
+            out = s1.disable_rule("rule-xyz")
+        finally:
+            s1.clear_request_override(tok)
+        assert out.get("code") == "inheritance_locked"
+        assert not any(c[0] == "PUT" and c[1].endswith("/platform-rules/disable")
+                       for c in calls)
+
+    def test_enable_rule_proceeds_when_inheritance_unlocked(self, s1, fake_api):
+        """Happy path: site has opted out of parent inheritance, the
+        pre-flight check confirms it, and the PUT on /enable goes
+        through unchanged."""
+        routes, calls = fake_api
+        routes["/web/api/v2.1/detection-library/platform-rules/settings"] = {
+            "data": {
+                "scopeLevel":         "site",
+                "scopeId":            "SITE",
+                "disableInheritance": True,
+            }
+        }
+        routes["/web/api/v2.1/detection-library/platform-rules/enable"] = (
+            {"data": {"affected": 1}})
+        tok = s1.set_request_override(
+            "https://alice.sentinelone.net", "alice-token",
+            account_id="ACCT", site_id="SITE",
+        )
+        try:
+            out = s1.enable_rule("rule-xyz")
+            assert "error" not in out
+        finally:
+            s1.clear_request_override(tok)
+        puts = [c for c in calls
+                if c[0] == "PUT" and c[1].endswith("/platform-rules/enable")]
+        assert len(puts) == 1, (
+            "the /enable PUT must still fire when inheritance is unlocked")
+
+    def test_enable_rule_proceeds_when_settings_lookup_fails(self, s1, fake_api):
+        """If the settings GET itself fails (e.g. transient 5xx, token
+        without ``platform-rules.settings.view``), the pre-flight check
+        must NOT block the write — fall through to the original behaviour
+        rather than fabricating a false 'locked' state."""
+        routes, _ = fake_api
+        # /settings is intentionally NOT stubbed -> fake_api returns HTTP 404.
+        routes["/web/api/v2.1/detection-library/platform-rules/enable"] = (
+            {"data": {"affected": 1}})
+        tok = s1.set_request_override(
+            "https://alice.sentinelone.net", "alice-token",
+            account_id="ACCT", site_id="SITE",
+        )
+        try:
+            out = s1.enable_rule("rule-xyz")
+            assert "error" not in out, (
+                "settings-lookup failures must not block the write — "
+                f"got: {out}")
+        finally:
+            s1.clear_request_override(tok)
