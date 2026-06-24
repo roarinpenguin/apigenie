@@ -411,11 +411,21 @@ async def m365_subscriptions_start(
 
 @app.get("/api/v1.0/{tenant_id}/activity/feed/subscriptions/content")
 async def m365_content_feed(
+    request: Request,
     _auth: BearerAuth, tenant_id: str,
     contentType: str = Query("Audit.General"),
     PublisherIdentifier: str = Query(""),
 ) -> list[dict[str, Any]]:
-    data = m365_content(content_type=contentType)
+    # Stamp our own host + the collector's tenant_id onto every
+    # contentUri so the follow-up GET stays on apigenie. The legacy
+    # behaviour (manage.office.com URLs) made the collector see
+    # HTTP 401 from real Microsoft on every blob fetch.
+    base_url = f"{request.url.scheme}://{request.url.netloc}"
+    data = m365_content(
+        content_type=contentType,
+        base_url=base_url,
+        tenant_id=tenant_id,
+    )
     return data["blobs"]
 
 

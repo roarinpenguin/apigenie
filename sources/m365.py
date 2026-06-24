@@ -534,8 +534,30 @@ _EVENT_TEMPLATES: dict[str, tuple[Any, float]] = {
 
 # ── Public API ──────────────────────────────────────────────────────────────
 
-def get_content_response(content_type: str = "Audit.General", limit: int = 50) -> dict[str, Any]:
-    """Return M365 Management Activity API content blobs."""
+def get_content_response(
+    content_type: str = "Audit.General",
+    limit: int = 50,
+    *,
+    base_url: str | None = None,
+    tenant_id: str | None = None,
+) -> dict[str, Any]:
+    """Return M365 Management Activity API content blobs.
+
+    ``base_url`` + ``tenant_id`` (both optional) let the FastAPI route
+    stamp the contentUri back at the same host + tenant the collector
+    is talking to, so the follow-up
+    ``GET <contentUri>`` lands on apigenie's
+    ``/api/v1.0/<tenant>/activity/feed/audit/<id>`` route (which we
+    serve) instead of leaking to the real ``manage.office.com``
+    (which has never heard of our fake client_id / tenant and
+    therefore returns HTTP 401 to the collector — the
+    user-visible "m365 401" symptom).
+
+    When either kwarg is omitted, the legacy
+    ``https://manage.office.com/.../<rand>/...`` shape is preserved,
+    so internal callers / unit-test snapshots that don't go through
+    the HTTP layer keep their current wire form.
+    """
     ctx = profiles.get_context("m365")
     count = profiles.scale_count("m365", min(limit, 100))
 
@@ -543,11 +565,24 @@ def get_content_response(content_type: str = "Audit.General", limit: int = 50) -
     events = [weighted_choice(templates)(ctx=ctx) for _ in range(count)]
     events = detection_rules.inject_detection_events("m365", events)
 
+    # Build the contentUri prefix once. The base_url is rstrip'd so a
+    # caller that hands us ``"https://host/"`` doesn't produce a double
+    # slash like ``https://host//api/v1.0/...``.
+    if base_url and tenant_id:
+        uri_prefix = (f"{base_url.rstrip('/')}/api/v1.0/{tenant_id}"
+                      f"/activity/feed/audit/")
+    else:
+        # Legacy default — kept for backwards compat with internal
+        # callers / snapshot tests. Real customer traffic always goes
+        # through the FastAPI route, which now supplies both kwargs.
+        uri_prefix = (f"https://manage.office.com/api/v1.0/"
+                      f"{random.choice(_TENANT_IDS)}/activity/feed/audit/")
+
     # Wrap in content blob format (like the real API returns content URIs)
     blobs = []
     for ev in events:
         blobs.append({
-            "contentUri": f"https://manage.office.com/api/v1.0/{random.choice(_TENANT_IDS)}/activity/feed/audit/{generate_uuid()}",
+            "contentUri": f"{uri_prefix}{generate_uuid()}",
             "contentId": generate_uuid(),
             "contentType": content_type,
             "contentCreated": ev.get("CreationTime", _now()),
