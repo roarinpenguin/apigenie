@@ -501,15 +501,21 @@ def enable_rule(rule_id: str) -> dict[str, Any]:
     """Enable a platform detection rule.
 
     Targets the most specific scope the token can write to (site for
-    site-scoped tokens, account otherwise).
+    site-scoped tokens, account otherwise). The body shape matches the
+    swagger ``PlatformRuleSchemaWithValidation`` schema: a FLAT object
+    with top-level ``scopeLevel`` + ``scopeId`` + ``platformRuleIds``
+    array. The legacy nested ``{data: {platformRuleId}, filter: {...}}``
+    envelope was silently accepted by S1 (200 OK) but ignored, which is
+    the user-visible "enable bounces back to disabled" bug.
     """
     scope = _resolve_scope_for_write()
     if not scope:
         return {"error": "Could not determine S1 scope (no account/site available)"}
     scope_level, scope_id = scope
     return _api_put("/web/api/v2.1/detection-library/platform-rules/enable", {
-        "data":   {"platformRuleId": rule_id},
-        "filter": {"scopeLevel": scope_level, "scopeId": scope_id},
+        "scopeLevel":      scope_level,
+        "scopeId":         scope_id,
+        "platformRuleIds": [rule_id],
     })
 
 
@@ -520,8 +526,9 @@ def disable_rule(rule_id: str) -> dict[str, Any]:
         return {"error": "Could not determine S1 scope (no account/site available)"}
     scope_level, scope_id = scope
     return _api_put("/web/api/v2.1/detection-library/platform-rules/disable", {
-        "data":   {"platformRuleId": rule_id},
-        "filter": {"scopeLevel": scope_level, "scopeId": scope_id},
+        "scopeLevel":      scope_level,
+        "scopeId":         scope_id,
+        "platformRuleIds": [rule_id],
     })
 
 

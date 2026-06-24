@@ -405,6 +405,11 @@ class TestPlatformRuleScopeAware:
     actually succeeds."""
 
     def test_enable_rule_uses_site_scope_when_site_scoped(self, s1, fake_api):
+        """PUT body must match the FLAT PlatformRuleSchemaWithValidation
+        shape (top-level scopeLevel + scopeId + platformRuleIds), NOT the
+        nested data/filter shape — the latter is silently accepted by S1
+        (200 OK) but doesn't enable anything, which is the user-visible
+        'enable bounces back to disabled' bug."""
         routes, calls = fake_api
         routes["/web/api/v2.1/detection-library/platform-rules/enable"] = (
             {"data": {"affected": 1}})
@@ -421,9 +426,17 @@ class TestPlatformRuleScopeAware:
         puts = [c for c in calls if c[0] == "PUT"]
         assert len(puts) == 1
         _, _, body = puts[0]
-        assert body["filter"] == {"scopeLevel": "site", "scopeId": "SITE"}
+        # Flat shape per swagger schema (verified live 2026-06-24).
+        assert body.get("scopeLevel") == "site"
+        assert body.get("scopeId") == "SITE"
+        assert body.get("platformRuleIds") == ["rule-xyz"]
+        # The legacy nested envelope must not be present — S1 ignores it
+        # silently and never enables the rule.
+        assert "data" not in body
+        assert "filter" not in body
 
     def test_disable_rule_uses_account_scope_when_no_site(self, s1, fake_api):
+        """Same flat-body contract for the disable endpoint, account scope."""
         routes, calls = fake_api
         routes["/web/api/v2.1/detection-library/platform-rules/disable"] = (
             {"data": {"affected": 1}})
@@ -438,8 +451,11 @@ class TestPlatformRuleScopeAware:
         puts = [c for c in calls if c[0] == "PUT"]
         assert len(puts) == 1
         _, _, body = puts[0]
-        assert body["filter"] == {"scopeLevel": "account",
-                                  "scopeId": "ACCT-ONLY"}
+        assert body.get("scopeLevel") == "account"
+        assert body.get("scopeId") == "ACCT-ONLY"
+        assert body.get("platformRuleIds") == ["rule-abc"]
+        assert "data" not in body
+        assert "filter" not in body
 
     def test_get_platform_rule_uses_site_scope_when_site_scoped(self, s1, fake_api):
         routes, calls = fake_api
