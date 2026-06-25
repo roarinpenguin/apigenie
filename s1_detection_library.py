@@ -591,9 +591,27 @@ def query_rules_for_phase(source: str, mitre_tactic: str, limit: int = 10) -> di
     # some omit the rule entirely when no per-scope override exists).
     data_list = scoped.get("data", []) or []
     if data_list:
-        log.info("for-phase: /platform-rules scope=%s:%s sample=%s",
+        # Dump every key on the first entry so we can locate the
+        # per-scope enabled/disabled field — full JSON would blow the
+        # log line, and the previous 400-char truncation cut before
+        # the status fields. Also include a few common candidates
+        # printed by name so the right one jumps out at a glance.
+        sample = data_list[0]
+        log.info("for-phase: /platform-rules scope=%s:%s id=%s "
+                 "keys=%s status=%r enabled=%r state=%r "
+                 "isEnabled=%r active=%r activationStatus=%r "
+                 "enabledState=%r scopes=%r",
                  scope_level, scope_id,
-                 json.dumps(data_list[0])[:400])
+                 sample.get("id"),
+                 sorted(sample.keys()),
+                 sample.get("status"),
+                 sample.get("enabled"),
+                 sample.get("state"),
+                 sample.get("isEnabled"),
+                 sample.get("active"),
+                 sample.get("activationStatus"),
+                 sample.get("enabledState"),
+                 sample.get("scopes"))
     else:
         log.info("for-phase: /platform-rules scope=%s:%s returned 0 "
                  "entries for ids=%s — site has no per-scope override "
