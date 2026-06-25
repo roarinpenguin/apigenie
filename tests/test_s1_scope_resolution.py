@@ -875,3 +875,124 @@ class TestPlatformRuleSilentNoOp:
             s1.clear_request_override(tok)
         assert out.get("code") == "no_op"
         assert out.get("affected") == 0
+
+
+# ── v5.1.3 — for-phase reads scoped status, not catalog status ────────
+
+class TestQueryRulesForPhaseScopedEnrich:
+    """Until v5.1.2 the scenario-phase rule listing took ``status``
+    straight from ``/detection-library/rules``, which is the *catalog*
+    endpoint and returns the rule's default status — not the
+    per-tenant override. With S1 confirming ``affected=1`` on enable
+    at ``scopeLevel=site`` but the catalog still reporting
+    ``Disabled``, the UI button bounced back to ``Enable`` on every
+    refresh.
+
+    The new ``query_rules_for_phase`` batches one extra
+    ``/platform-rules`` GET (the read-side of the enable PUT) and
+    overrides each rule's ``status`` with the scoped value. Fail-soft
+    when ``/platform-rules`` errors so older consoles keep the
+    legacy behaviour."""
+
+    def _override_site(self, s1):
+        return s1.set_request_override(
+            "https://x.sentinelone.net", "tok",
+            account_id="ACCT", site_id="SITE",
+        )
+
+    def test_scoped_status_overrides_catalog_status(self, s1, fake_api):
+        """The bug-reproducer in one test: catalog says Disabled,
+        site override says Enabled, wrapper returns Enabled."""
+        routes, calls = fake_api
+        # Catalog returns the rule's *default* status — Disabled.
+        routes["/web/api/v2.1/detection-library/rules"] = {
+            "data": [
+                {"id": "2103847956768866916",
+                 "name": "Office 365 Inbox Rule Created",
+                 "status": "Disabled",
+                 "severity": "Medium"},
+                {"id": "2184096628170014313",
+                 "name": "OAuth Token Grant",
+                 "status": "Disabled",
+                 "severity": "High"},
+            ],
+            "pagination": {"totalItems": 2},
+        }
+        # Per-site override says one of them is actually Enabled.
+        routes["/web/api/v2.1/detection-library/platform-rules"] = {
+            "data": [
+                {"id": "2103847956768866916", "status": "Enabled"},
+                {"id": "2184096628170014313", "status": "Disabled"},
+            ],
+        }
+        tok = self._override_site(s1)
+        try:
+            out = s1.query_rules_for_phase("m365", "Collection", limit=5)
+        finally:
+            s1.clear_request_override(tok)
+        statuses = {r["id"]: r["status"] for r in out["rules"]}
+        assert statuses == {
+            "2103847956768866916": "Enabled",   # overridden by site scope
+            "2184096628170014313": "Disabled",  # site agrees with catalog
+        }
+        # The /platform-rules GET must have been issued at site scope
+        # — otherwise it would 403 for a site-scoped token.
+        scoped_gets = [
+            c for c in calls
+            if c[0] == "GET"
+            and c[1] == "/web/api/v2.1/detection-library/platform-rules"
+        ]
+        assert len(scoped_gets) == 1, (
+            "expected exactly one /platform-rules GET for the batch — "
+            f"got: {scoped_gets}")
+        params = scoped_gets[0][2]
+        assert params.get("scopeLevel") == "site"
+        assert params.get("scopeId") == "SITE"
+        # Both IDs must travel in the same comma-separated request
+        # (no per-rule round-trip).
+        assert params.get("platformRuleIds") == (
+            "2103847956768866916,2184096628170014313")
+
+    def test_platform_rules_failure_falls_back_to_catalog(self, s1, fake_api):
+        """If the scoped read errors (older console, missing perm),
+        the wrapper returns the catalog status so the UI still
+        shows something — same as the pre-v5.1.2 behaviour."""
+        routes, _ = fake_api
+        routes["/web/api/v2.1/detection-library/rules"] = {
+            "data": [{"id": "X", "name": "r", "status": "Disabled",
+                      "severity": "Low"}],
+            "pagination": {"totalItems": 1},
+        }
+        # Simulate the older-console failure mode: 403 on /platform-rules.
+        def _403(_):
+            return {"error": "HTTP 403", "detail": "read-only"}
+        routes["/web/api/v2.1/detection-library/platform-rules"] = _403
+        tok = self._override_site(s1)
+        try:
+            out = s1.query_rules_for_phase("m365", "Collection", limit=5)
+        finally:
+            s1.clear_request_override(tok)
+        # Catalog status kept verbatim — no exception, no error key on
+        # the response.
+        assert "error" not in out
+        assert out["rules"][0]["status"] == "Disabled"
+
+    def test_empty_catalog_skips_platform_rules_call(self, s1, fake_api):
+        """No rules → no IDs → no point in calling /platform-rules
+        with an empty comma-separated string (would 400). Tightens
+        the enrichment to never issue a useless call."""
+        routes, calls = fake_api
+        routes["/web/api/v2.1/detection-library/rules"] = {
+            "data": [], "pagination": {"totalItems": 0}}
+        tok = self._override_site(s1)
+        try:
+            out = s1.query_rules_for_phase("m365", "Collection", limit=5)
+        finally:
+            s1.clear_request_override(tok)
+        assert out["rules"] == []
+        scoped_gets = [
+            c for c in calls
+            if c[1] == "/web/api/v2.1/detection-library/platform-rules"]
+        assert scoped_gets == [], (
+            "must skip /platform-rules when the catalog returned no "
+            f"rules — got: {scoped_gets}")

@@ -529,8 +529,65 @@ def query_rules(source: str | None = None, mitre_tactic: str | None = None,
 
 
 def query_rules_for_phase(source: str, mitre_tactic: str, limit: int = 10) -> dict[str, Any]:
-    """Query rules matching a scenario phase (source + MITRE tactic)."""
-    return query_rules(source=source, mitre_tactic=mitre_tactic, limit=limit)
+    """Query rules matching a scenario phase (source + MITRE tactic),
+    enriched with the rule's scope-effective enabled/disabled state.
+
+    The catalog endpoint ``/detection-library/rules`` returns each
+    rule's *catalog* status — the default activation set by
+    SentinelOne for the rule definition. Per-tenant overrides
+    (``Enable on Site RoarinDemo``) live on a different surface,
+    ``/detection-library/platform-rules?scopeLevel=site&scopeId=X``,
+    which is the read-side counterpart of ``platform-rules/enable``.
+
+    Until v5.1.2 the scenario-phase UI showed the catalog status,
+    which produced the observed-in-prod loop: user clicks ``Enable``,
+    S1 confirms ``affected=1`` (rule IS enabled at site scope), but
+    the next ``/for-phase`` refresh reads catalog status (``Disabled``)
+    and the button reverts to ``Enable``. The user clicks again, S1
+    reports the rule was already enabled, the catalog status is still
+    Disabled, the loop never terminates.
+
+    This wrapper batches a single ``/platform-rules`` GET for all
+    rule IDs returned by the catalog query, indexes by ID, and
+    overrides each ``rule['status']`` with the scoped status. The
+    enrichment is fail-soft: if the platform-rules call errors out
+    (older console, missing permission) we keep the catalog status,
+    matching the pre-v5.1.2 behaviour. One extra API call per phase
+    refresh — acceptable since this endpoint is hit on an explicit
+    UI gesture, not a hot loop.
+    """
+    result = query_rules(source=source, mitre_tactic=mitre_tactic, limit=limit)
+    if "error" in result or not result.get("rules"):
+        return result
+    scope = _resolve_scope_for_write()
+    if not scope:
+        return result
+    scope_level, scope_id = scope
+    rule_ids = [str(r["id"]) for r in result["rules"] if r.get("id")]
+    if not rule_ids:
+        return result
+    # ``platformRuleIds`` accepts a comma-separated list per the swagger,
+    # and ``limit`` must be ≥ the number of IDs we expect back or the
+    # response pagination would silently drop some.
+    scoped = _api_get(
+        "/web/api/v2.1/detection-library/platform-rules",
+        {
+            "platformRuleIds": ",".join(rule_ids),
+            "scopeLevel":      scope_level,
+            "scopeId":         scope_id,
+            "limit":           str(max(len(rule_ids), 10)),
+        },
+    )
+    if "error" in scoped:
+        log.info("for-phase: scoped status enrich failed (%s) — using "
+                 "catalog status", scoped.get("error"))
+        return result
+    by_id = {str(r.get("id")): r for r in scoped.get("data", [])}
+    for rule in result["rules"]:
+        scoped_rule = by_id.get(str(rule.get("id")))
+        if scoped_rule and "status" in scoped_rule:
+            rule["status"] = scoped_rule["status"]
+    return result
 
 
 def get_platform_rule(rule_id: str) -> dict[str, Any] | None:
