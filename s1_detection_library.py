@@ -306,7 +306,21 @@ def _api_put(path: str, body: dict[str, Any]) -> dict[str, Any]:
     })
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read())
+            raw = resp.read()
+            parsed = json.loads(raw)
+            # v5.1.2 — log the response body for platform-rules writes.
+            # S1 has a long-running pattern of returning 200 OK with
+            # ``data.affected=0`` when a per-rule enable/disable is
+            # silently dropped (wrong scope, inheritance lock the
+            # pre-flight missed, missing write permission, rule already
+            # in the requested state). Without this log we have no way
+            # to distinguish a successful write from a silent no-op.
+            if "/platform-rules/" in path and (
+                    path.endswith("/enable") or path.endswith("/disable")):
+                log.info("S1 platform-rules PUT %s req=%s resp=%s",
+                         path, payload[:300], raw[:500].decode(
+                             "utf-8", errors="replace"))
+            return parsed
     except urllib.error.HTTPError as e:
         err_body = e.read().decode("utf-8", errors="replace")[:500]
         # Echo the outgoing body too: S1 mgmt API 4xx/5xx responses are
@@ -319,6 +333,43 @@ def _api_put(path: str, body: dict[str, Any]) -> dict[str, Any]:
         return {"error": f"HTTP {e.code}", "detail": err_body}
     except Exception as e:
         return {"error": str(e)}
+
+
+def _detect_silent_noop(resp: dict[str, Any]) -> int | None:
+    """Inspect a platform-rules PUT response and return the ``affected``
+    count when S1 expresses it, else ``None``.
+
+    S1 has historically shipped this field in three shapes across mgmt
+    API versions::
+
+        {"data": {"affected": N}}      # most common
+        {"data": [{"affected": N}]}    # batch wrapper
+        {"affected": N}                # rare, older consoles
+
+    Returns ``None`` when the field can't be located — the caller then
+    has to assume the write happened (best-effort, can't prove a
+    negative).
+    """
+    if not isinstance(resp, dict):
+        return None
+    data = resp.get("data")
+    if isinstance(data, dict) and "affected" in data:
+        try:
+            return int(data["affected"])
+        except (TypeError, ValueError):
+            return None
+    if isinstance(data, list) and data and isinstance(data[0], dict) \
+            and "affected" in data[0]:
+        try:
+            return int(data[0]["affected"])
+        except (TypeError, ValueError):
+            return None
+    if "affected" in resp:
+        try:
+            return int(resp["affected"])
+        except (TypeError, ValueError):
+            return None
+    return None
 
 
 # ── Detection Library queries ────────────────────────────────────────────────
@@ -612,11 +663,14 @@ def enable_rule(rule_id: str) -> dict[str, Any]:
     if locked is not None:
         return locked
     scope_level, scope_id = scope
-    return _api_put("/web/api/v2.1/detection-library/platform-rules/enable", {
+    resp = _api_put("/web/api/v2.1/detection-library/platform-rules/enable", {
         "scopeLevel":      scope_level,
         "scopeId":         scope_id,
         "platformRuleIds": [rule_id],
     })
+    return _wrap_platform_rule_write_response(
+        resp, action="enable", rule_id=rule_id,
+        scope_level=scope_level, scope_id=scope_id)
 
 
 def disable_rule(rule_id: str) -> dict[str, Any]:
@@ -628,11 +682,69 @@ def disable_rule(rule_id: str) -> dict[str, Any]:
     if locked is not None:
         return locked
     scope_level, scope_id = scope
-    return _api_put("/web/api/v2.1/detection-library/platform-rules/disable", {
+    resp = _api_put("/web/api/v2.1/detection-library/platform-rules/disable", {
         "scopeLevel":      scope_level,
         "scopeId":         scope_id,
         "platformRuleIds": [rule_id],
     })
+    return _wrap_platform_rule_write_response(
+        resp, action="disable", rule_id=rule_id,
+        scope_level=scope_level, scope_id=scope_id)
+
+
+def _wrap_platform_rule_write_response(resp: dict[str, Any], *, action: str,
+                                       rule_id: str, scope_level: str,
+                                       scope_id: str) -> dict[str, Any]:
+    """Common post-processing for the ``/platform-rules/{enable,disable}``
+    PUTs.
+
+    Until v5.1.1 we trusted any ``200 OK`` as a successful state change
+    and the front-end happily updated its button label. In practice S1
+    has at least three failure modes where the server returns
+    ``200 OK`` but ``data.affected=0`` and the rule's effective state
+    is unchanged:
+
+    * the rule does not exist at the operator's scope (the catalog
+      listed it as inherited from a parent, but the operator hasn't
+      authored it locally so the per-scope toggle has nothing to
+      flip),
+    * the rule is already in the requested state (a no-op write),
+    * the operator's token has read-only Detection Library access
+      (S1 swallows the write and reports affected=0 instead of HTTP
+      403 — undocumented but consistent across late-2024 consoles).
+
+    Surfacing this as ``code=no_op`` lets the UI keep its existing
+    button-rollback affordance (already used for ``inheritance_locked``)
+    and gives the operator a concrete next step instead of a phantom
+    success.
+
+    Pass-through for transport-layer errors and for responses we can't
+    classify — best-effort behaviour for older consoles whose response
+    shape we don't recognise.
+    """
+    if not isinstance(resp, dict) or "error" in resp:
+        return resp
+    affected = _detect_silent_noop(resp)
+    if affected is None or affected > 0:
+        return resp
+    log.warning(
+        "S1 %s_rule rule=%s scope=%s:%s returned affected=%d "
+        "(silent no-op); resp=%s",
+        action, rule_id, scope_level, scope_id, affected, str(resp)[:300])
+    return {
+        "error": (
+            f"S1 accepted the {action} request for rule {rule_id} but "
+            f"reported affected=0 (no rule was actually {action}d). "
+            f"Most common causes: (1) the rule doesn't exist at scope "
+            f"{scope_level}={scope_id}, (2) the rule is already in the "
+            f"requested state, (3) the token lacks write permission on "
+            f"Detection Library, (4) inheritance is locked at a parent "
+            f"scope. Check 'S1 platform-rules PUT' lines in the apigenie "
+            f"log for the full response."),
+        "code": "no_op",
+        "affected": affected,
+        "raw": resp,
+    }
 
 
 def test_connection() -> dict[str, Any]:

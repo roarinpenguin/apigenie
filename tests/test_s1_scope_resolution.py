@@ -762,3 +762,116 @@ class TestPlatformSettingsInheritance:
                 f"got: {out}")
         finally:
             s1.clear_request_override(tok)
+
+
+# ── v5.1.2 — silent no-op detection on platform-rules writes ──────────
+
+class TestPlatformRuleSilentNoOp:
+    """Until v5.1.1 we trusted any ``200 OK`` from
+    ``/platform-rules/{enable,disable}`` as a successful state change.
+    In production we observed S1 returning ``200 OK`` with
+    ``data.affected=0`` when the rule wasn't actually toggled (wrong
+    scope, read-only token, rule already in state, ...) and the
+    front-end happily updated the button label even though the next
+    refresh showed the rule unchanged. This suite locks in the new
+    ``code=no_op`` surfacing path."""
+
+    def _override(self, s1):
+        return s1.set_request_override(
+            "https://x.sentinelone.net", "tok",
+            account_id="ACCT", site_id="SITE",
+        )
+
+    def _unlock_inheritance(self, routes):
+        # Pre-flight check must not block — return a scope that has
+        # its own settings so enable_rule proceeds to the PUT.
+        routes["/web/api/v2.1/detection-library/platform-rules/settings"] = {
+            "data": {
+                "scopeLevel":         "site",
+                "scopeId":            "SITE",
+                "disableInheritance": True,
+            }
+        }
+
+    def test_affected_zero_surfaces_as_no_op_error(self, s1, fake_api):
+        routes, _ = fake_api
+        self._unlock_inheritance(routes)
+        routes["/web/api/v2.1/detection-library/platform-rules/enable"] = (
+            {"data": {"affected": 0}})
+        tok = self._override(s1)
+        try:
+            out = s1.enable_rule("rule-xyz")
+        finally:
+            s1.clear_request_override(tok)
+        assert out.get("code") == "no_op"
+        assert out.get("affected") == 0
+        assert "error" in out
+        # Diagnostic context must reach the operator.
+        assert "rule-xyz" in out["error"]
+        assert "site=SITE" in out["error"] or "SITE" in out["error"]
+        # Raw response preserved for the support handoff path.
+        assert out.get("raw", {}).get("data", {}).get("affected") == 0
+
+    def test_affected_one_passes_through_unchanged(self, s1, fake_api):
+        routes, _ = fake_api
+        self._unlock_inheritance(routes)
+        routes["/web/api/v2.1/detection-library/platform-rules/enable"] = (
+            {"data": {"affected": 1}})
+        tok = self._override(s1)
+        try:
+            out = s1.enable_rule("rule-xyz")
+        finally:
+            s1.clear_request_override(tok)
+        assert "error" not in out, (
+            "affected>0 must keep the legacy success contract — "
+            f"got: {out}")
+        assert out.get("code") != "no_op"
+
+    def test_disable_rule_also_detects_no_op(self, s1, fake_api):
+        routes, _ = fake_api
+        self._unlock_inheritance(routes)
+        routes["/web/api/v2.1/detection-library/platform-rules/disable"] = (
+            {"data": {"affected": 0}})
+        tok = self._override(s1)
+        try:
+            out = s1.disable_rule("rule-xyz")
+        finally:
+            s1.clear_request_override(tok)
+        assert out.get("code") == "no_op"
+        # Error message must reflect the action that failed.
+        assert "disable" in out["error"].lower()
+
+    def test_unknown_response_shape_falls_through_as_success(self, s1, fake_api):
+        """Older consoles (pre-2024) ship a response that doesn't
+        carry an ``affected`` field at all. We can't prove a negative
+        there — best-effort behaviour is to trust the 200, exactly as
+        the pre-v5.1.2 code did. Regression guard so future tightening
+        doesn't accidentally break older tenants."""
+        routes, _ = fake_api
+        self._unlock_inheritance(routes)
+        routes["/web/api/v2.1/detection-library/platform-rules/enable"] = (
+            {"data": {"updated": True}})  # no 'affected' key
+        tok = self._override(s1)
+        try:
+            out = s1.enable_rule("rule-xyz")
+        finally:
+            s1.clear_request_override(tok)
+        assert "error" not in out
+        assert out.get("code") != "no_op"
+
+    def test_list_wrapper_response_is_recognised(self, s1, fake_api):
+        """S1's batch endpoints sometimes wrap the affected count in a
+        list: ``{"data": [{"affected": 0}]}``. The detector handles
+        this shape too so the no-op surfacing works across both
+        single-rule and batch response variants."""
+        routes, _ = fake_api
+        self._unlock_inheritance(routes)
+        routes["/web/api/v2.1/detection-library/platform-rules/enable"] = (
+            {"data": [{"affected": 0}]})
+        tok = self._override(s1)
+        try:
+            out = s1.enable_rule("rule-xyz")
+        finally:
+            s1.clear_request_override(tok)
+        assert out.get("code") == "no_op"
+        assert out.get("affected") == 0
