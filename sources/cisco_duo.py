@@ -76,6 +76,21 @@ _REASONS = {
 # Keys deliberately match the EVENT_CATALOG ids so event_mix overrides apply
 # 1:1. Renaming a key here without updating the catalog (or vice versa) will
 # fail the catalog-coverage test in tests/test_event_mix.py.
+# ── Persona projection ────────────────────────────────────────────────
+# Duo authentication logs nest the principal under ``user.name`` (the
+# Duo username, typically a UPN-shape email) and the access device's
+# IP under ``access_device.ip``. ``email`` is a top-level alias Duo
+# keeps for backwards-compatibility — projecting both keeps every
+# consumer in sync. The country lives under
+# ``access_device.location.country`` (2-letter ISO).
+PERSONA_PROJECTION: dict[str, str] = {
+    "email":                            "victim_user.email",
+    "user.name":                        "victim_user.email",
+    "access_device.ip":                 "attacker.ip",
+    "access_device.location.country":   "attacker.country",
+}
+
+
 _AUTH_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
     "auth.success": ({"result": "SUCCESS"}, 0.70),
     "auth.failure": ({"result": "FAILURE"}, 0.15),

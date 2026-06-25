@@ -327,6 +327,22 @@ def create_scenario(data: dict[str, Any]) -> dict[str, Any]:
     if visibility not in ("private", "public"):
         visibility = "private"
 
+    # v5.3 — every scenario carries a persona bundle that anchors every
+    # event it injects across every source involved (Okta victim ≡
+    # Defender host ≡ Proofpoint recipient ≡ Entra UPN ≡ CloudTrail IAM
+    # user, all sharing the same identity for the scenario's lifetime).
+    # The operator MAY pre-supply a bundle (custom persona editor in
+    # the UI, or hand-crafted templates); otherwise we roll a fresh
+    # one. ``import_scenario`` deliberately strips any incoming
+    # ``personas`` so two operators importing the same template don't
+    # collide on the same victim — see the import path below.
+    import personas as _personas_mod
+    incoming_bundle = data.get("personas")
+    if isinstance(incoming_bundle, dict) and incoming_bundle:
+        bundle = incoming_bundle
+    else:
+        bundle = _personas_mod.generate_bundle()
+
     scenario = {
         "id": str(uuid.uuid4()),
         "name": data.get("name", "Untitled Scenario"),
@@ -347,6 +363,9 @@ def create_scenario(data: dict[str, Any]) -> dict[str, Any]:
         "visibility": visibility,
         "owner_id": data.get("owner_id"),
         "events_per_phase": data.get("events_per_phase"),
+        # v5.3 cross-source entity correlation (see persona splicer
+        # in ``_create_temp_rule``).
+        "personas": bundle,
     }
     # Ensure each phase has an id
     for i, phase in enumerate(scenario["phases"]):
@@ -383,7 +402,12 @@ def update_scenario(scenario_id: str, data: dict[str, Any]) -> dict[str, Any] | 
         if not s:
             return None
         for key in ("name", "duration", "phases", "profile_id",
-                    "mode", "visibility", "owner_id", "events_per_phase"):
+                    "mode", "visibility", "owner_id", "events_per_phase",
+                    # v5.3 — allow the operator to replace the persona
+                    # bundle from the UI editor. When ``personas`` is
+                    # NOT in *data* the existing bundle survives the
+                    # update untouched.
+                    "personas"):
             if key in data:
                 s[key] = data[key]
         # Regenerate setup_notes if anything that affects them changed.
@@ -532,7 +556,12 @@ def import_scenario(data: Any) -> dict[str, Any]:
     if errors:
         raise ValueError("\n".join(errors))
     # Strip the schema marker if present — it's metadata, not a scenario field.
-    payload = {k: v for k, v in data.items() if k != "_apigenie_schema"}
+    # Also strip ``personas`` if a template smuggles one in: the import path
+    # MUST roll a fresh bundle so two operators importing the same template
+    # end up with two different victims. Templates that bundled a persona
+    # by accident shouldn't pin every demo to the same identity.
+    payload = {k: v for k, v in data.items()
+               if k not in ("_apigenie_schema", "personas")}
     return create_scenario(payload)
 
 
@@ -812,6 +841,46 @@ def _calculate_phase_windows(phases: list[dict], total_seconds: int, start_time:
 
 # ── Temporary detection rule management ──────────────────────────────────────
 
+def _splice_persona_overrides(phase: dict, scenario: dict) -> dict:
+    """Merge the scenario's persona bundle into ``phase['field_overrides']``.
+
+    For each ``event_field ⇒ slot_path`` entry in the source's
+    :data:`PERSONA_PROJECTION`, resolve ``slot_path`` against the
+    scenario's ``personas`` bundle and stamp the value onto a *new*
+    overrides dict. Phase-authored overrides win — the operator is
+    the authority of last resort, persona splicing only fills gaps.
+
+    Returns a fresh dict regardless of code path so the caller can
+    mutate it (e.g. stamp ``attack.id`` / ``phase.id``) without
+    risking corruption of the persisted phase record. Legacy
+    scenarios that lack a ``personas`` key or sources that don't
+    yet ship a projection silently round-trip the phase's existing
+    overrides — keeps backward compatibility for in-flight scenarios.
+    """
+    import personas as _personas
+    import sources as _sources
+
+    base = dict(phase.get("field_overrides", {}))
+    bundle = (scenario or {}).get("personas") or {}
+    if not bundle:
+        return base
+
+    projection = _sources.get_persona_projection(phase.get("source", ""))
+    if not projection:
+        return base
+
+    for event_field, slot_path in projection.items():
+        if event_field in base:
+            # Operator-authored override wins.
+            continue
+        value = _personas.resolve_path(bundle, slot_path)
+        if value is None or value == "":
+            # Empty slot ⇒ skip; never put an empty value on the wire.
+            continue
+        base[event_field] = value
+    return base
+
+
 def _create_temp_rule(phase: dict, attack_id: str, scenario_id: str,
                        total_seconds: int, phase_start: float) -> str | None:
     """Create a temporary detection rule for a phase. Returns the rule ID."""
@@ -823,7 +892,14 @@ def _create_temp_rule(phase: dict, attack_id: str, scenario_id: str,
     total_offset = phase.get("time_offset_pct", 0) / 100.0
     backdate_seconds = total_seconds * total_offset
 
-    overrides = dict(phase.get("field_overrides", {}))
+    # Splice in the scenario's persona bundle so this phase's events
+    # share entities (victim / attacker / host / payload) with every
+    # other source involved in the same scenario. The scenario record
+    # is fetched fresh from disk — by the time _create_temp_rule fires,
+    # the scenario has already been persisted with its persona bundle
+    # by ``create_scenario`` / ``update_scenario``.
+    scenario = _find(_load_scenarios(), scenario_id) or {}
+    overrides = _splice_persona_overrides(phase, scenario)
     overrides["attack.id"] = attack_id
     overrides["phase.id"] = phase.get("phase_id", "unknown")
 

@@ -93,6 +93,26 @@ _ALERT_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
     ),
 }
 
+# ── Persona projection ────────────────────────────────────────────────
+# Defender alerts nest the device under ``properties.compromisedEntity``
+# / ``properties.extendedProperties.compromisedHost`` — projecting all
+# three keeps the alert consistent no matter which field the SIEM
+# parser keys off. The ``entities`` array carries host+ip but lives
+# inside a list (the override engine can't walk lists by index), so
+# we anchor the hostname via the dict-shaped extendedProperties path.
+PERSONA_PROJECTION: dict[str, str] = {
+    "properties.compromisedEntity":                       "victim_host.hostname",
+    "properties.extendedProperties.compromisedHost":      "victim_host.hostname",
+    "properties.extendedProperties.attackedHost":         "victim_host.hostname",
+    # Defender exposes an explicit ``processName`` / ``commandLine`` on
+    # process alerts via extendedProperties; project the malicious slot
+    # so a Proofpoint attachment hash and a Defender process alert
+    # reference the same payload in the same demo.
+    "properties.extendedProperties.processName":          "malicious.process",
+    "properties.extendedProperties.commandLine":          "malicious.cmd_line",
+    "properties.extendedProperties.fileHash":             "malicious.sha256",
+}
+
 _RESOURCE_GROUPS = ["rg-production", "rg-staging", "rg-dev", "rg-security"]
 _SUBSCRIPTIONS = [generate_uuid() for _ in range(3)]
 

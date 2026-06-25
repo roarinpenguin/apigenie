@@ -135,6 +135,22 @@ _ALERT_MIX: dict[str, tuple[dict[str, Any], float]] = {
 }
 
 
+# ── Persona projection ────────────────────────────────────────────────
+# Netskope alerts already split src/dst on the wire: ``srcip`` is the
+# internal endpoint hitting the cloud app (the victim's laptop), and
+# ``dstip`` is the destination cloud endpoint (often the attacker-
+# controlled exfil target when the alert fires on C2 / data exfil).
+PERSONA_PROJECTION: dict[str, str] = {
+    "user":          "victim_user.email",
+    "ur_normalized": "victim_user.email",
+    "hostname":      "victim_host.hostname",
+    "srcip":         "victim_host.ip",
+    "dstip":         "attacker.ip",
+    "src_country":   "attacker.country",
+    "object":        "malicious.file_name",
+}
+
+
 def _generate_alert(alert_type: str | None = None, ctx: profiles.ProfileContext | None = None) -> dict[str, Any]:
     if alert_type and alert_type in _ALERT_TEMPLATES:
         # Explicit filter wins over the mix — collectors that ask for a

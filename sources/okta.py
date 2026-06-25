@@ -56,6 +56,29 @@ EVENT_CATALOG: list[dict[str, Any]] = [
      "docs_anchor": "developer.okta.com/docs/reference/api/event-types/#user-account-lock"},
 ]
 
+# ── Persona projection ────────────────────────────────────────────────
+# Maps Okta System Log dotted field paths ⇒ canonical persona slot paths
+# (see ``personas.CANONICAL_SCHEMA``). The scenario engine reads this when
+# stamping a phase's temp detection rule for source ``okta`` so the
+# generated event is anchored to the scenario's actors instead of a
+# fresh ``random.choice(_ACTORS)``. Field paths track the wire shape
+# emitted by ``_generate_log`` above — keep both sides in sync when a
+# new field is added.
+PERSONA_PROJECTION: dict[str, str] = {
+    # Victim identity — Okta's principal is ``actor.alternateId`` (the
+    # login string the analyst sees in the System Log UI) plus
+    # ``actor.displayName``.
+    "actor.alternateId": "victim_user.email",
+    "actor.displayName": "victim_user.name",
+    # The IP from which the user connected. In a real attack story
+    # this is the *attacker's* IP (compromised credential used from
+    # external infrastructure), so we project the attacker slot here —
+    # otherwise the SOC analyst sees a clean internal address and the
+    # geo-enrichment doesn't fire.
+    "client.ipAddress":  "attacker.ip",
+    "client.geographicalContext.country": "attacker.country",
+}
+
 _LOG_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
     "raw_log": (
         {

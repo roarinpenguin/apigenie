@@ -66,6 +66,29 @@ EVENT_CATALOG: list[dict[str, Any]] = [
      "docs_anchor": "help.proofpoint.com/Threat_Insight_Dashboard/API_Documentation/SIEM_API#messages-blocked"},
 ]
 
+# ── Persona projection ────────────────────────────────────────────────
+# Proofpoint TAP messages have a sender / recipient pair plus an SMTP
+# sender IP — the cleanest "external attacker emails internal victim"
+# story. Hashes and attachment filenames pin the malicious payload.
+PERSONA_PROJECTION: dict[str, str] = {
+    # Recipient is the victim mailbox; sender is the attacker.
+    "headerTo":        "victim_user.email",
+    "recipient":       "victim_user.email",
+    "headerFrom":      "attacker.email",
+    "sender":          "attacker.email",
+    # Origin of the SMTP transaction; bound to the attacker so the
+    # cross-source story (Proofpoint sender IP ↔ Okta client IP) holds.
+    "senderIP":        "attacker.ip",
+    # NB: payload hashes / attachment filenames live inside the
+    # ``messageParts`` *array* on the wire (positional index). The
+    # rule-engine override engine uses dotted-dict notation only and
+    # won't walk into lists, so we don't project ``messageParts.0.*``
+    # — that would silently create a bogus ``{"0": {...}}`` sub-dict.
+    # Cross-source malware correlation is still carried by Defender's
+    # ``fileStates`` and WEF's ``Image`` / ``Hashes``, which sit on
+    # plain dotted-dict paths.
+}
+
 _LOG_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
     "raw_log": (
         {"disposition": "delivered", "phishScore": 0, "spamScore": 5, "action": "delivered"},

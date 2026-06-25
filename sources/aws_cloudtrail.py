@@ -56,6 +56,21 @@ EVENT_CATALOG: list[dict[str, Any]] = [
      "docs_anchor": "docs.aws.amazon.com/IAM/latest/UserGuide/cloudtrail-integration.html"},
 ]
 
+# ── Persona projection ────────────────────────────────────────────────
+# CloudTrail's principal lives on ``userIdentity.userName`` (the IAM
+# username) and the request origin on ``sourceIPAddress``. We pin
+# the victim user via the IAM username (not the full ARN, which
+# carries the account id) and the attacker via sourceIPAddress so
+# privilege-escalation phases echo Okta's compromised credential
+# story end-to-end. NB: root-account events override userName to
+# 'root' in code; the projection still writes — that's fine because
+# the root template explicitly opts out via ``_isRoot``.
+PERSONA_PROJECTION: dict[str, str] = {
+    "userIdentity.userName":  "victim_user.username",
+    "sourceIPAddress":         "attacker.ip",
+}
+
+
 _EVENT_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
     "normal": ({"errorCode": None, "errorMessage": None}, 0.65),
     "unauthorized_access": (

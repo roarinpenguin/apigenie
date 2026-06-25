@@ -39,6 +39,28 @@ from generators import (
 )
 
 
+# ── Persona projection ────────────────────────────────────────────────
+# Every M365 audit record built by ``_base`` carries ``UserId`` (UPN
+# of the actor), ``ClientIP`` (where the actor connected from), and
+# ``ActorIpAddress`` (alias for ClientIP). Mailbox / threat / DLP
+# variants add their own fields; we project the cross-record set so
+# every workload looks consistent without having to override one
+# projection per Operation type.
+PERSONA_PROJECTION: dict[str, str] = {
+    # The actor on an audit record is the victim — the compromised
+    # mailbox / SharePoint user whose credentials are abused.
+    "UserId":          "victim_user.upn",
+    "MailboxOwnerUPN": "victim_user.upn",
+    # The IP carried on the audit record is the attacker's exit node
+    # (the credential is being used from external infrastructure).
+    "ClientIP":        "attacker.ip",
+    "ActorIpAddress":  "attacker.ip",
+    # Phish/threat variants — sender is the attacker, recipient the victim.
+    "SenderAddress":    "attacker.email",
+    "RecipientAddress": "victim_user.email",
+}
+
+
 def _wchoice(items: list[tuple[str, int]]) -> str:
     """Weighted choice from a list of (value, weight) tuples."""
     vals = [v for v, _ in items]

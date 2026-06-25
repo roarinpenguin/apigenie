@@ -69,6 +69,26 @@ EVENT_CATALOG: list[dict[str, Any]] = [
      "docs_anchor": "learn.microsoft.com/en-us/azure/active-directory/identity-protection/concept-identity-protection-risks"},
 ]
 
+# ── Persona projection ────────────────────────────────────────────────
+# Entra ID emits two endpoint families. The dict below pins the
+# fields each family carries; ``_set_nested`` will create missing
+# keys without disturbing the sibling family — e.g. stamping
+# ``userPrincipalName`` on an audit log adds a top-level key but
+# doesn't break the signin-shape consumer. The IP carried on a
+# sign-in is the *attacker's* (compromised credential from external
+# infra), to keep the story consistent with Okta's client.ipAddress.
+PERSONA_PROJECTION: dict[str, str] = {
+    # signIn schema
+    "userPrincipalName":                  "victim_user.upn",
+    "userDisplayName":                    "victim_user.name",
+    "ipAddress":                          "attacker.ip",
+    "location.countryOrRegion":           "attacker.country",
+    # directoryAudit schema
+    "initiatedBy.user.userPrincipalName": "victim_user.upn",
+    "initiatedBy.user.displayName":       "victim_user.name",
+    "initiatedBy.user.ipAddress":         "attacker.ip",
+}
+
 _AUDIT_TEMPLATES: dict[str, tuple[dict[str, Any], float]] = {
     "audit": (
         {
