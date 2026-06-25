@@ -355,6 +355,277 @@ class S1AssetResolver:
         self._store(hint, out)
         return out
 
+    # ── Random picks (push-side, v5.3 Step 2) ──────────────────────────────
+    #
+    # The push loop has no hostname hint to look up; it just wants every
+    # synthetic event to land on a real asset in the configured tenant so
+    # STAR / Custom Detection rules bind on the OCSF stream. Three helpers
+    # below close that gap:
+    #
+    # * ``random_endpoint()``  — managed XDR asset; biased toward recently
+    #                            active agents (avoids reviving decommed
+    #                            hosts in demos).
+    # * ``random_identity()``  — AD account; fails-open on 404 (the
+    #                            ``/active-directory/accounts`` endpoint
+    #                            was 404 on the v2.2 POC tenant).
+    # * ``sticky_pick(kind)``  — sticky-with-jitter front-door used by
+    #                            ``log_pusher``: 80% of calls stay on the
+    #                            session's primary asset, 20% re-roll
+    #                            (lateral-movement-realistic). Operator
+    #                            choice 2026-06-25.
+
+    def random_endpoint(self) -> dict[str, Any] | None:
+        """Pick a random managed XDR endpoint, biased toward recent activity.
+
+        Returns the same hit shape as :meth:`resolve_endpoint` (so the
+        push loop can consume either output uniformly). Picks ONLY assets
+        with a populated ``agent`` sub-block — UAM never binds against
+        passive-discovery records (S3 buckets, ECR repos, …).
+
+        Returns ``None`` when the resolver is unconfigured, the asset
+        list is empty, or no managed agents are present. None never
+        raises — push-loop failure must be silent on the wire.
+        """
+        import random as _random
+
+        self.lookups += 1
+        if not self.is_configured():
+            self._record_trace("__random_endpoint__", status="unconfigured")
+            self.misses += 1
+            return None
+
+        assets = self._all_assets()
+        managed = [a for a in (assets or []) if a.get("agent")]
+        if not managed:
+            self._record_trace("__random_endpoint__", status="no_managed",
+                               candidates=len(assets or []))
+            self.misses += 1
+            return None
+
+        # Bias toward recently-active agents. ``lastActiveAt`` is an ISO
+        # string on each ``agent`` sub-block; we score newest-first by
+        # string comparison (ISO-8601 is lexicographically ordered) and
+        # weight the top half 4× heavier than the tail. This is a
+        # simple, predictable boost that doesn't require parsing dates.
+        def _last_active(a: dict[str, Any]) -> str:
+            return (a.get("agent") or {}).get("lastActiveAt") or ""
+        sorted_assets = sorted(managed, key=_last_active, reverse=True)
+        half = max(1, len(sorted_assets) // 2)
+        weights = [4 if i < half else 1 for i in range(len(sorted_assets))]
+        best = _random.choices(sorted_assets, weights=weights, k=1)[0]
+        out = self._endpoint_hit_from_asset(best)
+        if out is None:
+            self.misses += 1
+            return None
+        self._record_trace("__random_endpoint__", status="hit",
+                           match=out["hostname"], uid=out["uid"])
+        self.hits += 1
+        return out
+
+    def random_identity(self) -> dict[str, Any] | None:
+        """Pick a random AD identity from ``/active-directory/accounts``.
+
+        Hit shape::
+
+            {
+              "uid":          "<unified asset id>",     # → user.uid
+              "upn":          "<userPrincipalName>",    # → user.name
+              "display_name": "<displayName>",
+              "domain":       "<domain>",
+            }
+
+        The endpoint was 404 on the v2.2 POC tenant; this method MUST
+        degrade silently on that and cache the miss so a push profile
+        running at 1 event/sec doesn't hammer the API for nothing.
+
+        Returns ``None`` when the resolver is unconfigured, the endpoint
+        is unreachable, or 0 accounts are returned.
+        """
+        import random as _random
+
+        cache_key = "__identity_list__"
+        cached = self._cached(cache_key)
+        if cached is _MISS:
+            accounts = self._all_identities()
+            self._store(cache_key, accounts)
+        else:
+            self.cache_hits += 1
+            accounts = cached or []
+
+        if not accounts:
+            return None
+
+        pick = _random.choice(accounts)
+        uid = str(pick.get("id") or "").strip()
+        if not uid:
+            return None
+        out = {
+            "uid":          uid,
+            "upn":          pick.get("userPrincipalName") or "",
+            "display_name": pick.get("displayName") or "",
+            "domain":       pick.get("domain") or "",
+        }
+        self.hits += 1
+        self._record_trace("__random_identity__", status="hit",
+                           upn=out["upn"], uid=uid)
+        return out
+
+    # Sticky-pick state. Lazily populated on the first sticky_pick(kind)
+    # call so a resolver that's only used for ``resolve_endpoint`` never
+    # pays the cost. Keyed by ``kind`` so identity + endpoint sessions
+    # on the same resolver instance don't share a primary.
+    _STICKY_KINDS_ENDPOINT = {"endpoint", "cloud", "network"}
+
+    def sticky_pick(self, kind: str,
+                     ratio: float = 0.8) -> dict[str, Any] | None:
+        """Sticky-with-jitter asset picker for the push loop.
+
+        On the first call for *kind*, picks a "primary" asset and
+        caches it on the resolver instance. Subsequent calls return
+        the primary with probability *ratio* (0.8 by default ⇒ ~80%
+        of events bind to the same asset, ~20% re-roll for a fresh
+        pick — lateral-movement-realistic, confirmed by operator
+        on 2026-06-25).
+
+        *kind* values:
+
+        * ``"endpoint"`` / ``"cloud"`` / ``"network"`` — all route
+          through :meth:`random_endpoint` (the push loop maps these
+          OCSF families to ``device.uid`` on a managed XDR asset).
+        * ``"identity"`` — routes through :meth:`random_identity`.
+        * ``"none"`` — explicit no-op so callers don't need an
+          if-check around governance sources (Snyk / Tenable / Wiz).
+
+        Returns the same hit shapes as the delegated methods, or
+        ``None`` when no asset can be picked (delegated to the
+        underlying random_* contract).
+        """
+        import random as _random
+
+        if kind == "none" or not kind:
+            return None
+
+        # Lazy state init — keep the resolver lean for non-push callers.
+        if not hasattr(self, "_sticky_primary"):
+            self._sticky_primary: dict[str, dict[str, Any] | None] = {}
+
+        # Pick the delegate once and reuse it for both branches below.
+        if kind in self._STICKY_KINDS_ENDPOINT:
+            delegate = self.random_endpoint
+        elif kind == "identity":
+            delegate = self.random_identity
+        else:
+            log.warning("s1_assets: sticky_pick unknown kind %r", kind)
+            return None
+
+        # First-call: seed the primary. ``None`` from the delegate is
+        # stored as None and we re-attempt on every call — better than
+        # cementing a tenant-empty state into the session forever.
+        if self._sticky_primary.get(kind) is None:
+            self._sticky_primary[kind] = delegate()
+            return self._sticky_primary[kind]
+
+        # Stick — vast majority of calls.
+        if _random.random() < ratio:
+            return self._sticky_primary[kind]
+
+        # Drift — re-roll, but don't overwrite the session's primary
+        # (an analyst tracing the demo would see noise around the
+        # primary host; the primary itself stays "the compromised one").
+        return delegate()
+
+    # ── Internal helpers ───────────────────────────────────────────────────
+    def _endpoint_hit_from_asset(self, asset: dict[str, Any]
+                                  ) -> dict[str, Any] | None:
+        """Build the public endpoint hit dict from an XDR asset record.
+
+        Shared between :meth:`resolve_endpoint` (after the score-rank)
+        and :meth:`random_endpoint` (after the activity-bias roll) so
+        both paths emit byte-identical shapes. Returns ``None`` when
+        the asset record is somehow missing its XDR id (defensive —
+        every real record carries one).
+        """
+        agent = asset.get("agent") or {}
+        os_type_id, os_type_label, _ = _normalise_os(agent.get("osType") or "")
+        xdr_asset_id = (asset.get("id") or "").strip()
+        if not xdr_asset_id:
+            return None
+        return {
+            "uid": xdr_asset_id,
+            "agent_uuid":   agent.get("uuid") or "",
+            "agent_id":     str(agent.get("id") or ""),
+            "agent_version": agent.get("agentVersion") or "",
+            "machine_type": (agent.get("machineType") or "").lower(),
+            "hostname":     asset.get("name") or agent.get("computerName") or "",
+            "ip":           agent.get("lastReportedIp") or agent.get("externalIp") or "",
+            "os_name":      agent.get("osName") or "",
+            "os_type":      os_type_label,
+            "os_type_id":   os_type_id,
+            "domain":       agent.get("domain") or "",
+            "category":     asset.get("category") or "",
+        }
+
+    def _all_identities(self) -> list[dict[str, Any]]:
+        """Fetch every AD identity record for the resolver's scope.
+
+        Returns ``[]`` on any failure mode (unconfigured, 404, non-JSON
+        body, request error). Failures are also cached at the call site
+        via ``_store("__identity_list__", ...)`` so a push profile
+        running at high throughput doesn't slam the endpoint when it's
+        unavailable.
+        """
+        if not self.is_configured():
+            return []
+
+        out: list[dict[str, Any]] = []
+        cursor: str | None = None
+        url = f"{self.console_url}/web/api/v2.1/active-directory/accounts"
+        headers = {
+            "Authorization": f"ApiToken {self.api_token}",
+            "Accept": "application/json",
+        }
+        for _page in range(self._asset_list_max_pages):
+            params: dict[str, Any] = {
+                "accountIds": self.account_id,
+                "limit": self._asset_list_page_size,
+            }
+            if self.site_id:
+                params["siteIds"] = self.site_id
+            if cursor:
+                params["cursor"] = cursor
+            try:
+                r = self._client.get(url, params=params, headers=headers)
+            except httpx.RequestError as exc:
+                log.info("s1_assets: /active-directory/accounts request "
+                         "error: %s", exc)
+                return []
+            if r.status_code == 404:
+                # POC tenants without Identity activated hit this path.
+                # Log once and let the caller cache the empty list so
+                # we don't retry on every event.
+                log.info("s1_assets: /active-directory/accounts 404 — "
+                         "identity binding disabled for this resolver")
+                return []
+            if r.status_code != 200:
+                log.info("s1_assets: /active-directory/accounts -> HTTP "
+                         "%d (body: %s)", r.status_code, r.text[:200])
+                return []
+            try:
+                payload = r.json()
+            except ValueError:
+                log.info("s1_assets: /active-directory/accounts non-JSON")
+                return []
+            if not isinstance(payload, dict):
+                return []
+            data = payload.get("data") or []
+            if isinstance(data, list):
+                out.extend(a for a in data if isinstance(a, dict))
+            pag = payload.get("pagination") or {}
+            cursor = pag.get("nextCursor") if isinstance(pag, dict) else None
+            if not cursor:
+                break
+        return out
+
     def _record_trace(self, hint: str, **fields: Any) -> None:
         """Append a capped diagnostic record describing a single lookup."""
         if len(self.trace) >= self._trace_cap:

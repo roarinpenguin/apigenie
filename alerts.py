@@ -696,6 +696,24 @@ def prepare_alert(
             continue
         if resource.get("uid") in _PLACEHOLDER_UIDS:
             resource["uid"] = str(uuid.uuid4())
+
+    # v5.3 — class_uid lint. STAR / Custom Detection rules require a
+    # non-zero ``class_uid`` to bind the alert to a Target Asset; a
+    # template that ships without it (or with 0) will land in UAM as
+    # "Unknown Device" no matter how good the resolver is. We DO NOT
+    # block the send (back-compat for any operator-pasted custom
+    # JSON) but surface a single warning so the issue is visible in
+    # the container logs instead of debugging UAM ingest for an hour.
+    cu = alert.get("class_uid")
+    if not isinstance(cu, int) or cu <= 0:
+        log.warning(
+            "prepare_alert: template %r is missing a positive class_uid "
+            "(got %r) — STAR / Custom Detection rules will bind this "
+            "alert to 'Unknown Device'. Set a non-zero OCSF class_uid "
+            "on the template (e.g. 1007 for endpoint, 3002 for "
+            "identity, 4001 for network, 6003 for cloud).",
+            template_id or alert.get("class_name") or "<unknown>", cu,
+        )
     return alert
 
 

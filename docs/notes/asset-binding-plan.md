@@ -1,5 +1,9 @@
 # Asset-binding improvements — plan for next session
 
+> **Status (2026-06-26):** Phases 1–6 ✅ shipped on branch
+> `fix/s1-site-scoped-tokens`. Release notes + version bump deferred
+> to v5.3 release work (Step 4 of the broader plan).
+
 Source of truth: SentinelOne ai-siem repo,
 `plugins/s1-secops-skills/docs/detection-asset-binding.md` (2026-06-14).
 
@@ -203,3 +207,61 @@ Wire resolver counters into:
   laptop is under attack") or fan out across many (more noise-like)?
 - Profile-level flag name: `link_xdr_assets` for symmetry with the
   alert-side, or `bind_real_assets` for clarity?
+
+---
+
+## Implementation outcome (2026-06-26)
+
+Six phases delivered on branch `fix/s1-site-scoped-tokens`. **39 new
+tests, 0 regressions** across the 647-test fast lane.
+
+### Decisions on the open questions
+
+- **Identity endpoint 404 fallback.** `S1AssetResolver.random_identity()`
+  catches `httpx.HTTPStatusError` with `status_code == 404` and caches
+  the result as "feature unavailable" — every subsequent call returns
+  `None` without hitting the network. Push binding for identity-shaped
+  sources (okta / azure_ad / m365 / cisco_duo) falls through cleanly to
+  the no-op atomic path — events ship unbound, no class_uid stamped.
+- **Sticky pick semantics.** `S1AssetResolver.sticky_pick(kind, ratio=0.8)`
+  picks the same "primary" asset 80% of the time and a random alternate
+  20% of the time. This makes a push profile look like one laptop /
+  user under attack with occasional lateral-movement noise — the
+  demo-realistic shape — rather than uniformly random fan-out.
+- **Profile flag name.** Kept `link_xdr_assets` for symmetry with the
+  alert-side flag of the same name. The UI checkbox is wired into
+  the push-profile modal in `@/Users/marco.rottigni/Library/CloudStorage/GoogleDrive-marco.rottigni@sentinelone.com/My Drive/Solutions Architect SecOps/GitHub Projects/apigenie/admin.py:1456-1468`.
+
+### Files touched (high-signal pointers)
+
+| Layer | File / function |
+|-------|-----------------|
+| Per-source registry | `@/Users/marco.rottigni/Library/CloudStorage/GoogleDrive-marco.rottigni@sentinelone.com/My Drive/Solutions Architect SecOps/GitHub Projects/apigenie/sources/__init__.py:127-215` — `ASSET_BINDING` table + `get_asset_binding()` |
+| Resolver picks | `@/Users/marco.rottigni/Library/CloudStorage/GoogleDrive-marco.rottigni@sentinelone.com/My Drive/Solutions Architect SecOps/GitHub Projects/apigenie/s1_assets.py:377-627` — `random_endpoint`, `random_identity`, `sticky_pick` |
+| Splice + resolver lifecycle | `@/Users/marco.rottigni/Library/CloudStorage/GoogleDrive-marco.rottigni@sentinelone.com/My Drive/Solutions Architect SecOps/GitHub Projects/apigenie/log_pusher.py:586-647` — `apply_asset_binding()` + `_build_push_resolver()` |
+| Push loop integration | `@/Users/marco.rottigni/Library/CloudStorage/GoogleDrive-marco.rottigni@sentinelone.com/My Drive/Solutions Architect SecOps/GitHub Projects/apigenie/log_pusher.py:817-885` — splice call inside the loop, resolver closed in `finally:` |
+| `class_uid` lint | `@/Users/marco.rottigni/Library/CloudStorage/GoogleDrive-marco.rottigni@sentinelone.com/My Drive/Solutions Architect SecOps/GitHub Projects/apigenie/alerts.py:700-716` — `log.warning` when missing/zero |
+| Status diagnostics | `@/Users/marco.rottigni/Library/CloudStorage/GoogleDrive-marco.rottigni@sentinelone.com/My Drive/Solutions Architect SecOps/GitHub Projects/apigenie/log_pusher.py:947-997` — `get_status()` extended with `binding` block |
+| UI — toggle | `@/Users/marco.rottigni/Library/CloudStorage/GoogleDrive-marco.rottigni@sentinelone.com/My Drive/Solutions Architect SecOps/GitHub Projects/apigenie/admin.py:1456-1468` (modal) + `:6028, 6044, 6115` (load/save) |
+| UI — pill + diag strip | `@/Users/marco.rottigni/Library/CloudStorage/GoogleDrive-marco.rottigni@sentinelone.com/My Drive/Solutions Architect SecOps/GitHub Projects/apigenie/admin.py:5850-5856` + `:6166-6188` |
+
+### Test suites (all under `tests/`)
+
+- `test_asset_binding_registry.py` — 4 tests for the per-source registry
+- `test_s1_assets_random_picks.py` — 11 tests for `random_endpoint` /
+  `random_identity` / `sticky_pick` (including the 404 identity
+  fallback and the bias-toward-recent endpoint weighting)
+- `test_log_pusher_asset_binding.py` — 10 tests for the splice
+  (no-op cases, idempotency, identity vs device targeting)
+- `test_alert_template_class_uid_coverage.py` — 4 tests (72-template
+  scan + 3 lint behaviours on `prepare_alert`)
+- `test_log_pusher_binding_diagnostics.py` — 4 tests for the
+  `binding` block on `get_status()` + counter reset semantics
+
+### What's deferred to v5.3 release (Step 4)
+
+- `RELEASE_NOTES.md` v5.3 section
+- `README.md` mention of asset binding on push
+- `pyproject.toml` version bump 5.0.0 → 5.3.0
+- `USER_GUIDE` / `ADMIN_GUIDE` operator-facing how-to ("Linking
+  apigenie events to real assets")

@@ -92,6 +92,129 @@ def get_event_catalog(source: str) -> list[dict[str, Any]] | None:
     return None
 
 
+def get_persona_projection(source: str) -> dict[str, str] | None:
+    """Return the ``PERSONA_PROJECTION`` for *source* (or ``None``).
+
+    The projection is a mapping of **source-native event field path**
+    (dotted, e.g. ``actor.alternateId``) ⇒ **canonical persona slot
+    path** (e.g. ``victim_user.email``) defined in
+    :data:`personas.CANONICAL_SCHEMA`. When the scenario engine
+    creates a temp detection rule for a phase on this source it uses
+    this map to splice the scenario's persona values into the rule's
+    ``field_overrides`` — so every source involved in the scenario
+    emits events grounded in the same victim, host, attacker and
+    payload.
+
+    ``None`` means "this source does not yet participate in cross-
+    source correlation"; the caller (rule engine) must treat that as
+    a no-op and emit the phase's own overrides untouched. Returning
+    ``None`` rather than ``{}`` is intentional: a future audit can
+    grep callers for the gap and add a projection where needed.
+
+    *source* accepts either the canonical module-name id (``azure_ad``)
+    or a bindings UI alias (``entra_id``, ``defender``).
+    """
+    source = canonical_source_id(source)
+    for name, mod in iter_source_modules():
+        if name == source:
+            proj = getattr(mod, "PERSONA_PROJECTION", None)
+            if isinstance(proj, dict) and proj:
+                return proj
+            return None
+    return None
+
+
+# ── Asset binding registry (v5.3 Step 2) ──────────────────────────────
+#
+# For SentinelOne STAR / Custom Detection rules to bind an alert to a
+# real Target Asset (and not "Unknown Device"), the matched event must
+# carry both:
+#
+# * an identifier in ``device.uid`` (endpoint/cloud) or ``user.uid``
+#   (identity) sourced from the XDR asset inventory, and
+# * a ``class_uid`` that classifies the event as asset-bearing —
+#   the OCSF class id is enough; S1 resolves the actual category
+#   from inventory.
+#
+# This table is the fallback when a source module doesn't pin its
+# own ``ASSET_BINDING`` constant. Each entry is::
+#
+#     {"kind": "endpoint" | "identity" | "cloud" | "network" | "none",
+#      "class_uid": int}
+#
+# ``kind="none"`` means the source is governance / posture data (Snyk,
+# Tenable, Wiz) — the push loop SHOULD NOT try to bind these to a
+# device or user. The corresponding ``class_uid`` is 0.
+#
+# OCSF class ids reference:
+#   1007 — Process Activity        (endpoint EDR-shape)
+#   3002 — Authentication          (identity)
+#   4001 — Network Activity        (network appliance / firewall)
+#   4002 — HTTP Activity           (proxy / WAF / CASB)
+#   6003 — Web Resources Activity  (cloud control-plane)
+_ASSET_BINDING_DEFAULTS: dict[str, dict[str, Any]] = {
+    # identity (3002 — Authentication)
+    "okta":               {"kind": "identity", "class_uid": 3002},
+    "azure_ad":           {"kind": "identity", "class_uid": 3002},
+    "cisco_duo":          {"kind": "identity", "class_uid": 3002},
+    "m365":               {"kind": "identity", "class_uid": 3002},
+    # cloud (6003 — Web Resources Activity)
+    "aws_cloudtrail":     {"kind": "cloud",    "class_uid": 6003},
+    "aws_guardduty":      {"kind": "cloud",    "class_uid": 6003},
+    "aws_waf":            {"kind": "cloud",    "class_uid": 6003},
+    "azure_platform":     {"kind": "cloud",    "class_uid": 6003},
+    "gcp_audit":          {"kind": "cloud",    "class_uid": 6003},
+    # endpoint (1007 — Process Activity)
+    "sentinelone":        {"kind": "endpoint", "class_uid": 1007},
+    "microsoft_defender": {"kind": "endpoint", "class_uid": 1007},
+    # network — 4001 for raw network activity, 4002 for HTTP-shaped feeds
+    "cato":               {"kind": "network",  "class_uid": 4001},
+    "darktrace":          {"kind": "network",  "class_uid": 4001},
+    "cloudflare":         {"kind": "network",  "class_uid": 4002},
+    "mimecast":           {"kind": "network",  "class_uid": 4002},
+    "netskope":           {"kind": "network",  "class_uid": 4002},
+    "proofpoint":         {"kind": "network",  "class_uid": 4002},
+    "zscaler_zpa":        {"kind": "network",  "class_uid": 4002},
+    # governance — explicit opt-out so the push loop SKIPS binding.
+    "snyk":               {"kind": "none",     "class_uid": 0},
+    "tenable":            {"kind": "none",     "class_uid": 0},
+    "wiz":                {"kind": "none",     "class_uid": 0},
+}
+
+
+def get_asset_binding(source: str) -> dict[str, Any] | None:
+    """Return the asset-binding config for *source*, or ``None``.
+
+    Resolution order — module-level constant wins over registry fallback,
+    so a vendor source module can pin its kind / class_uid in the same
+    file as ``EVENT_CATALOG`` / ``PERSONA_PROJECTION``::
+
+        # sources/some_vendor.py
+        ASSET_BINDING = {"kind": "cloud", "class_uid": 6003}
+
+    Returns ``None`` (rather than a stub dict) for unknown source ids
+    so the push loop can treat "no binding configured" and "explicit
+    opt-out" as separate cases — the latter still ships the event
+    (just with no asset stamp), the former skips binding entirely.
+
+    Accepts either canonical module-name ids (``azure_ad``) or
+    bindings-UI aliases (``entra_id``, ``defender``); aliases resolve
+    via :data:`SOURCE_ID_ALIASES`.
+    """
+    if not source:
+        return None
+    source = canonical_source_id(source)
+    # Module-level override has priority.
+    for name, mod in iter_source_modules():
+        if name == source:
+            override = getattr(mod, "ASSET_BINDING", None)
+            if isinstance(override, dict) and override:
+                return override
+            break
+    # Fallback to the registry table.
+    return _ASSET_BINDING_DEFAULTS.get(source)
+
+
 def get_event_catalogs() -> dict[str, list[dict[str, Any]]]:
     """Return ``{source_name: EVENT_CATALOG}`` for every mix-aware source.
 

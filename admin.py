@@ -1453,6 +1453,19 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
                 <option value="private">Private</option>
                 <option value="public">Public</option></select></div>
           </div>
+          <!-- v5.3 — XDR asset binding. The push loop stamps real device.uid /
+               user.uid (resolved from the S1 inventory) plus an OCSF class_uid
+               on every event when this is ON, so STAR / Custom Detection
+               rules bind their alerts to a real Target Asset instead of
+               "Unknown Device". Requires S1 console URL + API token configured
+               on the Account page. Default OFF — opt-in. -->
+          <div style="display:flex;gap:10px;align-items:center;margin-top:6px;padding:8px 10px;background:rgba(90,24,154,.15);border:1px solid rgba(199,125,255,.2);border-radius:8px">
+            <input id="push-link-xdr-assets" type="checkbox" style="margin:0;accent-color:#c77dff"/>
+            <label for="push-link-xdr-assets" style="font-size:.78rem;color:var(--mist);cursor:pointer;flex:1">
+              <b>Link XDR assets</b>
+              <span style="font-size:.7rem;color:rgba(224,170,255,.55);display:block;margin-top:2px">Bind each event to a real S1 asset (device.uid / user.uid + OCSF class_uid) so STAR rules land on the right Target Asset. Requires S1 mgmt creds on Account page.</span>
+            </label>
+          </div>
         </div>
         <div id="push-readonly-banner" style="display:none;margin:0 16px 4px;padding:8px 12px;border-radius:8px;background:rgba(128,200,255,.1);border:1px solid rgba(128,200,255,.3);color:#9cd3ff;font-size:.78rem">This is a shared push profile you don't own — it's read-only. Use <b>Clone</b> to make your own editable copy.</div>
         <div class="modal-foot"><div></div><div class="right">
@@ -5834,6 +5847,13 @@ async function loadPushProfiles() {
       h += '<span class="pill" style="color:#c77dff">' + escHtml(st.name || p.source_type) + '</span>';
       h += '<span class="pill">' + escHtml(p.format) + '</span>';
       h += '<span class="pill">' + escHtml(p.transport) + '</span>';
+      // v5.3 — XDR binding pill. Static "ON" indicator; runtime
+      // counters (events_bound / events_skipped) are visible through
+      // the Events viewer which now also fetches /status for live
+      // profiles.
+      if (p.link_xdr_assets) {
+        h += '<span class="pill" style="color:#80ff80;border-color:rgba(128,255,128,.4)" title="XDR asset binding ON — events carry real device.uid / user.uid">🔗 Bind</span>';
+      }
       h += '</div>';
       h += '<div style="display:flex;gap:4px">';
       if (p.status === 'running') {
@@ -6012,6 +6032,7 @@ async function openPushEditor(profileId) {
         document.getElementById('push-duration-unit').value = dur.unit || 'hours';
         document.getElementById('push-profile-id').value = p.profile_id || '';
         document.getElementById('push-visibility').value = p.visibility || 'private';
+        document.getElementById('push-link-xdr-assets').checked = !!p.link_xdr_assets;
         togglePushPath();
         togglePushSource();
         _applyPushMode(p);
@@ -6027,6 +6048,7 @@ async function openPushEditor(profileId) {
     document.getElementById('push-duration-unit').value = 'hours';
     document.getElementById('push-profile-id').value = '';
     document.getElementById('push-visibility').value = 'private';
+    document.getElementById('push-link-xdr-assets').checked = false;
     togglePushPath();
     togglePushSource();
     _applyPushMode(null);
@@ -6096,7 +6118,8 @@ async function savePushProfile() {
       unit: document.getElementById('push-duration-unit').value
     },
     profile_id: document.getElementById('push-profile-id').value || null,
-    visibility: document.getElementById('push-visibility').value
+    visibility: document.getElementById('push-visibility').value,
+    link_xdr_assets: document.getElementById('push-link-xdr-assets').checked
   };
   try {
     var url = _editingPushId ? '/admin/api/push/profiles/' + _editingPushId : '/admin/api/push/profiles';
@@ -6122,14 +6145,47 @@ async function deletePushProfile() {
 
 async function viewPushEvents(profileId) {
   try {
-    var r = await fetch('/admin/api/push/profiles/' + profileId + '/events', {credentials:'same-origin'});
-    var d = await r.json();
+    // v5.3 — also pull /status for the binding diagnostics block.
+    // Parallel fetches keep the panel snappy even on a slow tenant.
+    var [evResp, stResp] = await Promise.all([
+      fetch('/admin/api/push/profiles/' + profileId + '/events', {credentials:'same-origin'}),
+      fetch('/admin/api/push/profiles/' + profileId + '/status', {credentials:'same-origin'})
+    ]);
+    var d  = await evResp.json();
+    var sd = await stResp.json();
     var events = d.events || [];
-    var h = '<div style="background:rgba(10,0,20,.5);border:1px solid rgba(199,125,255,.15);border-radius:8px;padding:10px;margin-top:8px;max-height:300px;overflow-y:auto">';
+    var binding = (sd && sd.binding) || null;
+    var h = '<div style="background:rgba(10,0,20,.5);border:1px solid rgba(199,125,255,.15);border-radius:8px;padding:10px;margin-top:8px;max-height:340px;overflow-y:auto">';
     h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">';
     h += '<span style="font-size:.72rem;font-weight:600;color:rgba(224,170,255,.6)">Last ' + events.length + ' events</span>';
-    h += '<button class="btn-sm" style="padding:2px 8px;font-size:.6rem" onclick="this.parentElement.parentElement.remove()">Close</button>';
+    h += '<button class="btn-sm" style="padding:2px 8px;font-size:.6rem" onclick="this.parentElement.parentElement.parentElement.remove()">Close</button>';
     h += '</div>';
+    // Binding diagnostics strip — only shown when binding is enabled
+    // on this profile (operator opted in). Counters come from the
+    // module-level dict in log_pusher and reset each Start.
+    if (binding && binding.enabled) {
+      var bound   = binding.events_bound   || 0;
+      var skipped = binding.events_skipped || 0;
+      var total   = bound + skipped;
+      var pct     = total ? Math.round((bound / total) * 100) : null;
+      var bColor = !binding.configured ? '#ff9966'
+                    : (pct === null || pct >= 80 ? '#80ff80'
+                       : (pct >= 50 ? '#ffd166' : '#ff9966'));
+      h += '<div style="font-size:.68rem;color:rgba(224,170,255,.55);background:rgba(90,24,154,.18);border:1px solid rgba(199,125,255,.18);border-radius:6px;padding:6px 8px;margin-bottom:8px;display:flex;flex-wrap:wrap;gap:10px;align-items:center">';
+      h += '<span style="color:' + bColor + ';font-weight:600">🔗 Binding</span>';
+      if (!binding.configured && total === 0) {
+        h += '<span style="color:#ff9966">enabled but resolver did not run yet — check S1 mgmt creds on the Account page</span>';
+      } else {
+        h += '<span>' + bound + ' bound</span>';
+        h += '<span>' + skipped + ' skipped</span>';
+        if (pct !== null) h += '<span style="color:' + bColor + '">' + pct + '% bound</span>';
+        var st = binding.stats || {};
+        if (st.lookups !== undefined) {
+          h += '<span style="color:rgba(224,170,255,.4)">resolver: ' + (st.lookups || 0) + ' lookups, ' + (st.cache_hits || 0) + ' cached</span>';
+        }
+      }
+      h += '</div>';
+    }
     if (!events.length) {
       h += '<p class="empty">No events recorded yet.</p>';
     } else {

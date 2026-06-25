@@ -41,6 +41,16 @@ _stop_events: dict[str, threading.Event] = {}
 _MAX_EVENT_LOG = 100
 _event_logs: dict[str, collections.deque] = {}
 
+# Per-profile asset-binding counters (v5.3). Kept in a module-level
+# dict so the status endpoint can read them WITHOUT a reference to the
+# live resolver (which is owned + closed by the push thread). Keys are
+# profile ids; values track ``events_bound`` (splice stamped a uid)
+# vs ``events_skipped`` (splice consulted the resolver but it missed).
+# Counters reset at ``start_push`` time and persist after stop so the
+# operator can still read the final tally on the status endpoint.
+_binding_counters: dict[str, dict[str, int]] = {}
+_binding_resolver_stats: dict[str, dict[str, Any]] = {}
+
 
 def _log_event(profile_id: str, event: dict, formatted: str, success: bool,
                error: str = "", delivery: dict | None = None) -> None:
@@ -177,6 +187,15 @@ def create_profile(data: dict[str, Any]) -> dict[str, Any]:
         "replay_file_id": data.get("replay_file_id") or None,
         "otlp_signal": data.get("otlp_signal", "logs"),
         "otlp_listener_id": data.get("otlp_listener_id") or None,
+        # v5.3 — XDR asset binding. When True the push loop attaches
+        # a real ``device.uid`` / ``user.uid`` (from the S1 inventory)
+        # plus an OCSF ``class_uid`` to every event, so STAR / Custom
+        # Detection rules in the tenant bind their alerts to the
+        # right asset instead of "Unknown Device". Mirrors the same-
+        # named flag on Alert Push profiles. Default False so an
+        # existing profile that never knew about this feature keeps
+        # the legacy unbound shape on the wire.
+        "link_xdr_assets": bool(data.get("link_xdr_assets", False)),
     }
     with _lock:
         profiles = _load_profiles()
@@ -201,7 +220,9 @@ def update_profile(profile_id: str, data: dict[str, Any]) -> dict[str, Any] | No
             return None
         for key in ("name", "source_type", "format", "transport", "destination",
                      "duration", "rate", "profile_id", "visibility",
-                     "replay_file_id", "otlp_signal", "otlp_listener_id"):
+                     "replay_file_id", "otlp_signal", "otlp_listener_id",
+                     # v5.3 — toggle for asset binding on the push path.
+                     "link_xdr_assets"):
             if key in data:
                 p[key] = data[key]
         if "rate" in data:
@@ -541,6 +562,133 @@ def send_event(formatted: str, transport: str, dest: dict[str, Any],
     return _send_http(formatted, dest)
 
 
+# ── XDR asset binding (v5.3 Step 2) ──────────────────────────────────────────
+
+
+def record_binding_outcome(profile_id: str, *, bound: bool) -> None:
+    """Bump the per-profile asset-binding counters.
+
+    Called from :func:`apply_asset_binding` (when wired with a
+    ``profile_id``) and from the push loop's start/stop bookkeeping
+    to reset the counters at the right moments. Thread-safe under
+    the module ``_lock`` because the push loop runs in a background
+    thread while the status endpoint reads from the request thread.
+    """
+    if not profile_id:
+        return
+    with _lock:
+        c = _binding_counters.setdefault(profile_id,
+                                          {"events_bound": 0,
+                                           "events_skipped": 0})
+        c["events_bound" if bound else "events_skipped"] += 1
+
+
+def apply_asset_binding(event: dict[str, Any], source: str,
+                         resolver: Any,
+                         profile_id: str | None = None) -> dict[str, Any]:
+    """Stamp ``class_uid`` + ``device.uid`` / ``user.uid`` on *event*.
+
+    Called for every event the push loop generates. Mutates *event*
+    in place AND returns it (so the caller can chain or treat it as
+    a no-op). Idempotent on existing ``device.uid`` / ``user.uid`` —
+    if the source module already set one (the ``sentinelone`` self-
+    source emits real agent UUIDs), we keep that value and just add
+    ``class_uid``.
+
+    Cases handled cleanly:
+
+    * ``resolver is None`` — operator did not opt in
+      (``link_xdr_assets=False``). Return event untouched.
+    * Source has ``kind="none"`` in the registry (Snyk / Tenable /
+      Wiz) — never bind these governance feeds.
+    * Source has no binding in the registry — return event untouched
+      (same as kind=none but for not-yet-wired sources).
+    * Resolver returns ``None`` from ``sticky_pick`` — empty
+      inventory / 404 on identity / unconfigured. Push must NEVER
+      break, so we ship the event as-is.
+
+    Source ids accept both canonical and UI-alias forms (``entra_id``
+    / ``defender``) — resolved via :func:`sources.get_asset_binding`.
+    """
+    if resolver is None:
+        return event
+
+    import sources as _sources
+    binding = _sources.get_asset_binding(source)
+    if not binding:
+        return event
+    kind = binding.get("kind") or "none"
+    if kind == "none":
+        return event
+
+    hit = resolver.sticky_pick(kind)
+    if not hit:
+        # Atomic opt-in: when we can't bind to a real asset, ship the
+        # event in its original shape. Stamping ``class_uid`` alone
+        # would tell S1's STAR pipeline "this is an asset-bearing
+        # event" while the binding key is missing — the alert binds
+        # to "Unknown Device" the same way it does today, but the
+        # operator sees their event shape mutate. Cleaner to leave it
+        # alone until the resolver can actually finish the job.
+        record_binding_outcome(profile_id or "", bound=False)
+        return event
+
+    class_uid = int(binding.get("class_uid") or 0)
+    if class_uid:
+        event["class_uid"] = class_uid
+
+    # ``identity`` ⇒ user.uid; everything else (endpoint, cloud,
+    # network) targets device.uid. Existing uid wins — never clobber.
+    target_field = "user" if kind == "identity" else "device"
+    sub = event.setdefault(target_field, {})
+    if isinstance(sub, dict) and not sub.get("uid"):
+        sub["uid"] = hit["uid"]
+    record_binding_outcome(profile_id or "", bound=True)
+    return event
+
+
+def _build_push_resolver(profile: dict[str, Any]):
+    """Construct an :class:`s1_assets.S1AssetResolver` for the push loop.
+
+    Returns ``None`` when:
+
+    * the profile has ``link_xdr_assets=False`` (operator did not opt
+      in — most common case, hot path),
+    * the S1 mgmt console URL / API token are not configured (the
+      resolver can't do anything without them).
+
+    The push loop runs in a background thread with no request
+    context, so we resolve creds from the admin-global
+    ``s1_settings.json`` via :func:`s1_detection_library._resolved_settings`.
+
+    The caller (the push loop) is responsible for ``close()``-ing
+    the returned resolver when the loop exits — wraps it in a
+    try/finally to keep the httpx client lifecycle clean.
+    """
+    if not profile or not profile.get("link_xdr_assets"):
+        return None
+    try:
+        import s1_assets
+        import s1_detection_library
+    except Exception as exc:                              # pragma: no cover
+        log.info("link_xdr_assets: cannot import resolver deps: %s", exc)
+        return None
+    resolved = s1_detection_library._resolved_settings() or {}
+    url = (resolved.get("console_url") or "").strip()
+    token = (resolved.get("api_token") or "").strip()
+    if not (url and token):
+        log.info("link_xdr_assets: enabled on profile %s but S1 console "
+                 "URL + API token are not configured — skipping binding",
+                 profile.get("id", "?")[:8])
+        return None
+    account_id = (resolved.get("account_id") or "").strip() or None
+    site_id = (resolved.get("site_id") or "").strip() or None
+    return s1_assets.S1AssetResolver(
+        console_url=url, api_token=token,
+        account_id=account_id, site_id=site_id,
+    )
+
+
 # ── Push execution engine ────────────────────────────────────────────────────
 
 def _load_source_module(source_type: str):
@@ -625,6 +773,14 @@ def _push_loop(profile_id: str) -> None:
     if _obs and source_key not in REQUEST_TRACE:
         REQUEST_TRACE[source_key] = collections.deque(maxlen=200)
 
+    # v5.3 — XDR asset resolver, built once per push-loop lifetime when
+    # ``link_xdr_assets`` is True on this profile AND S1 mgmt creds are
+    # configured. ``None`` is the no-op case the splice (``apply_asset_binding``)
+    # already understands, so the push loop is identical whether the operator
+    # opted in or not. The try/finally below ensures the underlying httpx
+    # client gets closed even if the loop exits via an exception.
+    asset_resolver = _build_push_resolver(profile)
+
     interval = 1.0 / rate
     deadline = time.monotonic() + duration_secs
     events_sent = 0
@@ -636,66 +792,94 @@ def _push_loop(profile_id: str) -> None:
 
     _update_status(profile_id, "running", started_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
 
-    while time.monotonic() < deadline:
-        if stop_event and stop_event.is_set():
-            break
+    try:
+        while time.monotonic() < deadline:
+            if stop_event and stop_event.is_set():
+                break
 
-        t0 = time.monotonic()
-        try:
-            if src_iter is not None:
-                try:
-                    event = next(src_iter)
-                except StopIteration:
-                    log.info("Push %s: source iterator exhausted", profile_id[:8])
-                    break
-            else:
-                event = mod.generate_event(ctx=ctx)
-            batch = detection_rules.inject_detection_events(source_type, [event])
-            for ev in batch:
-                formatted = format_event(ev, fmt, source_type)
-                delivery = send_event(formatted, transport, dest,
-                                       event=ev, profile=profile)
-                events_sent += 1
-                _log_event(profile_id, ev, formatted, True, delivery=delivery)
+            t0 = time.monotonic()
+            try:
+                if src_iter is not None:
+                    try:
+                        event = next(src_iter)
+                    except StopIteration:
+                        log.info("Push %s: source iterator exhausted", profile_id[:8])
+                        break
+                else:
+                    event = mod.generate_event(ctx=ctx)
+                # v5.3 — stamp class_uid + device.uid/user.uid on the base
+                # event BEFORE the detection-rule injection loop. The
+                # injector deep-copies the base when applying field
+                # overrides, so every injected detection event inherits
+                # the same binding — keeps a STAR alert and its triggering
+                # normal log on the same Target Asset in the analyst's
+                # view. ``apply_asset_binding`` is a no-op when
+                # ``asset_resolver is None`` (operator did not opt in).
+                apply_asset_binding(event, source_type, asset_resolver,
+                                     profile_id=profile_id)
+                batch = detection_rules.inject_detection_events(source_type, [event])
+                for ev in batch:
+                    formatted = format_event(ev, fmt, source_type)
+                    delivery = send_event(formatted, transport, dest,
+                                           event=ev, profile=profile)
+                    events_sent += 1
+                    _log_event(profile_id, ev, formatted, True, delivery=delivery)
 
-                # Record in observability
-                if _obs:
-                    ts_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
-                    duration_ms = int((time.monotonic() - t0) * 1000)
-                    REQUEST_TRACE[source_key].appendleft({
-                        "ts": ts_iso,
-                        "method": "PUSH",
-                        "path": f"→ {dest_label}",
-                        "query": "",
-                        "status": 200,
-                        "duration_ms": duration_ms,
-                        "client": dest.get("host", "?"),
-                        "req_headers": {"transport": transport, "format": fmt},
-                        "req_body": "",
-                        "resp_size": len(formatted),
-                        "resp_preview": formatted[:200],
-                        "user_agent": f"push/{source_type}",
-                    })
-                    telemetry.record(source_key)
-                    agg_key = (dest.get("host", "0.0.0.0"), source_key)
-                    if agg_key not in AGG:
-                        AGG[agg_key] = {"total": 0}
-                    AGG[agg_key]["total"] += 1
+                    # Record in observability
+                    if _obs:
+                        ts_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                        duration_ms = int((time.monotonic() - t0) * 1000)
+                        REQUEST_TRACE[source_key].appendleft({
+                            "ts": ts_iso,
+                            "method": "PUSH",
+                            "path": f"→ {dest_label}",
+                            "query": "",
+                            "status": 200,
+                            "duration_ms": duration_ms,
+                            "client": dest.get("host", "?"),
+                            "req_headers": {"transport": transport, "format": fmt},
+                            "req_body": "",
+                            "resp_size": len(formatted),
+                            "resp_preview": formatted[:200],
+                            "user_agent": f"push/{source_type}",
+                        })
+                        telemetry.record(source_key)
+                        agg_key = (dest.get("host", "0.0.0.0"), source_key)
+                        if agg_key not in AGG:
+                            AGG[agg_key] = {"total": 0}
+                        AGG[agg_key]["total"] += 1
 
-        except Exception as exc:
-            errors += 1
-            _log_event(profile_id, event if 'event' in dir() else {}, "", False, str(exc))
-            log.warning("Push %s send error: %s", profile_id[:8], exc)
+            except Exception as exc:
+                errors += 1
+                _log_event(profile_id, event if 'event' in dir() else {}, "", False, str(exc))
+                log.warning("Push %s send error: %s", profile_id[:8], exc)
+                if stop_event:
+                    stop_event.wait(2)
+                else:
+                    time.sleep(2)
+                continue
+
             if stop_event:
-                stop_event.wait(2)
+                stop_event.wait(interval)
             else:
-                time.sleep(2)
-            continue
-
-        if stop_event:
-            stop_event.wait(interval)
-        else:
-            time.sleep(interval)
+                time.sleep(interval)
+    finally:
+        # Always release the resolver's httpx client — leaving it
+        # dangling for a long-running push profile would leak file
+        # descriptors over the lifetime of the apigenie process.
+        if asset_resolver is not None:
+            try:
+                # Snapshot stats BEFORE close() so the status endpoint
+                # can still surface them after the push thread exits.
+                with _lock:
+                    _binding_resolver_stats[profile_id] = asset_resolver.stats()
+            except Exception:                            # pragma: no cover
+                pass
+            try:
+                asset_resolver.close()
+            except Exception:                            # pragma: no cover
+                log.warning("Push %s: error closing asset resolver",
+                            profile_id[:8])
 
     status = "stopped" if (stop_event and stop_event.is_set()) else "completed"
     _update_status(profile_id, status, events_sent=events_sent)
@@ -728,6 +912,16 @@ def start_push(profile_id: str, password: str | None = None) -> dict[str, Any] |
     if profile_id in _active_threads and _active_threads[profile_id].is_alive():
         return "Already running"
 
+    # v5.3 — reset the asset-binding counters / resolver stats for
+    # this profile so the new push session starts from a clean slate.
+    # Doing this here (not in _push_loop) means a status query during
+    # the brief window before the thread reaches the first iteration
+    # still reports zeros instead of stale values from the prior run.
+    with _lock:
+        _binding_counters[profile_id] = {"events_bound": 0,
+                                          "events_skipped": 0}
+        _binding_resolver_stats.pop(profile_id, None)
+
     stop_event = threading.Event()
     _stop_events[profile_id] = stop_event
     t = threading.Thread(target=_push_loop, args=(profile_id,), daemon=True,
@@ -751,14 +945,53 @@ def stop_push(profile_id: str) -> bool:
 
 
 def get_status(profile_id: str) -> dict[str, Any]:
-    """Return runtime status for a profile."""
+    """Return runtime status for a profile, including v5.3 binding diagnostics.
+
+    The ``binding`` sub-block lets the UI render a "Binding: 38/42
+    bound" pill without grepping container logs::
+
+        {
+          "enabled":        bool,   # profile.link_xdr_assets
+          "configured":     bool,   # resolver was actually built
+                                    # (creds present, kind != none)
+          "events_bound":   int,    # splice stamped a uid
+          "events_skipped": int,    # splice consulted resolver,
+                                    # got None (empty inventory / 404)
+          "stats":          dict,   # last resolver.stats() snapshot,
+                                    # captured at loop exit
+        }
+
+    Always present on the response, even when binding is disabled —
+    so the JS front-end doesn't have to guard against the key being
+    absent.
+    """
     profile = get_profile(profile_id)
     if not profile:
         return {"error": "not found"}
     running = profile_id in _active_threads and _active_threads[profile_id].is_alive()
+    with _lock:
+        counters = dict(_binding_counters.get(profile_id,
+                                                {"events_bound": 0,
+                                                 "events_skipped": 0}))
+        stats = dict(_binding_resolver_stats.get(profile_id) or {})
+    enabled = bool(profile.get("link_xdr_assets"))
+    # ``configured`` is "did the resolver get built?". We approximate
+    # without leaking creds: if binding is enabled AND we've ever
+    # recorded a stats snapshot OR a bound/skipped outcome, the
+    # resolver ran. False otherwise — typically means creds missing.
+    configured = enabled and (
+        bool(stats) or counters["events_bound"] > 0 or
+        counters["events_skipped"] > 0)
     return {
         "id": profile_id,
         "status": "running" if running else profile.get("status", "stopped"),
         "events_sent": profile.get("events_sent", 0),
         "started_at": profile.get("started_at", ""),
+        "binding": {
+            "enabled":        enabled,
+            "configured":     configured,
+            "events_bound":   counters["events_bound"],
+            "events_skipped": counters["events_skipped"],
+            "stats":          stats,
+        },
     }
