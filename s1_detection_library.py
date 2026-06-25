@@ -582,11 +582,44 @@ def query_rules_for_phase(source: str, mitre_tactic: str, limit: int = 10) -> di
         log.info("for-phase: scoped status enrich failed (%s) — using "
                  "catalog status", scoped.get("error"))
         return result
-    by_id = {str(r.get("id")): r for r in scoped.get("data", [])}
+    # v5.1.4 diagnostic — print one platform-rules entry so we can
+    # confirm the response shape on a live tenant. We *think* the
+    # field name is "status" with values "Enabled"/"Disabled" (same
+    # as the catalog endpoint), but the swagger doesn't guarantee it
+    # and different console versions return slightly different shapes
+    # (some use ``enabled: bool``, some use ``state: "active"``,
+    # some omit the rule entirely when no per-scope override exists).
+    data_list = scoped.get("data", []) or []
+    if data_list:
+        log.info("for-phase: /platform-rules scope=%s:%s sample=%s",
+                 scope_level, scope_id,
+                 json.dumps(data_list[0])[:400])
+    else:
+        log.info("for-phase: /platform-rules scope=%s:%s returned 0 "
+                 "entries for ids=%s — site has no per-scope override "
+                 "for these rules (they're inheriting from parent or "
+                 "haven't been toggled yet)",
+                 scope_level, scope_id, ",".join(rule_ids[:3]))
+    by_id = {str(r.get("id")): r for r in data_list}
     for rule in result["rules"]:
         scoped_rule = by_id.get(str(rule.get("id")))
-        if scoped_rule and "status" in scoped_rule:
+        if not scoped_rule:
+            continue
+        # Map every shape S1 has shipped for the per-scope status into
+        # the legacy "Enabled" / "Disabled" string the front-end already
+        # understands. Anything we don't recognise we leave untouched
+        # so the catalog status survives — never replace a known value
+        # with garbage.
+        if "status" in scoped_rule:
             rule["status"] = scoped_rule["status"]
+        elif "enabled" in scoped_rule:
+            rule["status"] = ("Enabled" if scoped_rule["enabled"]
+                              else "Disabled")
+        elif "state" in scoped_rule:
+            rule["status"] = ("Enabled"
+                              if str(scoped_rule["state"]).lower() in
+                              ("enabled", "active", "on")
+                              else "Disabled")
     return result
 
 

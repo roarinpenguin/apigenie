@@ -9765,6 +9765,41 @@ async def api_replays_delete(file_id: str, ag_session: str | None = Cookie(None)
     return JSONResponse({"ok": True, "file_id": file_id})
 
 
+# ── Version (so the operator can confirm what's actually running) ────────────
+
+@router.get("/api/version")
+async def api_version():
+    """Return the running apigenie version + git SHA when available.
+
+    Unauthenticated: useful for "did my redeploy actually pick up the
+    new build?" checks without needing a session. Reads
+    ``pyproject.toml`` lazily so we don't pay an import cost on
+    every other request. The git SHA is best-effort; if the .git
+    directory isn't present in the image (some Docker builds prune
+    it) we just return the version.
+    """
+    import tomllib
+    from pathlib import Path
+    version = "unknown"
+    try:
+        with open(Path(__file__).parent / "pyproject.toml", "rb") as f:
+            version = tomllib.load(f).get("project", {}).get("version", "unknown")
+    except Exception:
+        pass
+    sha = "unknown"
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=Path(__file__).parent,
+            capture_output=True, text=True, timeout=2)
+        if out.returncode == 0:
+            sha = out.stdout.strip() or "unknown"
+    except Exception:
+        pass
+    return JSONResponse({"version": version, "git": sha})
+
+
 # ── Current session identity + effective permissions (both roles) ────────────
 
 @router.get("/api/me")
