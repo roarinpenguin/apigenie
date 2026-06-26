@@ -56,6 +56,28 @@ _register("bec_phishing", "Business Email Compromise (BEC)",
                 "impostorScore": 90,
                 "malwareScore": 0,
             },
+            # v5.1.10 — phase ↔ vendor STAR rule mapping surfaced in the UI.
+            # The scenario card's existing "S1 Rules" panel highlights every
+            # rule whose ``name`` matches one of these entries with a 🎯
+            # marker, and the s1ql field becomes the body of the clickable
+            # rule-preview modal. Operators who edit the field_overrides
+            # should keep this list in sync — or empty it if the phase is
+            # no longer engineered to fire a specific rule.
+            "target_rules": [
+                {
+                    "name": "Proofpoint Impostor Email Unblocked",
+                    "source": "proofpoint",
+                    "severity": "High",
+                    "mitre": "T1566.001",
+                    "s1ql": (
+                        "dataSource.name = 'Proofpoint' AND "
+                        "unmapped.threatsInfoMap contains '\"classification\":\"impostor\"' "
+                        "AND (unmapped.messageParts contains '\"sandboxStatus\":\"THREAT\"' "
+                        "     OR unmapped.impostorScore > 80) "
+                        "AND NOT (unmapped.quarantineFolder = *)"
+                    ),
+                },
+            ],
         },
         # ── Phase 2 ─────────────────────────────────────────────────────────
         # Target rule: "Okta Impersonation Session Initiated" (sev=High).
@@ -83,6 +105,19 @@ _register("bec_phishing", "Business Email Compromise (BEC)",
                 "securityContext.isProxy": True,
                 "debugContext.debugData.risk": "HIGH",
             },
+            "target_rules": [
+                {
+                    "name": "Okta Impersonation Session Initiated",
+                    "source": "okta",
+                    "severity": "High",
+                    "mitre": "T1528",
+                    "s1ql": (
+                        "dataSource.name = 'Okta' AND "
+                        "(unmapped.eventType contains 'user.session.impersonation.initiate' "
+                        " OR unmapped.legacyEventType contains 'user.session.impersonation.initiate')"
+                    ),
+                },
+            ],
         },
         # ── Phase 3 ─────────────────────────────────────────────────────────
         # Target rule: "Office 365 Admin Consent Granted for All Principals" (sev=Low).
@@ -112,6 +147,19 @@ _register("bec_phishing", "Business Email Compromise (BEC)",
                 ),
                 "ObjectId": "OAuth-App-Phishing-Toolkit",
             },
+            "target_rules": [
+                {
+                    "name": "Office 365 Admin Consent Granted for All Principals",
+                    "source": "m365",
+                    "severity": "Low",
+                    "mitre": "T1098.003",
+                    "s1ql": (
+                        "dataSource.name = 'Microsoft O365' AND "
+                        "unmapped.Operation = 'Consent to application.' AND "
+                        "unmapped.ModifiedProperties contains 'ConsentType: AllPrincipals'"
+                    ),
+                },
+            ],
         },
         # ── Phase 4 ─────────────────────────────────────────────────────────
         # Target rule: "Office 365 Inbox Rule Created or Modified with Suspicious
@@ -144,6 +192,22 @@ _register("bec_phishing", "Business Email Compromise (BEC)",
                     {"Name": "StopProcessingRules", "Value": "True"},
                 ],
             },
+            "target_rules": [
+                {
+                    "name": "Office 365 Inbox Rule Created or Modified with Suspicious Parameters",
+                    "source": "m365",
+                    "severity": "Medium",
+                    "mitre": "T1564.008",
+                    "s1ql": (
+                        "metadata.product.name = 'Exchange' AND "
+                        "activity_name in ('New-InboxRule', 'Set-InboxRule') AND "
+                        "unmapped.Parameters matches '\"Name\":\\s*\"MoveToFolder\"' AND "
+                        "unmapped.Parameters matches '\"Value\":\\s*\"(Conversation History|RSS Feeds|Deleted Items|Junk Email)\"' AND "
+                        "unmapped.Parameters matches '\"Name\":\\s*\"MarkAsRead\"' AND "
+                        "unmapped.Parameters matches '\"Value\":\\s*\"True\"'"
+                    ),
+                },
+            ],
         },
         # ── Phase 5 ─────────────────────────────────────────────────────────
         # Target rule: "Office 365 Mailbox Permissions Delegation" (sev=Info).
@@ -174,6 +238,20 @@ _register("bec_phishing", "Business Email Compromise (BEC)",
                     {"Name": "AccessRights", "Value": "SendAs"},
                 ],
             },
+            "target_rules": [
+                {
+                    "name": "Office 365 Mailbox Permissions Delegation",
+                    "source": "m365",
+                    "severity": "Info",
+                    "mitre": "T1098.002",
+                    "s1ql": (
+                        "metadata.product.name = 'Exchange' AND "
+                        "activity_name = 'Add-MailboxPermission' AND "
+                        "unmapped.Parameters contains:matchcase ('FullAccess', 'SendAs', 'SendOnBehalf') AND "
+                        "unmapped.UserId != 'NT AUTHORITY\\SYSTEM (Microsoft.Exchange.ServiceHost)'"
+                    ),
+                },
+            ],
         },
     ]
 )

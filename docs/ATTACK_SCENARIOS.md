@@ -878,3 +878,64 @@ Operators who want the BEC scenario to fire **different** rules (e.g. "Office 36
 - `tests/test_bec_scenario_v519.py::test_bec_phase5_userid_not_system` — guards that the SendAs phase doesn't accidentally pin UserId to the Exchange system actor (which the rule excludes).
 - `tests/test_bec_scenario_v519.py::test_bec_has_five_phases_in_canonical_order` — phase order invariant.
 - `tests/test_bec_scenario_v519.py::test_bec_phase_offsets_are_non_overlapping_and_monotonic` — timeline monotonicity.
+
+---
+
+## v5.1.10 — phase ↔ STAR rule mapping surfaced in the scenario card UI
+
+v5.1.9 wired up the BEC scenario so each phase produces events that satisfy a specific vendor S1 STAR rule, but the mapping was only discoverable by reading the code, the doc, or the test names. v5.1.10 makes that mapping visible **inside the apigenie admin UI itself**: every phase carries an optional `target_rules` list, and the scenario card highlights those targets with a 🎯 marker plus a clickable preview of the full s1ql query body.
+
+### What changed
+
+1. **Schema** — every `phases[i]` dict now supports an optional `target_rules: list[dict]`. Each entry has:
+   - `name` (required) — exact rule name as it appears in the S1 Detection Library.
+   - `source` — vendor source the rule queries (e.g. `m365`, `okta`, `proofpoint`).
+   - `severity` — Info / Low / Medium / High / Critical.
+   - `mitre` — MITRE technique ID (e.g. `T1098.003`).
+   - `s1ql` — the query body excerpt the phase is engineered to satisfy.
+
+   The BEC template ships one entry per phase. Other templates (Ransomware, Cloud Account Takeover, etc.) keep `target_rules` empty — adding mappings there is the same one-line edit per phase.
+
+2. **Validation, persistence, round-trip** — `attack_scenarios.validate_scenario_payload` accepts `target_rules` and rejects malformed entries. `_EXPORT_PHASE_KEYS` includes the field so export → import preserves it. Pre-v5.1.10 scenarios without `target_rules` continue to validate cleanly (the field is optional).
+
+3. **Scenario card UI** — the existing inline "S1 Rules" toggle under each MITRE phase pill now:
+   - Renders as **🎯 S1 Rules** when the phase has at least one target rule (so the operator can see at a glance which phases have an alert mapping wired up).
+   - Lists target rules **first**, with a violet border-left accent and a status badge:
+     - 🟢 — target rule is **Enabled** on the connected S1 tenant.
+     - 🔴 — target rule is **Disabled** on the tenant (the phase will still emit events, but no alert will fire — clear signal to either re-enable the rule or accept the silent run).
+     - ⚪ — target rule is **not found** on the tenant catalog (rule was renamed / removed by S1, or the wrong site is connected).
+   - Lets the operator click the rule **name** to open a read-only modal with the full s1ql query body, severity pill, MITRE pill, and source pill. Reuses the existing `.modal-overlay` / `.modal` stylesheet — visually consistent with every other dynamic modal in the page.
+   - Shows the Enable / Disable button inline next to the 🟢/🔴 badge when the target rule resolves on the live S1 catalog, so a disabled target can be fixed in one click from the scenario card without leaving the page.
+   - Continues to list the **other** non-target rules matching `(source, mitre_tactic)` below the targets, deduped against the target names so the same rule never appears twice.
+
+4. **Lossless template → editor → save** — `onScenarioTemplateChange` and `openScenarioEditor` both carry `target_rules` through into `_scenarioPhases`, and `_collectScenarioPayload` propagates it on POST/PUT so the scenario record on disk keeps the mapping permanently.
+
+### Why this matters
+
+Before v5.1.10 the question "which alert will this phase actually fire?" required reading the codebase. For SAs running a live demo to a customer, that's a non-starter — the demo is interactive, the operator wants the answer in the UI.
+
+After v5.1.10:
+
+- The operator opens the scenario card, clicks **🎯 S1 Rules** under a phase, sees exactly which rule the phase aims at, sees whether it's enabled on the connected tenant, and can preview the s1ql to explain the detection logic to the customer.
+- If a target rule is 🔴 disabled, the operator clicks **Enable** inline — no detour into the S1 console, no second tab. The scenario will fire the target alert on its next phase advance.
+- If a target rule is ⚪ not-found (S1 renamed it in a platform update), the 🎯 row still surfaces the apigenie-side intent so the operator knows the mapping needs a refresh; a PR against `attack_scenarios_library.py` updates the `name` and the indicator turns 🟢.
+
+### What did NOT change
+
+- **No new generators, no new API plumbing**. The endpoint `/admin/api/s1/rules/for-phase` already existed for the "S1 Rules" panel since v5.1.2 — v5.1.10 only reads it differently in the client.
+- **No baseline tuning, no rule scaffolding**. v5.1.8's M365 weight pinning still drives noise control; v5.1.9's `field_overrides` still drive alert firing. v5.1.10 is purely a UX uplift.
+- **No template structural change beyond the new field**. The BEC template's 5 phases are exactly the same as v5.1.9; only `target_rules` is added per phase.
+
+### Tests
+
+- `tests/test_target_rules_round_trip.py::test_bec_template_every_phase_has_target_rules` — invariant.
+- `tests/test_target_rules_round_trip.py::test_validate_accepts_payload_with_target_rules` — happy path.
+- `tests/test_target_rules_round_trip.py::test_validate_accepts_payload_without_target_rules` — back-compat with legacy scenarios.
+- `tests/test_target_rules_round_trip.py::test_validate_rejects_non_list_target_rules` — schema guard.
+- `tests/test_target_rules_round_trip.py::test_validate_rejects_target_rule_entry_without_name` — schema guard.
+- `tests/test_target_rules_round_trip.py::test_validate_rejects_target_rule_entry_not_a_dict` — schema guard.
+- `tests/test_target_rules_round_trip.py::test_create_persists_target_rules_verbatim` — create round-trip.
+- `tests/test_target_rules_round_trip.py::test_export_includes_target_rules` — export keeps it.
+- `tests/test_target_rules_round_trip.py::test_import_preserves_target_rules` — lossless export → import.
+- `tests/test_target_rules_round_trip.py::test_legacy_phase_without_target_rules_still_imports` — pre-v5.1.10 JSON still imports.
+- `tests/test_admin_js_syntax.py` — guards that the inline JS in the dashboard HTML parses (the v5.1.10 edits added two new functions, `showTargetRulePreview` and the extended `loadPhaseRules`).

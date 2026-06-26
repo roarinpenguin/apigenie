@@ -472,6 +472,11 @@ _RUNTIME_FIELDS: tuple[str, ...] = (
 _EXPORT_PHASE_KEYS: tuple[str, ...] = (
     "phase_id", "name", "source", "mitre_tactic", "mitre_technique",
     "time_offset_pct", "duration_pct", "periodicity", "field_overrides",
+    # v5.1.10 — phase ↔ vendor STAR rule mapping. Optional, list of
+    # ``{name, source, severity, mitre, s1ql}`` entries. Carried through
+    # export / import so a scenario shared between operators keeps its
+    # "this phase fires THIS rule" annotation in the scenario card.
+    "target_rules",
 )
 
 
@@ -520,6 +525,24 @@ def validate_scenario_payload(data: Any) -> list[str]:
         fo = p.get("field_overrides", {})
         if fo is not None and not isinstance(fo, dict):
             errors.append(f"phase #{i}: 'field_overrides' must be an object")
+        # v5.1.10 — ``target_rules`` is optional. When present it must be a
+        # list of objects each carrying at least a ``name`` string. All
+        # other keys (source, severity, mitre, s1ql) are advisory and used
+        # only by the scenario card renderer, so we don't lock them in.
+        tr = p.get("target_rules")
+        if tr is not None:
+            if not isinstance(tr, list):
+                errors.append(f"phase #{i}: 'target_rules' must be an array")
+            else:
+                for j, r in enumerate(tr):
+                    if not isinstance(r, dict):
+                        errors.append(
+                            f"phase #{i}.target_rules[{j}]: must be an object")
+                        continue
+                    if not isinstance(r.get("name"), str) or not r.get("name", "").strip():
+                        errors.append(
+                            f"phase #{i}.target_rules[{j}]: 'name' is required "
+                            f"and must be a non-empty string")
     return errors
 
 

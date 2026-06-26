@@ -3313,30 +3313,121 @@ async function deleteUser() {
 
 async function loadPhaseRules(scenarioId, phaseId, source, mitreTactic, container) {
   container.innerHTML = '<span style="font-size:.6rem;color:rgba(224,170,255,.3)">Loading S1 rules...</span>';
+  // v5.1.10 \u2014 read the phase's target_rules (base64-encoded JSON on the
+  // container itself \u2014 see the scenario-list renderer). The list anchors
+  // the 🎯 target marker and the clickable s1ql preview modal. If the
+  // attribute is absent or malformed the panel degrades gracefully to the
+  // pre-v5.1.10 behaviour (plain "N S1 rules for <tactic>" list).
+  var targetRules = [];
+  try {
+    var b64 = container.getAttribute('data-target-rules') || '';
+    if (b64) targetRules = JSON.parse(decodeURIComponent(escape(atob(b64))));
+    if (!Array.isArray(targetRules)) targetRules = [];
+  } catch(e) { targetRules = []; }
+  // Stash the parsed list on the container so showTargetRulePreview() can
+  // resolve s1ql by name without re-running base64 / JSON.parse.
+  window._phaseTargetRulesCache = window._phaseTargetRulesCache || {};
+  var cacheKey = container.id;
+  window._phaseTargetRulesCache[cacheKey] = targetRules;
+  var targetNamesLower = targetRules.map(function(t) { return String(t.name || '').toLowerCase(); });
   try {
     var r = await fetch('/admin/api/s1/rules/for-phase?source=' + encodeURIComponent(source) + '&mitre_tactic=' + encodeURIComponent(mitreTactic) + '&limit=5', {credentials:'same-origin'});
     var d = await r.json();
     if (d.error) { container.innerHTML = '<span style="font-size:.6rem;color:#ff5050">' + escHtml(d.error) + '</span>'; return; }
     var rules = d.rules || [];
-    if (!rules.length) { container.innerHTML = '<span style="font-size:.6rem;color:rgba(224,170,255,.3)">No matching S1 rules for ' + escHtml(source) + ' / ' + escHtml(mitreTactic) + '</span>'; return; }
-    var h = '<div style="font-size:.6rem;color:rgba(224,170,255,.4);margin-bottom:3px">' + d.total + ' S1 detection rules for ' + escHtml(mitreTactic) + ':</div>';
-    rules.forEach(function(rule) {
-      var statusIcon = rule.status === 'Enabled' ? '<span style="color:#2ecc71" title="Enabled">\\u25cf</span>' : '<span style="color:rgba(224,170,255,.2)" title="Disabled">\\u25cb</span>';
-      var sevColor = rule.severity === 'Critical' ? '#ff5050' : rule.severity === 'High' ? '#ff8c00' : rule.severity === 'Medium' ? '#f0c040' : 'rgba(224,170,255,.4)';
-      h += '<div style="display:flex;align-items:center;gap:6px;padding:2px 0;border-bottom:1px solid rgba(199,125,255,.06)">';
-      h += statusIcon;
-      h += '<span style="flex:1;font-size:.6rem;color:rgba(224,170,255,.7)">' + escHtml(rule.name) + '</span>';
-      h += '<span style="font-size:.55rem;color:' + sevColor + '">' + escHtml(rule.severity || '') + '</span>';
-      if (rule.status === 'Enabled') {
-        h += '<button class="btn-sm" style="padding:1px 6px;font-size:.5rem;background:rgba(120,30,40,.3);color:#ff8080" onclick="toggleS1Rule(this,\\'' + escHtml(rule.id) + '\\',\\'disable\\')">Disable</button>';
-      } else {
-        h += '<button class="btn-sm" style="padding:1px 6px;font-size:.5rem;background:rgba(30,120,40,.3);color:#80ff80" onclick="toggleS1Rule(this,\\'' + escHtml(rule.id) + '\\',\\'enable\\')">Enable</button>';
-      }
-      h += '</div>';
-    });
-    if (d.total > 5) h += '<div style="font-size:.55rem;color:rgba(224,170,255,.3);margin-top:2px">... and ' + (d.total - 5) + ' more</div>';
+    // v5.1.10 \u2014 build a status lookup for the target rules. Each target
+    // gets matched against the S1 catalog by case-insensitive name. Three
+    // outcomes: enabled (🟢), disabled (🔴), not_found on the tenant (⚪).
+    var liveByLowerName = {};
+    rules.forEach(function(rule) { liveByLowerName[String(rule.name || '').toLowerCase()] = rule; });
+    var h = '';
+    if (targetRules.length) {
+      h += '<div style="font-size:.6rem;color:rgba(224,170,255,.55);margin-bottom:3px;font-weight:600">\\ud83c\\udfaf Target rule' + (targetRules.length > 1 ? 's' : '') + ' for this phase:</div>';
+      targetRules.forEach(function(t, idx) {
+        var live = liveByLowerName[String(t.name || '').toLowerCase()];
+        var statusBadge, badgeTitle;
+        if (live && live.status === 'Enabled') { statusBadge = '<span style="color:#2ecc71">\\u25cf</span>'; badgeTitle = 'Enabled on tenant'; }
+        else if (live && live.status === 'Disabled') { statusBadge = '<span style="color:#ff5050">\\u25cb</span>'; badgeTitle = 'Disabled on tenant \u2014 this phase will NOT fire its target alert'; }
+        else { statusBadge = '<span style="color:rgba(224,170,255,.3)">\\u25cb</span>'; badgeTitle = 'Not found on the connected S1 tenant'; }
+        var sev = (live && live.severity) || t.severity || '';
+        var sevColor = sev === 'Critical' ? '#ff5050' : sev === 'High' ? '#ff8c00' : sev === 'Medium' ? '#f0c040' : 'rgba(224,170,255,.4)';
+        h += '<div style="display:flex;align-items:center;gap:6px;padding:2px 0;background:rgba(199,125,255,.06);border-left:2px solid #c77dff;padding-left:6px;margin-bottom:2px">';
+        h += '<span title="' + badgeTitle + '">' + statusBadge + '</span>';
+        h += '<span style="font-size:.5rem;color:#c77dff;font-weight:700">\\ud83c\\udfaf</span>';
+        h += '<span style="flex:1;font-size:.6rem;color:#e0aaff;cursor:pointer;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px" title="Click to preview the rule s1ql query body" onclick="event.stopPropagation();showTargetRulePreview(\\'' + cacheKey + '\\',' + idx + ')">' + escHtml(t.name) + '</span>';
+        h += '<span style="font-size:.55rem;color:' + sevColor + '">' + escHtml(sev || '') + '</span>';
+        // If the target also appears in the live S1 list we surface the
+        // enable/disable button as well so the operator can fix a 🔴
+        // disabled-tenant target with one click.
+        if (live && live.id) {
+          if (live.status === 'Enabled') {
+            h += '<button class="btn-sm" style="padding:1px 6px;font-size:.5rem;background:rgba(120,30,40,.3);color:#ff8080" onclick="toggleS1Rule(this,\\'' + escHtml(live.id) + '\\',\\'disable\\')">Disable</button>';
+          } else {
+            h += '<button class="btn-sm" style="padding:1px 6px;font-size:.5rem;background:rgba(30,120,40,.3);color:#80ff80" onclick="toggleS1Rule(this,\\'' + escHtml(live.id) + '\\',\\'enable\\')">Enable</button>';
+          }
+        }
+        h += '</div>';
+      });
+    }
+    if (!rules.length && !targetRules.length) {
+      container.innerHTML = '<span style="font-size:.6rem;color:rgba(224,170,255,.3)">No matching S1 rules for ' + escHtml(source) + ' / ' + escHtml(mitreTactic) + '</span>';
+      return;
+    }
+    if (rules.length) {
+      h += '<div style="font-size:.6rem;color:rgba(224,170,255,.4);margin:6px 0 3px 0">' + d.total + ' other S1 rule' + (d.total === 1 ? '' : 's') + ' matching ' + escHtml(mitreTactic) + ':</div>';
+      rules.forEach(function(rule) {
+        // Skip rules already shown as a 🎯 target above — avoid the duplicate.
+        if (targetNamesLower.indexOf(String(rule.name || '').toLowerCase()) >= 0) return;
+        var statusIcon = rule.status === 'Enabled' ? '<span style="color:#2ecc71" title="Enabled">\\u25cf</span>' : '<span style="color:rgba(224,170,255,.2)" title="Disabled">\\u25cb</span>';
+        var sevColor = rule.severity === 'Critical' ? '#ff5050' : rule.severity === 'High' ? '#ff8c00' : rule.severity === 'Medium' ? '#f0c040' : 'rgba(224,170,255,.4)';
+        h += '<div style="display:flex;align-items:center;gap:6px;padding:2px 0;border-bottom:1px solid rgba(199,125,255,.06)">';
+        h += statusIcon;
+        h += '<span style="flex:1;font-size:.6rem;color:rgba(224,170,255,.7)">' + escHtml(rule.name) + '</span>';
+        h += '<span style="font-size:.55rem;color:' + sevColor + '">' + escHtml(rule.severity || '') + '</span>';
+        if (rule.status === 'Enabled') {
+          h += '<button class="btn-sm" style="padding:1px 6px;font-size:.5rem;background:rgba(120,30,40,.3);color:#ff8080" onclick="toggleS1Rule(this,\\'' + escHtml(rule.id) + '\\',\\'disable\\')">Disable</button>';
+        } else {
+          h += '<button class="btn-sm" style="padding:1px 6px;font-size:.5rem;background:rgba(30,120,40,.3);color:#80ff80" onclick="toggleS1Rule(this,\\'' + escHtml(rule.id) + '\\',\\'enable\\')">Enable</button>';
+        }
+        h += '</div>';
+      });
+      if (d.total > 5) h += '<div style="font-size:.55rem;color:rgba(224,170,255,.3);margin-top:2px">... and ' + (d.total - 5) + ' more</div>';
+    }
     container.innerHTML = h;
   } catch(e) { container.innerHTML = '<span style="font-size:.6rem;color:#ff5050">' + escHtml(String(e)) + '</span>'; }
+}
+
+// v5.1.10 \u2014 read-only preview of a target rule's full s1ql query body.
+// Opens an overlay modal sourced from the cached target_rules entry that
+// loadPhaseRules() stashed on window._phaseTargetRulesCache. Reusing the
+// existing .modal-overlay / .modal class set keeps the styling consistent
+// with the other dynamic modals already in the page.
+function showTargetRulePreview(cacheKey, idx) {
+  var cache = (window._phaseTargetRulesCache || {})[cacheKey] || [];
+  var t = cache[idx];
+  if (!t) return;
+  var existing = document.getElementById('target-rule-preview-overlay');
+  if (existing) existing.remove();
+  var overlay = document.createElement('div');
+  overlay.id = 'target-rule-preview-overlay';
+  overlay.className = 'modal-overlay';
+  overlay.onclick = function(e) { if (e.target === overlay) overlay.remove(); };
+  var sevColor = t.severity === 'Critical' ? '#ff5050' : t.severity === 'High' ? '#ff8c00' : t.severity === 'Medium' ? '#f0c040' : '#c77dff';
+  var html = '<div class="modal" style="width:min(720px,94%)">';
+  html += '<div class="modal-head"><h3 style="display:flex;align-items:center;gap:8px"><span style="color:#c77dff">\\ud83c\\udfaf</span> ' + escHtml(t.name) + '</h3>';
+  html += '<button class="close" onclick="document.getElementById(\\'target-rule-preview-overlay\\').remove()">\u00d7</button></div>';
+  html += '<div class="modal-body" style="display:flex;flex-direction:column;gap:10px;max-height:72vh;overflow-y:auto">';
+  html += '<div style="display:flex;gap:8px;flex-wrap:wrap">';
+  if (t.severity) html += '<span class="pill" style="background:rgba(199,125,255,.12);color:' + sevColor + ';font-size:.7rem">Severity: ' + escHtml(t.severity) + '</span>';
+  if (t.mitre)    html += '<span class="pill" style="background:rgba(199,125,255,.12);color:#c77dff;font-size:.7rem;font-family:monospace">' + escHtml(t.mitre) + '</span>';
+  if (t.source)   html += '<span class="pill" style="background:rgba(199,125,255,.12);color:rgba(224,170,255,.7);font-size:.7rem">Source: ' + escHtml(t.source) + '</span>';
+  html += '</div>';
+  html += '<div style="font-size:.7rem;color:rgba(224,170,255,.55)">s1ql query body \u2014 the apigenie phase\u2019s <code>field_overrides</code> are engineered so the emitted events satisfy this query.</div>';
+  html += '<pre style="font-size:.74rem;color:#e0aaff;background:rgba(36,0,70,.5);padding:12px;border-radius:8px;white-space:pre-wrap;word-break:break-word;font-family:monospace;line-height:1.45">' + escHtml(t.s1ql || '(no s1ql captured for this target)') + '</pre>';
+  html += '<div style="font-size:.65rem;color:rgba(224,170,255,.35)">Tip: open Browse S1 Library and search by name to find this rule on the connected tenant; if its status badge here is 🔴 disabled, click <em>Enable</em> on the target row in the scenario card to fix it.</div>';
+  html += '</div></div>';
+  overlay.innerHTML = html;
+  document.body.appendChild(overlay);
 }
 
 async function toggleS1Rule(btn, ruleId, action) {
@@ -7267,8 +7358,21 @@ async function loadScenarios() {
         h += '<div style="font-size:.55rem;color:rgba(255,255,255,.5);margin-top:2px">' + escHtml(p.source || '') + '</div>';
         if (p.status === 'active') h += '<div style="position:absolute;top:-2px;right:4px;font-size:.5rem;color:#2ecc71">\\u25cf LIVE</div>';
         var phRuleId = 'phase-rules-' + escHtml(s.id).substring(0,8) + '-' + i;
-        h += '<div style="font-size:.5rem;color:rgba(255,255,255,.3);margin-top:3px;cursor:pointer;text-decoration:underline" onclick="event.stopPropagation();var c=document.getElementById(\\'' + phRuleId + '\\');if(c.children.length===0)loadPhaseRules(\\'' + escHtml(s.id) + '\\',\\'' + escHtml(p.phase_id||'') + '\\',\\'' + escHtml(p.source||'') + '\\',\\'' + escHtml(p.mitre_tactic||'') + '\\',c);c.style.display=c.style.display===\\'none\\'?\\'block\\':\\'none\\'">S1 Rules</div>';
-        h += '<div id="' + phRuleId + '" style="display:none;margin-top:3px"></div>';
+        // v5.1.10 \u2014 stash the phase's target_rules onto the container as a
+        // base64-encoded JSON attribute so loadPhaseRules() can highlight
+        // them with a 🎯 marker and open a modal preview of the s1ql.
+        // base64 sidesteps every nested-quoting pitfall in the HTML attr.
+        var tgtRulesB64 = '';
+        if (Array.isArray(p.target_rules) && p.target_rules.length) {
+          try { tgtRulesB64 = btoa(unescape(encodeURIComponent(JSON.stringify(p.target_rules)))); }
+          catch(e) { tgtRulesB64 = ''; }
+        }
+        // The trigger label flips from "S1 Rules" to "🎯 S1 Rules" when the
+        // phase has at least one target so the operator can see at a glance
+        // which phases have an alert mapping wired up.
+        var trigLabel = tgtRulesB64 ? '\\ud83c\\udfaf S1 Rules' : 'S1 Rules';
+        h += '<div style="font-size:.5rem;color:rgba(255,255,255,.3);margin-top:3px;cursor:pointer;text-decoration:underline" onclick="event.stopPropagation();var c=document.getElementById(\\'' + phRuleId + '\\');if(c.children.length===0)loadPhaseRules(\\'' + escHtml(s.id) + '\\',\\'' + escHtml(p.phase_id||'') + '\\',\\'' + escHtml(p.source||'') + '\\',\\'' + escHtml(p.mitre_tactic||'') + '\\',c);c.style.display=c.style.display===\\'none\\'?\\'block\\':\\'none\\'">' + trigLabel + '</div>';
+        h += '<div id="' + phRuleId + '" data-target-rules="' + tgtRulesB64 + '" style="display:none;margin-top:3px"></div>';
         h += '</div>';
       });
       h += '</div>';
@@ -7725,7 +7829,13 @@ function onScenarioTemplateChange() {
           time_offset_pct: p.time_offset_pct == null ? 0 : p.time_offset_pct,
           duration_pct: p.duration_pct == null ? 10 : p.duration_pct,
           periodicity: p.periodicity == null ? 5 : p.periodicity,
-          field_overrides: p.field_overrides || {}
+          field_overrides: p.field_overrides || {},
+          // v5.1.10 — carry the phase \u2194 vendor STAR rule mapping all
+          // the way from the template into the persisted scenario record
+          // so the scenario card can render the 🎯 target-rule pill
+          // and clickable s1ql preview without re-querying the template
+          // library at view time.
+          target_rules: Array.isArray(p.target_rules) ? p.target_rules : []
         };
       });
       renderScenarioPhasesEditor();
@@ -7895,6 +8005,12 @@ function _collectScenarioPayload() {
       // assigns "phase-<index>" automatically (preserves the existing
       // convention in create_scenario()).
       if (p.phase_id && p.phase_id.trim()) out.phase_id = p.phase_id.trim();
+      // v5.1.10 — propagate the phase \u2194 STAR rule mapping when present.
+      // Round-trips through create / update / import / export so the
+      // scenario card's clickable target-rule pill survives every edit.
+      if (Array.isArray(p.target_rules) && p.target_rules.length) {
+        out.target_rules = p.target_rules;
+      }
       return out;
     })
   };
