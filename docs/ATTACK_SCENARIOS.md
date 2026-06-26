@@ -760,3 +760,66 @@ Each scenario card now has a **↓ Timeline** button between **Events (N)** and 
 |------|------|
 | Scenario definitions | `./data/attack_scenarios.json` |
 | Scenario run history | `./data/attack_scenario_runs.json` |
+
+---
+
+## v5.1.8 — Cross-source tagging hardening + baseline noise tuning
+
+Two operator-visible problems surfaced during a multi-source BEC demo on a SentinelOne tenant:
+
+1. **Proofpoint scenario events arrived in S1 stripped of `attack.id`** — `dataSource.name = 'Proofpoint' unmapped.attack.id = 'att-XXX'` returned zero rows even though the M365 and Okta phases of the same scenario showed up correctly. The Proofpoint TAP parser enforces a strict schema and silently drops unknown top-level fields, including the dotted-style `attack.id` / `phase.id` overrides every other source carries.
+2. **STAR rules fired on background noise, not on scenario phases** — a passive demo tenant produced a steady stream of "Office 365 Assignment of Management Group Role" / "Suspicious Inbox Rule" alerts driven by baseline `_admin_exchange` / `_inbox_rules` traffic. Distinguishing scenario-driven alerts from baseline was impossible without going into raw events.
+
+### Fix 1 — Per-source robust tagging in `_create_temp_rule`
+
+The Proofpoint scenario rule now also appends two tokens to the message's `policyRoutes` array:
+
+```
+"policyRoutes": ["default_inbound", "apigenie-attack:att-XXX", "apigenie-phase:<phase_id>"]
+```
+
+`policyRoutes` is a `[String!]` field native to the Proofpoint TAP SIEM API; every SIEM ingestor preserves it byte-for-byte. Operators can now correlate Proofpoint scenario events via either:
+
+- `dataSource.name = 'Proofpoint' policyRoutes contains 'apigenie-attack:att-XXX'` — always works.
+- `dataSource.name = 'Proofpoint' unmapped.attack.id = 'att-XXX'` — works on tenants where the parser also surfaces unknown top-level fields.
+
+Operator-authored `policyRoutes` (e.g. `["custom_inbound", "vip_lane"]`) is preserved — apigenie only appends; the operator's choice of routes still wins. M365, Okta, and every other source keep the plain `attack.id` / `phase.id` overrides unchanged.
+
+### Fix 2 — M365 baseline weight pinning for STAR-rule-triggering Operations
+
+Several M365 Operations trigger vendor-shipped S1 STAR / Custom Detection rules on most tenants. Their baseline weights have been pinned to `1` in `sources/m365.py`:
+
+| Operation | Old weight | New weight | Typical STAR rule |
+|-----------|-----------:|-----------:|-------------------|
+| `Set-Mailbox` (in `_admin_exchange`) | 20 | 1 | mailbox forwarding |
+| `New-TransportRule` | 10 | 1 | transport rule tampering |
+| `Set-TransportRule` | 10 | 1 | transport rule tampering |
+| `Remove-TransportRule` | 5 | 1 | transport rule tampering |
+| `Add-RoleGroupMember` | 10 | 1 | privileged role granted |
+| `New-ManagementRoleAssignment` | 8 | 1 | "Office 365 Assignment of Management Group Role" |
+| `New-InboxRule` (in `_inbox_rules`) | 35 | 1 | "Suspicious Inbox Rule" |
+| `Set-InboxRule` | 20 | 1 | "Suspicious Inbox Rule" |
+| `Set-Mailbox` (in `_inbox_rules`) | 20 | 1 | mailbox forwarding |
+
+The Operations are **not removed** — they remain in the weighted pool so:
+
+- Scenario phases can still emit them via `field_overrides["Operation"]`.
+- Operators can dial them back up via Event Mix when running a passive demo that specifically needs that traffic pattern.
+- The catalogue coverage tests still pass.
+
+The expected outcome on a passive demo tenant is a ~10× drop in STAR rule fires from M365 baseline noise, making scenario-driven alerts unambiguously distinguishable.
+
+### Operator audit checklist (no code change required)
+
+The fixes above only address what apigenie can do unilaterally. Three complementary checks live on the S1 tenant side, not in apigenie:
+
+1. **Enumerate STAR rules enabled per Operation** — for each source you demo (M365, Okta, Proofpoint, etc.), list the STAR / Custom Detection rules whose query body references an `activity_name` / `Operation` / `eventType` literal. Match those literals against the phases the scenarios you run actually emit. The mismatch between baseline traffic and rule queries is the dominant source of "wrong alerts firing" pain.
+2. **Confirm the Proofpoint parser version** — if `unmapped.attack.id` works for Proofpoint on your tenant, you can keep using the cross-source query; otherwise pivot to the `policyRoutes contains 'apigenie-attack:...'` form added in v5.1.8.
+3. **Disable / mute high-noise STAR rules during demos** — even with v5.1.8 baseline tuning, a tenant with hundreds of bundled rules will still produce some background firing. The Detection Engine view in S1 lets operators toggle rules per-engagement.
+
+### Tests
+
+- `tests/test_persona_splice.py::test_create_temp_rule_proofpoint_tags_policyroutes` — guards the new tagging.
+- `tests/test_persona_splice.py::test_create_temp_rule_non_proofpoint_does_not_touch_policyroutes` — guards that other sources are untouched.
+- `tests/test_persona_splice.py::test_create_temp_rule_proofpoint_preserves_operator_policyroutes` — guards the operator-overrides-win contract.
+- `tests/test_m365_baseline_noise.py` — guards the weight pinning regression.

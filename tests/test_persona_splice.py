@@ -249,3 +249,135 @@ def test_create_temp_rule_persists_persona_overrides(tmp_path,
     # but lives on the same dict — guard against accidental wipe).
     assert ov["phase.id"]          == "p1"
     assert ov["attack.id"]         == "atk-1"
+
+
+# ── v5.1.8: Proofpoint policyRoutes tagging ────────────────────────
+
+
+def test_create_temp_rule_proofpoint_tags_policyroutes(monkeypatch):
+    """Proofpoint scenario rules MUST append ``apigenie-attack:<id>`` and
+    ``apigenie-phase:<id>`` tokens to ``policyRoutes`` in addition to
+    the plain ``attack.id`` / ``phase.id`` dotted overrides.
+
+    Rationale: S1's Proofpoint TAP parser does not surface unknown
+    top-level fields under ``unmapped.*`` the way the M365 and Okta
+    parsers do — sending only ``attack.id`` at top level produces
+    correctly stamped wire events that arrive in the data lake
+    stripped. The ``policyRoutes`` String array is Proofpoint-native
+    and every SIEM ingestor preserves it verbatim, so operators get
+    a deterministic way to filter scenario events by attack_id.
+    """
+    import attack_scenarios
+    import detection_rules
+
+    phase = {
+        "phase_id": "pp-phase",
+        "name":     "Proofpoint Initial Access",
+        "source":   "proofpoint",
+        "periodicity": 3,
+        "field_overrides": {},
+        "time_offset_pct": 0,
+    }
+    scenario = {
+        "id": "scen-pp",
+        "personas": {
+            "victim_user": {"email": "victim@test.test", "name": "V",
+                            "username": "v", "upn": "victim@test.test",
+                            "object_id": "u"},
+            "attacker":    {"ip": "203.0.113.7", "country": "US",
+                            "email": "atk@evil.test", "domain": "evil.test",
+                            "asn": "AS0"},
+        },
+    }
+
+    with patch.object(attack_scenarios, "_load_scenarios",
+                       return_value=[scenario]):
+        rid = attack_scenarios._create_temp_rule(
+            phase, attack_id="atk-pp-1", scenario_id="scen-pp",
+            total_seconds=60, phase_start=0,
+        )
+    assert rid
+    saved = detection_rules.get_rule(rid)
+    assert saved is not None
+    ov = saved["field_overrides"]
+
+    # The two plain overrides remain — every other parser uses them.
+    assert ov["attack.id"] == "atk-pp-1"
+    assert ov["phase.id"]  == "pp-phase"
+    # Persona splice still works.
+    assert ov["headerTo"]  == "victim@test.test"
+    assert ov["sender"]    == "atk@evil.test"
+
+    # And the new Proofpoint-specific belt-and-braces tagging.
+    routes = ov.get("policyRoutes")
+    assert isinstance(routes, list) and len(routes) >= 3
+    assert "default_inbound" in routes
+    assert "apigenie-attack:atk-pp-1" in routes
+    assert "apigenie-phase:pp-phase" in routes
+
+
+def test_create_temp_rule_non_proofpoint_does_not_touch_policyroutes(monkeypatch):
+    """Non-Proofpoint phases MUST NOT receive ``policyRoutes`` in their
+    overrides — the field is meaningless outside of Proofpoint and would
+    confuse other parsers if leaked across sources."""
+    import attack_scenarios
+    import detection_rules
+
+    phase = {
+        "phase_id": "m365-phase",
+        "name":     "M365 Collection",
+        "source":   "m365",
+        "periodicity": 4,
+        "field_overrides": {},
+        "time_offset_pct": 0,
+    }
+    scenario = {"id": "scen-m", "personas": {}}
+    with patch.object(attack_scenarios, "_load_scenarios",
+                       return_value=[scenario]):
+        rid = attack_scenarios._create_temp_rule(
+            phase, attack_id="atk-m-1", scenario_id="scen-m",
+            total_seconds=60, phase_start=0,
+        )
+    assert rid
+    saved = detection_rules.get_rule(rid)
+    assert saved is not None
+    assert "policyRoutes" not in saved["field_overrides"]
+
+
+def test_create_temp_rule_proofpoint_preserves_operator_policyroutes(monkeypatch):
+    """If the phase author already set ``policyRoutes`` in
+    ``field_overrides`` (e.g. to override the default cluster route),
+    the per-source tagging must APPEND its tokens to the operator's
+    list, not replace it. Operator authorship still wins for the
+    routes themselves; apigenie only adds.
+    """
+    import attack_scenarios
+    import detection_rules
+
+    phase = {
+        "phase_id": "pp-2",
+        "name":     "Proofpoint custom routes",
+        "source":   "proofpoint",
+        "periodicity": 3,
+        "field_overrides": {"policyRoutes": ["custom_inbound", "vip_lane"]},
+        "time_offset_pct": 0,
+    }
+    scenario = {"id": "scen-pp2", "personas": {}}
+    with patch.object(attack_scenarios, "_load_scenarios",
+                       return_value=[scenario]):
+        rid = attack_scenarios._create_temp_rule(
+            phase, attack_id="atk-pp-2", scenario_id="scen-pp2",
+            total_seconds=60, phase_start=0,
+        )
+    assert rid
+    saved = detection_rules.get_rule(rid)
+    assert saved is not None
+    routes = saved["field_overrides"]["policyRoutes"]
+    # Operator routes preserved.
+    assert "custom_inbound" in routes
+    assert "vip_lane"       in routes
+    # Apigenie tags appended.
+    assert "apigenie-attack:atk-pp-2" in routes
+    assert "apigenie-phase:pp-2"      in routes
+    # Default route was NOT injected (operator overrode it).
+    assert "default_inbound" not in routes

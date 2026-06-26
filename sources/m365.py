@@ -239,11 +239,24 @@ def _ediscovery(ctx=None) -> dict[str, Any]:
 # ── 5. Admin operations (Exchange Online) ────────────────────────────────────
 
 def _admin_exchange(ctx=None) -> dict[str, Any]:
+    # v5.1.8 baseline-noise tuning. The following Operations each trigger a
+    # vendor-shipped STAR / Custom Detection rule in most S1 tenants:
+    # - ``Set-Mailbox``                  → mailbox forwarding rules
+    # - ``New-TransportRule`` / ``Set-TransportRule`` / ``Remove-TransportRule``
+    #                                     → transport-rule tampering rules
+    # - ``Add-RoleGroupMember``          → privileged-role-granted rules
+    # - ``New-ManagementRoleAssignment`` → "Office 365 Assignment of Management Group Role"
+    # Their baseline weights are pinned to 1 so a passive demo tenant does not
+    # generate a continuous stream of STAR-rule alerts that drown out the
+    # signal from an active attack scenario. The Operations remain available;
+    # scenarios (and operator-authored event-mix overrides) can still emit them
+    # at any desired rate by setting ``field_overrides["Operation"]`` on a
+    # scenario phase or by reweighting the catalog from the Event Mix UI.
     ops = [
-        ("Set-Mailbox", 20), ("New-TransportRule", 10), ("Set-TransportRule", 10),
-        ("Remove-TransportRule", 5), ("Set-OrganizationConfig", 8),
-        ("Add-RoleGroupMember", 10), ("Remove-RoleGroupMember", 5),
-        ("New-ManagementRoleAssignment", 8), ("Set-HostedContentFilterPolicy", 7),
+        ("Set-Mailbox", 1), ("New-TransportRule", 1), ("Set-TransportRule", 1),
+        ("Remove-TransportRule", 1), ("Set-OrganizationConfig", 8),
+        ("Add-RoleGroupMember", 1), ("Remove-RoleGroupMember", 5),
+        ("New-ManagementRoleAssignment", 1), ("Set-HostedContentFilterPolicy", 7),
         ("Set-MalwareFilterPolicy", 5), ("Set-SafeLinksPolicy", 5),
         ("Set-AntiPhishPolicy", 5), ("Disable-Mailbox", 2),
     ]
@@ -340,8 +353,16 @@ def _oauth_consent(ctx=None) -> dict[str, Any]:
 # ── 9. Inbox rules / mail forwarding ────────────────────────────────────────
 
 def _inbox_rules(ctx=None) -> dict[str, Any]:
-    ops = [("New-InboxRule", 35), ("Set-InboxRule", 20), ("Remove-InboxRule", 10),
-           ("Set-Mailbox", 20), ("UpdateInboxRules", 15)]
+    # v5.1.8 — Inbox-rule manipulation Operations are extremely high-signal
+    # in S1 (most tenants ship a "Suspicious Inbox Rule" / "Mailbox
+    # Forwarding" STAR rule). At the previous weights every baseline
+    # ``_inbox_rules`` dispatch produced a STAR alert on demo tenants,
+    # making it impossible to tell scenario alerts from background noise.
+    # Weights pinned to 1 for the rule-creating Operations; the legitimate
+    # ``Remove-InboxRule`` / ``UpdateInboxRules`` traffic remains visible
+    # so the category still emits some events when picked.
+    ops = [("New-InboxRule", 1), ("Set-InboxRule", 1), ("Remove-InboxRule", 10),
+           ("Set-Mailbox", 1), ("UpdateInboxRules", 15)]
     op = _wchoice(ops)
     e = _base(op, "Exchange", ctx)
     if "InboxRule" in op:

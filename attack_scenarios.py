@@ -903,6 +903,38 @@ def _create_temp_rule(phase: dict, attack_id: str, scenario_id: str,
     overrides["attack.id"] = attack_id
     overrides["phase.id"] = phase.get("phase_id", "unknown")
 
+    # v5.1.8 — Per-source robust tagging.
+    #
+    # Background: SDL parsers vary in how they surface unknown
+    # top-level wire fields. M365 and Okta both round-trip
+    # ``attack.id`` to ``unmapped.attack.id`` in the data lake; the
+    # Proofpoint TAP parser, by contrast, strictly enforces its
+    # documented schema and silently discards anything else. Without
+    # extra plumbing, a Proofpoint scenario phase produces correctly
+    # stamped events in apigenie that arrive in S1 stripped of their
+    # ``attack.id``, making PowerQuery correlation across the three
+    # sources impossible (the operator-visible symptom is "Proofpoint
+    # = 0" rows when filtering by attack_id).
+    #
+    # The fix is source-targeted, not global: for Proofpoint, append
+    # ``apigenie-attack:<id>`` and ``apigenie-phase:<id>`` tokens to
+    # ``policyRoutes`` (a Proofpoint-native ``[String!]`` field that
+    # every parser preserves verbatim). Operators can then filter on
+    # ``policyRoutes contains 'apigenie-attack:att-XXX'`` regardless
+    # of whether the Proofpoint parser would also surface
+    # ``attack.id`` for that tenant version. Other sources keep the
+    # plain ``attack.id`` / ``phase.id`` dotted overrides — they
+    # already work.
+    source = phase.get("source", "")
+    if source == "proofpoint":
+        existing_routes = overrides.get("policyRoutes")
+        if not isinstance(existing_routes, list):
+            existing_routes = ["default_inbound"]
+        overrides["policyRoutes"] = list(existing_routes) + [
+            f"apigenie-attack:{attack_id}",
+            f"apigenie-phase:{phase.get('phase_id', 'unknown')}",
+        ]
+
     rule_data = {
         "name": f"[SCENARIO] {phase.get('name', 'phase')}",
         "source": phase.get("source", ""),
