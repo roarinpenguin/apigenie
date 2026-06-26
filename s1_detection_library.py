@@ -582,63 +582,70 @@ def query_rules_for_phase(source: str, mitre_tactic: str, limit: int = 10) -> di
         log.info("for-phase: scoped status enrich failed (%s) — using "
                  "catalog status", scoped.get("error"))
         return result
-    # v5.1.4 diagnostic — print one platform-rules entry so we can
-    # confirm the response shape on a live tenant. We *think* the
-    # field name is "status" with values "Enabled"/"Disabled" (same
-    # as the catalog endpoint), but the swagger doesn't guarantee it
-    # and different console versions return slightly different shapes
-    # (some use ``enabled: bool``, some use ``state: "active"``,
-    # some omit the rule entirely when no per-scope override exists).
     data_list = scoped.get("data", []) or []
-    if data_list:
-        # Dump every key on the first entry so we can locate the
-        # per-scope enabled/disabled field — full JSON would blow the
-        # log line, and the previous 400-char truncation cut before
-        # the status fields. Also include a few common candidates
-        # printed by name so the right one jumps out at a glance.
-        sample = data_list[0]
-        log.info("for-phase: /platform-rules scope=%s:%s id=%s "
-                 "keys=%s status=%r enabled=%r state=%r "
-                 "isEnabled=%r active=%r activationStatus=%r "
-                 "enabledState=%r scopes=%r",
-                 scope_level, scope_id,
-                 sample.get("id"),
-                 sorted(sample.keys()),
-                 sample.get("status"),
-                 sample.get("enabled"),
-                 sample.get("state"),
-                 sample.get("isEnabled"),
-                 sample.get("active"),
-                 sample.get("activationStatus"),
-                 sample.get("enabledState"),
-                 sample.get("scopes"))
-    else:
+    if not data_list:
         log.info("for-phase: /platform-rules scope=%s:%s returned 0 "
                  "entries for ids=%s — site has no per-scope override "
-                 "for these rules (they're inheriting from parent or "
-                 "haven't been toggled yet)",
+                 "for these rules yet",
                  scope_level, scope_id, ",".join(rule_ids[:3]))
+        return result
     by_id = {str(r.get("id")): r for r in data_list}
     for rule in result["rules"]:
         scoped_rule = by_id.get(str(rule.get("id")))
-        if not scoped_rule:
+        if not scoped_rule or "status" not in scoped_rule:
             continue
-        # Map every shape S1 has shipped for the per-scope status into
-        # the legacy "Enabled" / "Disabled" string the front-end already
-        # understands. Anything we don't recognise we leave untouched
-        # so the catalog status survives — never replace a known value
-        # with garbage.
-        if "status" in scoped_rule:
-            rule["status"] = scoped_rule["status"]
-        elif "enabled" in scoped_rule:
-            rule["status"] = ("Enabled" if scoped_rule["enabled"]
-                              else "Disabled")
-        elif "state" in scoped_rule:
-            rule["status"] = ("Enabled"
-                              if str(scoped_rule["state"]).lower() in
-                              ("enabled", "active", "on")
-                              else "Disabled")
+        rule["status"] = _normalize_rule_status(scoped_rule["status"])
+    # Also normalize any catalog-only rule that didn't get overridden
+    # — the catalog endpoint occasionally emits the rich enum too on
+    # newer console builds, and an un-normalised "Enabling" would slip
+    # through and cause the same "button bounces back" symptom.
+    for rule in result["rules"]:
+        if "status" in rule:
+            rule["status"] = _normalize_rule_status(rule["status"])
     return result
+
+
+# Status values returned by S1 detection-library/platform-rules — verified
+# empirically against a live RoarinDemo console 2026-06-26:
+#
+#   Draft      — created but never activated; not firing
+#   Enabling   — operator toggled Enable, S1 still propagating
+#   Enabled    — active at this scope, firing alerts
+#   Disabling  — operator toggled Disable, S1 still propagating
+#   Disabled   — inactive at this scope
+#
+# The apigenie scenario UI (admin.py loadPhaseRules) checks
+# ``rule.status === 'Enabled'`` as an exact-string match to decide
+# whether the Enable/Disable button shows. The transitional states
+# (Enabling, Disabling) and the Draft state all need to collapse to
+# the two-value contract the UI knows about. Treat Enabling as Enabled
+# (the operator's intent is "on", and the rule will fire imminently)
+# and everything else that isn't Enabled as Disabled.
+_RULE_STATUS_ENABLED  = frozenset({"enabled", "enabling"})
+_RULE_STATUS_DISABLED = frozenset({"disabled", "disabling", "draft",
+                                   "inactive", "deactivating",
+                                   "deactivated", "off"})
+
+
+def _normalize_rule_status(value: Any) -> Any:
+    """Collapse any platform-rules status enum to the two-value
+    ``"Enabled"`` / ``"Disabled"`` contract the apigenie front-end
+    expects.
+
+    Returns the original value verbatim for anything we don't
+    recognise — never replace a known value with garbage. Empty /
+    ``None`` inputs pass through unchanged so callers can detect
+    "no status field at all" cases separately from a normalised
+    one.
+    """
+    if value is None or value == "":
+        return value
+    key = str(value).strip().lower()
+    if key in _RULE_STATUS_ENABLED:
+        return "Enabled"
+    if key in _RULE_STATUS_DISABLED:
+        return "Disabled"
+    return value
 
 
 def get_platform_rule(rule_id: str) -> dict[str, Any] | None:

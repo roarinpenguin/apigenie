@@ -977,6 +977,111 @@ class TestQueryRulesForPhaseScopedEnrich:
         assert "error" not in out
         assert out["rules"][0]["status"] == "Disabled"
 
+    def test_enabling_normalises_to_enabled(self, s1, fake_api):
+        """v5.1.5 — empirically verified that S1 platform-rules returns
+        the rich five-value enum ``Draft/Enabling/Enabled/Disabling/
+        Disabled``. The apigenie scenario UI does an exact-string
+        ``rule.status === 'Enabled'`` check, so a transitional
+        ``Enabling`` (which is what you see for ~seconds after a
+        successful PUT /enable) falls through to the Enable button and
+        produces the user-visible 'click Enable → comes back as
+        Enable' loop. Lock that the override collapses Enabling to
+        Enabled before handing it to the front-end."""
+        routes, _ = fake_api
+        routes["/web/api/v2.1/detection-library/rules"] = {
+            "data": [{"id": "R", "name": "rule", "status": "Disabled",
+                      "severity": "Medium"}],
+            "pagination": {"totalItems": 1},
+        }
+        routes["/web/api/v2.1/detection-library/platform-rules"] = {
+            "data": [{"id": "R", "status": "Enabling"}],
+        }
+        tok = self._override_site(s1)
+        try:
+            out = s1.query_rules_for_phase("okta", "Credential Access", limit=5)
+        finally:
+            s1.clear_request_override(tok)
+        assert out["rules"][0]["status"] == "Enabled", (
+            "Enabling must normalise to Enabled — front-end checks "
+            "exact string === 'Enabled'")
+
+    def test_draft_and_disabling_normalise_to_disabled(self, s1, fake_api):
+        """Companion to the previous test: ``Draft`` (created but
+        never activated) and ``Disabling`` (transitioning to off) both
+        belong to the Disabled bucket as far as the UI button is
+        concerned."""
+        routes, _ = fake_api
+        routes["/web/api/v2.1/detection-library/rules"] = {
+            "data": [
+                {"id": "A", "name": "a", "status": "Enabled",
+                 "severity": "Low"},
+                {"id": "B", "name": "b", "status": "Enabled",
+                 "severity": "Low"},
+            ],
+            "pagination": {"totalItems": 2},
+        }
+        routes["/web/api/v2.1/detection-library/platform-rules"] = {
+            "data": [
+                {"id": "A", "status": "Draft"},
+                {"id": "B", "status": "Disabling"},
+            ],
+        }
+        tok = self._override_site(s1)
+        try:
+            out = s1.query_rules_for_phase("okta", "Credential Access", limit=5)
+        finally:
+            s1.clear_request_override(tok)
+        statuses = {r["id"]: r["status"] for r in out["rules"]}
+        assert statuses == {"A": "Disabled", "B": "Disabled"}
+
+    def test_normalisation_is_idempotent_for_canonical_values(self, s1, fake_api):
+        """``Enabled`` and ``Disabled`` survive the normalisation
+        verbatim — no double-mapping or accidental change."""
+        routes, _ = fake_api
+        routes["/web/api/v2.1/detection-library/rules"] = {
+            "data": [
+                {"id": "E", "name": "e", "status": "Disabled",
+                 "severity": "Low"},
+                {"id": "D", "name": "d", "status": "Enabled",
+                 "severity": "Low"},
+            ],
+            "pagination": {"totalItems": 2},
+        }
+        routes["/web/api/v2.1/detection-library/platform-rules"] = {
+            "data": [
+                {"id": "E", "status": "Enabled"},
+                {"id": "D", "status": "Disabled"},
+            ],
+        }
+        tok = self._override_site(s1)
+        try:
+            out = s1.query_rules_for_phase("okta", "Credential Access", limit=5)
+        finally:
+            s1.clear_request_override(tok)
+        statuses = {r["id"]: r["status"] for r in out["rules"]}
+        assert statuses == {"E": "Enabled", "D": "Disabled"}
+
+    def test_unknown_status_passes_through_verbatim(self, s1, fake_api):
+        """If S1 ever ships a new status keyword we haven't seen,
+        leave it alone — front-end will degrade to the Enable button
+        (safe default) and we can fix the mapping in a patch release
+        without dropping data."""
+        routes, _ = fake_api
+        routes["/web/api/v2.1/detection-library/rules"] = {
+            "data": [{"id": "X", "name": "x", "status": "Disabled",
+                      "severity": "Low"}],
+            "pagination": {"totalItems": 1},
+        }
+        routes["/web/api/v2.1/detection-library/platform-rules"] = {
+            "data": [{"id": "X", "status": "Quarantined"}],
+        }
+        tok = self._override_site(s1)
+        try:
+            out = s1.query_rules_for_phase("okta", "Credential Access", limit=5)
+        finally:
+            s1.clear_request_override(tok)
+        assert out["rules"][0]["status"] == "Quarantined"
+
     def test_empty_catalog_skips_platform_rules_call(self, s1, fake_api):
         """No rules → no IDs → no point in calling /platform-rules
         with an empty comma-separated string (would 400). Tightens
