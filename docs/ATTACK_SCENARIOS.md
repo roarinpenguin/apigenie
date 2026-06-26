@@ -823,3 +823,58 @@ The fixes above only address what apigenie can do unilaterally. Three complement
 - `tests/test_persona_splice.py::test_create_temp_rule_non_proofpoint_does_not_touch_policyroutes` — guards that other sources are untouched.
 - `tests/test_persona_splice.py::test_create_temp_rule_proofpoint_preserves_operator_policyroutes` — guards the operator-overrides-win contract.
 - `tests/test_m365_baseline_noise.py` — guards the weight pinning regression.
+
+---
+
+## v5.1.9 — BEC scenario phases reshaped to fire vendor STAR rules
+
+v5.1.8 made scenario events traceable cross-source via `attack.id` and Proofpoint `policyRoutes`, but in production on the `usea1-purple` demo tenant the BEC scenario still produced **zero alerts** beyond unrelated baseline noise. Root cause: every BEC phase's `field_overrides` was crafted before any inventory of which S1 STAR rules the tenant actually had enabled. The events were *technically* in the correct vendor schema but the field values did not match any rule's query body.
+
+v5.1.9 rewrites the five BEC phases so each one's `field_overrides`, after `detection_rules._apply_overrides` runs, produces a JSON payload that satisfies the s1ql body of exactly one vendor-shipped SentinelOne STAR rule that is enabled by default on a typical tenant.
+
+### Mapping (BEC phase → target rule)
+
+| # | Phase | Source | Operation / eventType emitted | Target rule (s1ql excerpt) |
+|---|-------|--------|------------------------------|---------------------------|
+| 1 | Initial Access | Proofpoint | `threatsInfoMap.0.classification="impostor"` + `impostorScore=90` + `messageParts.0.sandboxStatus="THREAT"` + `quarantineFolder=""` | **Proofpoint Impostor Email Unblocked** — `threatsInfoMap contains '"classification":"impostor"' AND (sandboxStatus="THREAT" OR impostorScore>80) AND NOT quarantineFolder=*` |
+| 2 | Credential Access | Okta | `eventType="user.session.impersonation.initiate"` + Russia geo + isProxy + risk:HIGH | **Okta Impersonation Session Initiated** — `eventType contains 'user.session.impersonation.initiate' OR legacyEventType contains ...` |
+| 3 | Privilege Escalation | M365 | `Operation="Consent to application."` + `ModifiedProperties` string containing `ConsentType: AllPrincipals` | **Office 365 Admin Consent Granted for All Principals** — `Operation='Consent to application.' AND ModifiedProperties contains 'ConsentType: AllPrincipals'` |
+| 4 | Defense Evasion | M365 | `Operation="New-InboxRule"` + `Parameters[]` with `MoveToFolder=Deleted Items` + `MarkAsRead=True` | **Office 365 Inbox Rule Created or Modified with Suspicious Parameters** (third branch — silent-hide pattern) |
+| 5 | Persistence | M365 | `Operation="Add-MailboxPermission"` + `Parameters[]` with `AccessRights=SendAs` | **Office 365 Mailbox Permissions Delegation** — `activity_name='Add-MailboxPermission' AND Parameters contains:matchcase ('FullAccess','SendAs','SendOnBehalf')` |
+
+Expected outcome on a passive demo tenant after deploy: a single fresh BEC run produces **5 correlated alerts** (one per phase) plus the cross-source telemetry already preserved by v5.1.8.
+
+### MITRE narrative refresh
+
+The reshape also rewrote the BEC kill chain to match the new payloads and to be more representative of contemporary BEC tradecraft observed on M365 tenants:
+
+1. **Impostor phish** (T1566.001) lands in the inbox, sandboxed THREAT, not quarantined.
+2. **Impersonation session via stolen OAuth token** (T1528) — attacker assumes the compromised identity through Okta.
+3. **Illicit OAuth admin consent** (T1098.003) — attacker installs an OAuth app with `Mail.Read,Mail.Send,offline_access` scopes granted for **all principals**, giving them programmatic mailbox access without re-authenticating.
+4. **Silent inbox rule** (T1564.008) hides forwarded mail in *Deleted Items* with `MarkAsRead=True` + `StopProcessingRules=True`, the canonical BEC obfuscation.
+5. **SendAs delegation** (T1098.002) grants persistent SendAs on the victim mailbox to an attacker-controlled drop address.
+
+The five `phase_id`s changed accordingly: `initial-access`, `credential-access`, `privilege-escalation`, `defense-evasion`, `persistence`. Existing in-flight scenario records (`/var/lib/apigenie/attack_scenarios.json`) keep their old phases because the engine copies the template at create time — only **new** BEC scenarios get the v5.1.9 shape.
+
+### What did NOT change
+
+- **No generator changes** — `sources/m365.py`, `sources/proofpoint.py`, `sources/okta.py` are untouched. `detection_rules._apply_overrides` already supports the dot-notation nesting (`threatsInfoMap.0.classification`) and direct list values (`Parameters: [...]`) needed by the reshape.
+- **No new rule scaffolding** — the work is purely scenario content, not platform plumbing. Other scenarios (Ransomware via Lateral Movement, Cloud Account Takeover, etc.) keep their existing phases.
+- **No baseline tuning** — v5.1.8's M365 weight pinning is still the right lever for noise control; v5.1.9 is purely an alert-coverage uplift.
+
+### How the reshape was sized
+
+A live enumeration of the demo tenant's enabled STAR rules was done by hitting `/web/api/v2.1/detection-library/rules?sources=<src>&siteIds=<id>` and then per-rule `/detection-library/platform-rules?platformRuleIds=<id>...` to extract the `s1ql` query bodies. The shortlist of rules in the table above represents the **intersection of "enabled by default on most tenants" and "BEC-narrative-relevant"** — five rules out of sixteen enabled across the three BEC sources (M365: 10, Okta: 2, Proofpoint: 4).
+
+Operators who want the BEC scenario to fire **different** rules (e.g. "Office 365 Bulk File Download" instead of Mailbox Permissions Delegation for Phase 5) can either edit the scenario record post-create or open a PR against `attack_scenarios_library.py`.
+
+### Tests
+
+- `tests/test_bec_scenario_v519.py::test_bec_phase1_fires_proofpoint_impostor_email_unblocked` — Proofpoint Impostor rule satisfaction.
+- `tests/test_bec_scenario_v519.py::test_bec_phase2_fires_okta_impersonation_session` — Okta Impersonation rule satisfaction.
+- `tests/test_bec_scenario_v519.py::test_bec_phase3_fires_o365_admin_consent_all_principals` — Admin Consent rule satisfaction.
+- `tests/test_bec_scenario_v519.py::test_bec_phase4_fires_o365_inbox_rule_suspicious_parameters` — Suspicious Inbox Rule third-branch satisfaction.
+- `tests/test_bec_scenario_v519.py::test_bec_phase5_fires_o365_mailbox_permissions_delegation` — Mailbox Permissions Delegation rule satisfaction.
+- `tests/test_bec_scenario_v519.py::test_bec_phase5_userid_not_system` — guards that the SendAs phase doesn't accidentally pin UserId to the Exchange system actor (which the rule excludes).
+- `tests/test_bec_scenario_v519.py::test_bec_has_five_phases_in_canonical_order` — phase order invariant.
+- `tests/test_bec_scenario_v519.py::test_bec_phase_offsets_are_non_overlapping_and_monotonic` — timeline monotonicity.

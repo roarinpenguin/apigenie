@@ -19,40 +19,63 @@ def _register(key: str, name: str, description: str, phases: list[dict]) -> None
 # 1. Business Email Compromise (BEC)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-_register("bec_phishing", "Business Email Compromise (BEC)", 
-    "Phishing email → credential theft → mailbox access → inbox rule → data exfiltration via email forwarding",
+_register("bec_phishing", "Business Email Compromise (BEC)",
+    "Impostor phish → impersonation session via stolen token → illicit OAuth admin consent → "
+    "suspicious inbox rule → persistent SendAs delegation. v5.1.9: every phase's "
+    "field_overrides matches at least one vendor-shipped S1 STAR rule's s1ql so the "
+    "demo tenant generates 5 correlated alerts in addition to the cross-source events.",
     [
+        # ── Phase 1 ─────────────────────────────────────────────────────────
+        # Target rule: "Proofpoint Impostor Email Unblocked" (sev=High).
+        # s1ql excerpt:
+        #   dataSource.name='Proofpoint' AND
+        #   unmapped.threatsInfoMap contains '"classification":"impostor"' AND
+        #   (unmapped.messageParts contains '"sandboxStatus":"THREAT"'
+        #    OR unmapped.impostorScore > 80) AND
+        #   NOT (unmapped.quarantineFolder = *)
         {
             "phase_id": "initial-access",
             "mitre_tactic": "Initial Access",
             "mitre_technique": "T1566.001",
-            "name": "Phishing email delivered",
+            "name": "Impostor phishing email delivered (BEC pretext)",
             "source": "proofpoint",
             "time_offset_pct": 0,
             "duration_pct": 10,
             "periodicity": 3,
             "field_overrides": {
+                # v5.1.9: classification=impostor + impostorScore>80 + sandbox THREAT
+                # + quarantineFolder empty → fires "Impostor Email Unblocked".
                 "threatsInfoMap.0.threatType": "url",
-                "threatsInfoMap.0.classification": "phish",
+                "threatsInfoMap.0.classification": "impostor",
                 "threatsInfoMap.0.threat": "https://login-microsoftonline.evil.com/oauth2",
-                "subject": "Urgent: Review Shared Document",
+                "messageParts.0.sandboxStatus": "THREAT",
+                "subject": "Urgent: CFO wire transfer approval needed",
                 "quarantineFolder": "",
                 "spamScore": 90,
                 "phishScore": 95,
+                "impostorScore": 90,
                 "malwareScore": 0,
             },
         },
+        # ── Phase 2 ─────────────────────────────────────────────────────────
+        # Target rule: "Okta Impersonation Session Initiated" (sev=High).
+        # s1ql:
+        #   dataSource.name='Okta' AND
+        #   (unmapped.eventType contains 'user.session.impersonation.initiate'
+        #    OR unmapped.legacyEventType contains 'user.session.impersonation.initiate')
         {
             "phase_id": "credential-access",
             "mitre_tactic": "Credential Access",
-            "mitre_technique": "T1078",
-            "name": "Compromised account login",
+            "mitre_technique": "T1528",
+            "name": "Impersonation session via stolen OAuth token",
             "source": "okta",
             "time_offset_pct": 10,
             "duration_pct": 15,
             "periodicity": 5,
             "field_overrides": {
-                "eventType": "user.session.start",
+                # v5.1.9: eventType + legacyEventType → fires "Impersonation Session".
+                "eventType": "user.session.impersonation.initiate",
+                "legacyEventType": "core.user_auth.impersonation_session_initiated",
                 "outcome.result": "SUCCESS",
                 "client.geographicalContext.country": "Russia",
                 "client.geographicalContext.city": "Moscow",
@@ -61,54 +84,95 @@ _register("bec_phishing", "Business Email Compromise (BEC)",
                 "debugContext.debugData.risk": "HIGH",
             },
         },
+        # ── Phase 3 ─────────────────────────────────────────────────────────
+        # Target rule: "Office 365 Admin Consent Granted for All Principals" (sev=Low).
+        # s1ql:
+        #   dataSource.name='Microsoft O365' AND
+        #   unmapped.Operation='Consent to application.' AND
+        #   unmapped.ModifiedProperties contains 'ConsentType: AllPrincipals'
         {
-            "phase_id": "collection",
-            "mitre_tactic": "Collection",
-            "mitre_technique": "T1114.002",
-            "name": "Mailbox data access",
+            "phase_id": "privilege-escalation",
+            "mitre_tactic": "Privilege Escalation",
+            "mitre_technique": "T1098.003",
+            "name": "Illicit OAuth app — admin consent granted for all principals",
             "source": "m365",
             "time_offset_pct": 25,
             "duration_pct": 20,
             "periodicity": 4,
             "field_overrides": {
-                "Operation": "MailItemsAccessed",
-                "Workload": "Exchange",
-                "ClientInfoString": "Client=REST;Client=RESTSystem",
+                # v5.1.9: exact Operation literal + ModifiedProperties string with
+                # the AllPrincipals marker → fires "Admin Consent Granted...".
+                "Operation": "Consent to application.",
+                "Workload": "AzureActiveDirectory",
+                "ResultStatus": "Success",
                 "ExternalAccess": True,
-                "LogonType": 2,
+                "ModifiedProperties": (
+                    "ConsentAction.Permissions: "
+                    "[Scope: Mail.Read,Mail.Send,offline_access ConsentType: AllPrincipals]"
+                ),
+                "ObjectId": "OAuth-App-Phishing-Toolkit",
             },
         },
+        # ── Phase 4 ─────────────────────────────────────────────────────────
+        # Target rule: "Office 365 Inbox Rule Created or Modified with Suspicious
+        # Parameters" (sev=Medium). s1ql third branch:
+        #   activity_name in ('New-InboxRule','Set-InboxRule') AND
+        #   Parameters matches '"Name":"MoveToFolder"' AND
+        #   Parameters matches '"Value":"(Conversation History|RSS Feeds|Deleted Items|Junk Email)"' AND
+        #   Parameters matches '"Name":"MarkAsRead"' AND
+        #   Parameters matches '"Value":"True"'
         {
-            "phase_id": "persistence",
-            "mitre_tactic": "Persistence",
+            "phase_id": "defense-evasion",
+            "mitre_tactic": "Defense Evasion",
             "mitre_technique": "T1564.008",
-            "name": "Inbox forwarding rule created",
+            "name": "Inbox rule hides forwarded mail in Deleted Items",
             "source": "m365",
             "time_offset_pct": 45,
             "duration_pct": 15,
             "periodicity": 8,
             "field_overrides": {
+                # v5.1.9: New-InboxRule + Parameters[] with the MoveToFolder + MarkAsRead
+                # combo that matches the rule's third branch → fires "Suspicious Parameters".
                 "Operation": "New-InboxRule",
                 "Workload": "Exchange",
-                "RuleName": "Auto-Forward",
-                "RuleActions": "ForwardTo:exfil-drop@protonmail.com",
-                "RuleCondition": "SubjectOrBodyContainsWords:invoice,payment,wire,transfer",
+                "ResultStatus": "Succeeded",
+                "Parameters": [
+                    {"Name": "Identity",            "Value": "compromised.user@apigenie.com"},
+                    {"Name": "Name",                "Value": "Sync Issues Filter"},
+                    {"Name": "MoveToFolder",        "Value": "Deleted Items"},
+                    {"Name": "MarkAsRead",          "Value": "True"},
+                    {"Name": "StopProcessingRules", "Value": "True"},
+                ],
             },
         },
+        # ── Phase 5 ─────────────────────────────────────────────────────────
+        # Target rule: "Office 365 Mailbox Permissions Delegation" (sev=Info).
+        # s1ql:
+        #   metadata.product.name='Exchange' AND
+        #   activity_name='Add-MailboxPermission' AND
+        #   unmapped.Parameters contains:matchcase ('FullAccess','SendAs','SendOnBehalf') AND
+        #   unmapped.UserId != 'NT AUTHORITY\SYSTEM (Microsoft.Exchange.ServiceHost)'
         {
-            "phase_id": "exfiltration",
-            "mitre_tactic": "Exfiltration",
-            "mitre_technique": "T1048.003",
-            "name": "Data exfiltrated via email",
+            "phase_id": "persistence",
+            "mitre_tactic": "Persistence",
+            "mitre_technique": "T1098.002",
+            "name": "Persistent SendAs delegation to attacker mailbox",
             "source": "m365",
             "time_offset_pct": 60,
             "duration_pct": 40,
             "periodicity": 3,
             "field_overrides": {
-                "Operation": "SendAs",
+                # v5.1.9: Add-MailboxPermission + Parameters[] case-sensitive SendAs
+                # → fires "Mailbox Permissions Delegation".
+                "Operation": "Add-MailboxPermission",
                 "Workload": "Exchange",
-                "ExternalAccess": True,
-                "Item.Subject": "RE: Q3 Financial Projections",
+                "ResultStatus": "Succeeded",
+                "ObjectId": "/o=ExchangeLabs/ou=...\\compromised.user",
+                "Parameters": [
+                    {"Name": "Identity",     "Value": "compromised.user@apigenie.com"},
+                    {"Name": "User",         "Value": "exfil-drop@protonmail.com"},
+                    {"Name": "AccessRights", "Value": "SendAs"},
+                ],
             },
         },
     ]
