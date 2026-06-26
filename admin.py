@@ -1794,6 +1794,7 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
         <div class="modal-foot"><div></div><div class="right">
           <button class="btn-sm" style="background:rgba(90,24,154,.3)" onclick="closeScenarioModal()">Cancel</button>
           <button class="btn-sm" id="scenario-save-btn" onclick="saveScenarioFromEditor()">Save</button>
+          <button class="btn-sm" id="scenario-create-only-btn" style="background:rgba(90,24,154,.45)" onclick="createScenarioOnly()" title="Create the scenario without starting it (use Start later from the card)">Create</button>
           <button class="btn-sm" id="scenario-create-btn" onclick="createScenarioFromEditor()">Create &amp; Start</button>
         </div></div>
       </div>
@@ -7295,7 +7296,19 @@ async function loadScenarios() {
       // tells the operator exactly which collectors / push profiles to
       // configure for this scenario to play out end-to-end.
       var notesId = 'scn-notes-' + escHtml(s.id);
-      h += '<span style="margin-left:auto;cursor:pointer;color:#c77dff;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px" onclick="toggleScenarioSetupNotes(\\'' + escHtml(s.id) + '\\')" title="Show / hide collector configuration hints for every source this scenario touches">Setup notes \\u25be</span>';
+      var personaId = 'scn-persona-' + escHtml(s.id);
+      // Step B (v5.1.7) — Persona disclosure trigger. Lazy-loads the
+      // /persona endpoint on first expand so the scenario card stays
+      // cheap on the initial render. The pill sits next to Setup
+      // notes (same dotted-underline + chevron treatment) so the
+      // operator immediately recognises it as a fold-out.
+      h += '<span style="margin-left:auto;cursor:pointer;color:#c77dff;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px" onclick="toggleScenarioPersona(\\'' + escHtml(s.id) + '\\')" title="Show / hide the persona bundle and per-phase projection for this scenario">Persona \\u25be</span>';
+      h += '<span style="cursor:pointer;color:#c77dff;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px" onclick="toggleScenarioSetupNotes(\\'' + escHtml(s.id) + '\\')" title="Show / hide collector configuration hints for every source this scenario touches">Setup notes \\u25be</span>';
+      h += '</div>';
+      // Persona panel — hidden by default, lazy-populated via
+      // /admin/api/scenarios/{id}/persona on first expand.
+      h += '<div id="' + personaId + '" style="display:none;margin-top:10px;border-top:1px solid rgba(199,125,255,.15);padding-top:8px">';
+      h += '<div style="font-size:.68rem;color:rgba(224,170,255,.4)">Loading persona&hellip;</div>';
       h += '</div>';
       // Setup-notes panel — hidden by default, populated from the
       // scenario\\u2019s persisted setup_notes block on first expand.
@@ -7392,6 +7405,168 @@ function toggleScenarioSetupNotes(scenarioId) {
   panel.style.display = (panel.style.display === 'none' || !panel.style.display) ? 'block' : 'none';
 }
 
+// ── Scenario persona viewer (Step B, v5.1.7) ────────────────────────────────
+// Lazy-fetch + render the persona bundle, per-phase projection, and
+// coverage map for a given scenario. The toggle behaves identically to
+// Setup notes: first click loads + shows, subsequent clicks fold / unfold.
+// Cached results live in _scenarioPersonaCache so re-expanding doesn\\u2019t
+// re-hit the endpoint (the persona bundle is immutable for the scenario\\u2019s
+// lifetime — regenerating happens only at create/import time).
+
+var _scenarioPersonaCache = {};
+
+async function toggleScenarioPersona(scenarioId) {
+  var panel = document.getElementById('scn-persona-' + scenarioId);
+  if (!panel) return;
+  var hidden = panel.style.display === 'none' || !panel.style.display;
+  if (!hidden) { panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+  if (_scenarioPersonaCache[scenarioId]) {
+    panel.innerHTML = _scenarioPersonaCache[scenarioId];
+    return;
+  }
+  try {
+    var r = await fetch('/admin/api/scenarios/' + encodeURIComponent(scenarioId) + '/persona',
+                        {credentials:'same-origin'});
+    var d = await r.json();
+    if (d.error) {
+      panel.innerHTML = '<div style="font-size:.7rem;color:#ff8080">Error: '
+        + escHtml(d.error) + '</div>';
+      return;
+    }
+    var rendered = _renderScenarioPersona(d);
+    _scenarioPersonaCache[scenarioId] = rendered;
+    panel.innerHTML = rendered;
+  } catch (e) {
+    panel.innerHTML = '<div style="font-size:.7rem;color:#ff8080">'
+      + escHtml(String(e)) + '</div>';
+  }
+}
+
+function _renderScenarioPersona(d) {
+  // Renders three sections, top to bottom:
+  //   1. Persona bundle card (victim_user / victim_host / attacker /
+  //      malicious) \\u2014 the canonical "who is this scenario about".
+  //   2. Coverage strip \\u2014 which sources reference which slot
+  //      (answers: "does Okta touch the same victim as M365?").
+  //   3. Per-phase projection table \\u2014 every event_field that will
+  //      be stamped on the wire, with its resolved value and a chip
+  //      telling the operator whether the value came from the persona
+  //      bundle, an operator override, or didn\\u2019t resolve.
+  //
+  // All HTML built via concat \\u2014 NEVER template literals, NEVER
+  // backslash-n in JS strings (Python triple-quote would render them
+  // as literal newlines, snapping the entire admin page). See the
+  // CRITICAL JS-in-Python memory for the rules.
+  var persona = d.persona || {};
+  var problems = d.persona_problems || [];
+  var coverage = d.coverage || {};
+  var phases = d.phases || [];
+  var h = '';
+
+  // ── Bundle cards ──
+  h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:10px">';
+  ['victim_user','victim_host','attacker','malicious'].forEach(function(slot) {
+    var node = persona[slot] || {};
+    h += '<div style="background:rgba(36,0,70,.45);border:1px solid rgba(199,125,255,.18);border-radius:8px;padding:8px 10px">';
+    h += '<div style="font-size:.62rem;color:#c77dff;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">' + escHtml(slot.replace('_',' ')) + '</div>';
+    var fields = Object.keys(node);
+    if (!fields.length) {
+      h += '<div style="font-size:.65rem;color:rgba(224,170,255,.35)">empty</div>';
+    } else {
+      fields.forEach(function(k) {
+        var v = node[k];
+        var vStr = (v === null || v === undefined) ? '\\u2014' : String(v);
+        h += '<div style="display:flex;justify-content:space-between;gap:6px;font-size:.65rem;padding:1px 0">';
+        h += '<span style="color:rgba(224,170,255,.5)">' + escHtml(k) + '</span>';
+        h += '<span style="color:var(--mist);font-family:monospace;text-align:right;word-break:break-all">' + escHtml(vStr) + '</span>';
+        h += '</div>';
+      });
+    }
+    h += '</div>';
+  });
+  h += '</div>';
+
+  // ── Problems (only shown when non-empty) ──
+  if (problems.length) {
+    h += '<div style="background:rgba(243,156,18,.12);border:1px solid rgba(243,156,18,.35);border-radius:6px;padding:6px 10px;margin-bottom:10px;font-size:.65rem;color:#f39c12">';
+    h += '<div style="font-weight:600;margin-bottom:3px">Persona warnings:</div>';
+    problems.forEach(function(p) {
+      h += '<div>\\u2022 ' + escHtml(p) + '</div>';
+    });
+    h += '</div>';
+  }
+
+  // ── Coverage strip ──
+  var covSlots = Object.keys(coverage).sort();
+  if (covSlots.length) {
+    h += '<div style="margin-bottom:10px">';
+    h += '<div style="font-size:.62rem;color:rgba(224,170,255,.5);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Cross-source coverage</div>';
+    h += '<div style="display:flex;flex-wrap:wrap;gap:6px">';
+    covSlots.forEach(function(slot) {
+      var b = coverage[slot] || {sources:[], slots:[]};
+      h += '<div style="background:rgba(46,204,113,.12);border:1px solid rgba(46,204,113,.3);border-radius:5px;padding:4px 8px;font-size:.62rem">';
+      h += '<span style="color:#2ecc71;font-weight:600">' + escHtml(slot) + '</span>';
+      h += '<span style="color:rgba(224,170,255,.55);margin-left:6px">' + escHtml((b.sources || []).join(', ')) + '</span>';
+      h += '</div>';
+    });
+    h += '</div>';
+    h += '</div>';
+  }
+
+  // ── Per-phase projection table ──
+  if (!phases.length) {
+    h += '<div style="font-size:.7rem;color:rgba(224,170,255,.45)">No phases in this scenario.</div>';
+    return h;
+  }
+  h += '<div style="font-size:.62rem;color:rgba(224,170,255,.5);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Per-phase projection</div>';
+  phases.forEach(function(ph) {
+    h += '<div style="background:rgba(36,0,70,.35);border:1px solid rgba(199,125,255,.12);border-radius:6px;padding:8px 10px;margin-bottom:6px">';
+    h += '<div style="display:flex;gap:8px;align-items:baseline;margin-bottom:4px">';
+    h += '<span style="font-size:.68rem;font-weight:600;color:var(--mist)">' + escHtml(ph.source || '?') + '</span>';
+    h += '<span style="font-size:.6rem;color:rgba(224,170,255,.5)">' + escHtml(ph.mitre_tactic || '') + ' / ' + escHtml(ph.mitre_technique || '') + '</span>';
+    h += '</div>';
+    if (ph.missing_projection) {
+      h += '<div style="font-size:.65rem;color:#f39c12">No PERSONA_PROJECTION wired for source <code>' + escHtml(ph.source || '') + '</code> \\u2014 the persona will not reach this phase\\u2019s events.</div>';
+      h += '</div>';
+      return;
+    }
+    var rows = ph.projection || [];
+    if (!rows.length) {
+      h += '<div style="font-size:.65rem;color:rgba(224,170,255,.4)">projection map empty</div>';
+    } else {
+      rows.forEach(function(row) {
+        var sot = row.source_of_truth || 'unresolved';
+        var sotColor = sot === 'persona' ? '#2ecc71' : sot === 'operator' ? '#c77dff' : '#f39c12';
+        var sotBg    = sot === 'persona' ? 'rgba(46,204,113,.15)' : sot === 'operator' ? 'rgba(199,125,255,.15)' : 'rgba(243,156,18,.15)';
+        var v = row.resolved_value;
+        var vStr = (v === null || v === undefined || v === '') ? '\\u2014' : String(v);
+        h += '<div style="display:flex;align-items:center;gap:8px;font-size:.62rem;padding:2px 0;border-bottom:1px solid rgba(199,125,255,.05)">';
+        h += '<span style="background:' + sotBg + ';color:' + sotColor + ';padding:1px 6px;border-radius:3px;font-size:.55rem;text-transform:uppercase;letter-spacing:.5px;min-width:60px;text-align:center">' + escHtml(sot) + '</span>';
+        h += '<span style="font-family:monospace;color:rgba(224,170,255,.6);min-width:160px;word-break:break-all">' + escHtml(row.event_field || '') + '</span>';
+        h += '<span style="font-size:.55rem;color:rgba(224,170,255,.35)">\\u2190</span>';
+        h += '<span style="font-family:monospace;color:rgba(224,170,255,.5);min-width:140px;word-break:break-all">' + escHtml(row.persona_path || '') + '</span>';
+        h += '<span style="flex:1;font-family:monospace;color:var(--mist);text-align:right;word-break:break-all">' + escHtml(vStr) + '</span>';
+        h += '</div>';
+      });
+    }
+    var extras = ph.operator_overrides || {};
+    var extraKeys = Object.keys(extras);
+    if (extraKeys.length) {
+      h += '<div style="margin-top:5px;padding-top:5px;border-top:1px dashed rgba(199,125,255,.15);font-size:.6rem;color:rgba(224,170,255,.55)">';
+      h += 'Extra operator overrides (no persona mapping): ';
+      extraKeys.forEach(function(k, i) {
+        if (i > 0) h += ', ';
+        h += '<code>' + escHtml(k) + '=' + escHtml(String(extras[k])) + '</code>';
+      });
+      h += '</div>';
+    }
+    h += '</div>';
+  });
+
+  return h;
+}
+
 // ── Scenario builder state (Phase 2) ────────────────────────────────────────
 // _scenarioPhases mirrors the modal\u2019s editable phase list. We refresh from
 // the DOM into this array before every mutation that triggers a re-render
@@ -7454,6 +7629,7 @@ function openScenarioCreator() {
   document.getElementById('scenario-modal-title').textContent = 'Create Attack Scenario';
   document.getElementById('scenario-template-row').style.display = '';
   document.getElementById('scenario-save-btn').style.display = 'none';
+  document.getElementById('scenario-create-only-btn').style.display = '';
   document.getElementById('scenario-create-btn').style.display = '';
   document.getElementById('scenario-name').value = '';
   document.getElementById('scenario-dur-val').value = '4';
@@ -7504,6 +7680,7 @@ async function openScenarioEditor(id) {
     document.getElementById('scenario-template-row').style.display = 'none';
     document.getElementById('scenario-template-desc').textContent = '';
     document.getElementById('scenario-save-btn').style.display = '';
+    document.getElementById('scenario-create-only-btn').style.display = 'none';
     document.getElementById('scenario-create-btn').style.display = 'none';
     document.getElementById('scenario-name').value = s.name || '';
     var dur = s.duration || {};
@@ -7750,6 +7927,34 @@ async function createScenarioFromEditor() {
                 {method:'POST', credentials:'same-origin'});
     closeScenarioModal();
     toast('Scenario started: ' + payload.name);
+    loadScenarios();
+  } catch(e) { _showValidationErrorList(errBox, ['Failed: ' + e]); }
+}
+
+async function createScenarioOnly() {
+  // Step B (v5.1.7) — "Create" without start. Lets the operator inspect
+  // the persona bundle / projection / setup notes before committing the
+  // scenario to the scheduler. The persona bundle is generated server-side
+  // at POST /scenarios time (same code path as Create & Start), so the
+  // viewer pill on the card lights up immediately.
+  var payload = _collectScenarioPayload();
+  if (!payload) return;
+  var errBox = document.getElementById('scenario-validation-errors');
+  if (!payload.name) { errBox.textContent = 'Name is required.'; return; }
+  if (!payload.phases.length) { errBox.textContent = 'Add at least one phase.'; return; }
+  try {
+    var r = await fetch('/admin/api/scenarios', {
+      method:'POST', credentials:'same-origin',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    var d = await r.json();
+    if (!r.ok) {
+      _showValidationErrorList(errBox, d.errors || [d.error || ('HTTP ' + r.status)]);
+      return;
+    }
+    closeScenarioModal();
+    toast('Scenario created (not started): ' + payload.name);
     loadScenarios();
   } catch(e) { _showValidationErrorList(errBox, ['Failed: ' + e]); }
 }
@@ -11446,6 +11651,32 @@ async def api_scenario_status(scenario_id: str, ag_session: str | None = Cookie(
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     import attack_scenarios
     return JSONResponse(attack_scenarios.get_scenario_status(scenario_id))
+
+
+@router.get("/api/scenarios/{scenario_id}/persona")
+async def api_scenario_persona(scenario_id: str,
+                                ag_session: str | None = Cookie(None)):
+    """Read-only diagnostic view of how the scenario's persona bundle
+    projects onto each phase's wire events.
+
+    Answers the question the operator could never answer before
+    without starting the scenario and grepping a collector log:
+    "given my BEC scenario, what victim email is Okta actually going
+    to emit on the wire?" The response shape is the
+    ``scenario_persona_view.inspect_scenario`` contract — bundle +
+    per-phase projection rows + per-slot coverage across sources.
+
+    No mutation, no events generated, no S1 calls; safe to hit on
+    every render of the scenario card.
+    """
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import attack_scenarios
+    import scenario_persona_view
+    scenario = attack_scenarios.get_scenario(scenario_id)
+    if not scenario:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return JSONResponse(scenario_persona_view.inspect_scenario(scenario))
 
 
 # ── Scenario builder: update / export / import (Phase 2) ─────────────────────
