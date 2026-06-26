@@ -7350,13 +7350,28 @@ async function loadScenarios() {
       var phases = s.phases || [];
       phases.forEach(function(p, i) {
         var bg = _MITRE_COLORS[p.mitre_tactic] || '#555';
-        var opacity = p.status === 'active' ? '1' : p.status === 'completed' ? '.6' : '.25';
-        var border = p.status === 'active' ? '2px solid #fff' : '1px solid rgba(255,255,255,.15)';
-        h += '<div style="flex:1;min-width:80px;background:' + bg + ';opacity:' + opacity + ';border:' + border + ';border-radius:6px;padding:6px 8px;text-align:center;position:relative">';
-        h += '<div style="font-size:.58rem;font-weight:700;color:#fff;text-transform:uppercase;letter-spacing:.5px">' + escHtml(p.mitre_technique || '') + '</div>';
-        h += '<div style="font-size:.65rem;color:rgba(255,255,255,.8);margin-top:2px">' + escHtml(p.mitre_tactic || '') + '</div>';
-        h += '<div style="font-size:.55rem;color:rgba(255,255,255,.5);margin-top:2px">' + escHtml(p.source || '') + '</div>';
-        if (p.status === 'active') h += '<div style="position:absolute;top:-2px;right:4px;font-size:.5rem;color:#2ecc71">\\u25cf LIVE</div>';
+        // v5.1.11 \u2014 raise the legibility floor across all three states.
+        // The previous .25 pending opacity was effectively unreadable on
+        // most monitors. New: active=1 (LIVE), completed=.88 (still bright,
+        // visibly distinct), pending=.78 (clearly readable but obviously
+        // not-yet-fired). Active also gets a thicker / brighter border so
+        // it stands out without relying on opacity contrast alone.
+        var opacity = p.status === 'active' ? '1' : p.status === 'completed' ? '.88' : '.78';
+        var border = p.status === 'active'
+          ? '2px solid #fff'
+          : (p.status === 'completed'
+              ? '1px solid rgba(255,255,255,.35)'
+              : '1px solid rgba(255,255,255,.28)');
+        h += '<div style="flex:1;min-width:96px;background:' + bg + ';opacity:' + opacity + ';border:' + border + ';border-radius:6px;padding:8px 10px;text-align:center;position:relative">';
+        // v5.1.11 \u2014 font bumps so the phase header is legible without
+        // squinting. Title 0.78rem (was .58), tactic 0.7rem (was .65),
+        // source 0.66rem (was .55). All colors lifted to higher contrast
+        // (white at .92 / .75 instead of .8 / .5) so the text reads
+        // clearly even at the lowest opacity tier.
+        h += '<div style="font-size:.78rem;font-weight:700;color:#fff;text-transform:uppercase;letter-spacing:.5px;line-height:1.15">' + escHtml(p.mitre_technique || '') + '</div>';
+        h += '<div style="font-size:.7rem;color:rgba(255,255,255,.92);margin-top:3px">' + escHtml(p.mitre_tactic || '') + '</div>';
+        h += '<div style="font-size:.66rem;color:rgba(255,255,255,.75);margin-top:3px">' + escHtml(p.source || '') + '</div>';
+        if (p.status === 'active') h += '<div style="position:absolute;top:-2px;right:4px;font-size:.6rem;color:#2ecc71;font-weight:700">\\u25cf LIVE</div>';
         var phRuleId = 'phase-rules-' + escHtml(s.id).substring(0,8) + '-' + i;
         // v5.1.10 \u2014 stash the phase's target_rules onto the container as a
         // base64-encoded JSON attribute so loadPhaseRules() can highlight
@@ -7367,11 +7382,29 @@ async function loadScenarios() {
           try { tgtRulesB64 = btoa(unescape(encodeURIComponent(JSON.stringify(p.target_rules)))); }
           catch(e) { tgtRulesB64 = ''; }
         }
+        // v5.1.11 \u2014 when the phase has a target, show the rule name
+        // truncated DIRECTLY on the phase pill (not hidden behind a
+        // click). Clicking the badge opens the s1ql preview modal
+        // immediately. The cache key uses the SAME id as the rule-panel
+        // container (phRuleId) so the badge and the "S1 Rules" panel
+        // share the cached target list \u2014 single source of truth, no
+        // inline JSON-in-attribute, no escaping pitfalls.
+        if (Array.isArray(p.target_rules) && p.target_rules.length) {
+          window._phaseTargetRulesCache = window._phaseTargetRulesCache || {};
+          window._phaseTargetRulesCache[phRuleId] = p.target_rules;
+          p.target_rules.forEach(function(t, tidx) {
+            var tname = String(t.name || '');
+            var tnameShort = tname.length > 32 ? tname.substring(0, 30) + '\u2026' : tname;
+            h += '<div onclick="event.stopPropagation();showTargetRulePreview(\\'' + phRuleId + '\\',' + tidx + ')" title="' + escHtml(tname) + ' \u2014 click for s1ql preview" style="font-size:.62rem;color:#fff;background:rgba(199,125,255,.35);border:1px solid rgba(255,255,255,.45);border-radius:4px;padding:3px 5px;margin-top:5px;cursor:pointer;line-height:1.2;font-weight:600;text-shadow:0 1px 1px rgba(0,0,0,.4)">🎯 ' + escHtml(tnameShort) + '</div>';
+          });
+        }
         // The trigger label flips from "S1 Rules" to "🎯 S1 Rules" when the
         // phase has at least one target so the operator can see at a glance
         // which phases have an alert mapping wired up.
         var trigLabel = tgtRulesB64 ? '\\ud83c\\udfaf S1 Rules' : 'S1 Rules';
-        h += '<div style="font-size:.5rem;color:rgba(255,255,255,.3);margin-top:3px;cursor:pointer;text-decoration:underline" onclick="event.stopPropagation();var c=document.getElementById(\\'' + phRuleId + '\\');if(c.children.length===0)loadPhaseRules(\\'' + escHtml(s.id) + '\\',\\'' + escHtml(p.phase_id||'') + '\\',\\'' + escHtml(p.source||'') + '\\',\\'' + escHtml(p.mitre_tactic||'') + '\\',c);c.style.display=c.style.display===\\'none\\'?\\'block\\':\\'none\\'">' + trigLabel + '</div>';
+        // v5.1.11 \u2014 trigger label is now 0.66rem (was .5rem) and
+        // brighter (white at .65 vs .3). It used to be near-invisible.
+        h += '<div style="font-size:.66rem;color:rgba(255,255,255,.65);margin-top:5px;cursor:pointer;text-decoration:underline" onclick="event.stopPropagation();var c=document.getElementById(\\'' + phRuleId + '\\');if(c.children.length===0)loadPhaseRules(\\'' + escHtml(s.id) + '\\',\\'' + escHtml(p.phase_id||'') + '\\',\\'' + escHtml(p.source||'') + '\\',\\'' + escHtml(p.mitre_tactic||'') + '\\',c);c.style.display=c.style.display===\\'none\\'?\\'block\\':\\'none\\'">' + trigLabel + '</div>';
         h += '<div id="' + phRuleId + '" data-target-rules="' + tgtRulesB64 + '" style="display:none;margin-top:3px"></div>';
         h += '</div>';
       });
