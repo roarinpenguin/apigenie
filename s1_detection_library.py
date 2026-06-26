@@ -605,23 +605,33 @@ def query_rules_for_phase(source: str, mitre_tactic: str, limit: int = 10) -> di
     return result
 
 
-# Status values returned by S1 detection-library/platform-rules — verified
-# empirically against a live RoarinDemo console 2026-06-26:
+# Status values surfaced by the SentinelOne detection-library API —
+# verified empirically against the live ``usea1-purple`` tenant on
+# 2026-06-26 by direct curl. The console UI shows the operator-facing
+# labels (Draft / Enabling / Enabled / Disabling / Disabled) but
+# the REST surface returns a parallel internal vocabulary that the
+# UI translates client-side:
 #
-#   Draft      — created but never activated; not firing
-#   Enabling   — operator toggled Enable, S1 still propagating
-#   Enabled    — active at this scope, firing alerts
-#   Disabling  — operator toggled Disable, S1 still propagating
-#   Disabled   — inactive at this scope
+#   API ``Active``        ↔ UI "Enabled"
+#   API ``Activating``    ↔ UI "Enabling"   (transitional, ~seconds)
+#   API ``Deactivating``  ↔ UI "Disabling"  (transitional)
+#   API ``Disabled``      ↔ UI "Disabled"
+#   API ``Draft``         ↔ UI "Draft"      (never activated)
+#
+# Both vocabularies have been observed in the wild — newer console
+# builds occasionally surface the UI-style labels on the REST surface
+# too — so the mapping accepts either spelling for safety.
 #
 # The apigenie scenario UI (admin.py loadPhaseRules) checks
 # ``rule.status === 'Enabled'`` as an exact-string match to decide
 # whether the Enable/Disable button shows. The transitional states
-# (Enabling, Disabling) and the Draft state all need to collapse to
-# the two-value contract the UI knows about. Treat Enabling as Enabled
-# (the operator's intent is "on", and the rule will fire imminently)
-# and everything else that isn't Enabled as Disabled.
-_RULE_STATUS_ENABLED  = frozenset({"enabled", "enabling"})
+# and the Draft state all need to collapse to the two-value contract
+# the UI knows about. Treat any "on or going-on" value as Enabled
+# (operator's intent is on, the rule will fire imminently) and
+# everything else as Disabled.
+_RULE_STATUS_ENABLED  = frozenset({"enabled", "enabling",
+                                   "active", "activating", "activated",
+                                   "on"})
 _RULE_STATUS_DISABLED = frozenset({"disabled", "disabling", "draft",
                                    "inactive", "deactivating",
                                    "deactivated", "off"})

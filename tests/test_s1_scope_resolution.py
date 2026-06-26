@@ -977,6 +977,37 @@ class TestQueryRulesForPhaseScopedEnrich:
         assert "error" not in out
         assert out["rules"][0]["status"] == "Disabled"
 
+    def test_api_active_normalises_to_enabled(self, s1, fake_api):
+        """v5.1.6 — empirically verified by direct curl against
+        ``usea1-purple.sentinelone.net`` on 2026-06-26 that the REST
+        API actually returns ``status: "Active"`` for a rule whose
+        UI label reads "Enabled". This is the live-tenant repro of
+        the symptom the operator hit: click Enable, S1 PUT returns
+        affected=1, UI flips to "Disable" button optimistically,
+        navigate away and back, for-phase reads ``Active`` from the
+        catalog AND ``/platform-rules``, front-end checks
+        ``status === 'Enabled'``, fails, button reverts to Enable.
+        Locks ``Active`` (and the parallel ``Activating`` mid-flight
+        state) into the Enabled bucket so the contract never breaks
+        again."""
+        routes, _ = fake_api
+        routes["/web/api/v2.1/detection-library/rules"] = {
+            "data": [{"id": "1949916817668719706",
+                      "name": "Okta Impersonation Session Initiated",
+                      "status": "Active", "severity": "High"}],
+            "pagination": {"totalItems": 1},
+        }
+        routes["/web/api/v2.1/detection-library/platform-rules"] = {
+            "data": [{"id": "1949916817668719706", "status": "Active"}],
+        }
+        tok = self._override_site(s1)
+        try:
+            out = s1.query_rules_for_phase(
+                "okta", "Credential Access", limit=5)
+        finally:
+            s1.clear_request_override(tok)
+        assert out["rules"][0]["status"] == "Enabled"
+
     def test_enabling_normalises_to_enabled(self, s1, fake_api):
         """v5.1.5 — empirically verified that S1 platform-rules returns
         the rich five-value enum ``Draft/Enabling/Enabled/Disabling/
