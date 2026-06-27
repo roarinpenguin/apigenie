@@ -188,6 +188,54 @@ def test_bec_phase5_userid_not_system():
     assert "NT AUTHORITY" not in str(overrides.get("UserId", ""))
 
 
+# ── v5.1.13 — Phase 4 / Phase 5 target_rules switched to apigenie custom rules ──
+
+
+def test_bec_phase4_target_rule_is_apigenie_custom_legacy_client():
+    """v5.1.13 — Phase 4 must point at the apigenie custom STAR rule
+    that keys off ``unmapped.ClientApplication``. The shipped S1 rule
+    that queries ``unmapped.Parameters`` cannot fire on this tenant
+    because the OCSF collector drops the Parameters array."""
+    phases = _phases()
+    p = phases["defense-evasion"]
+    rules = p.get("target_rules", [])
+    assert len(rules) == 1, rules
+    r = rules[0]
+    assert r.get("custom") is True, "Phase 4 target rule must be marked custom=True"
+    assert r["name"].startswith("[apigenie]"), r["name"]
+    assert "Legacy Client Protocol" in r["name"], r["name"]
+    s1ql = r["s1ql"]
+    # Must use parsed fields, not unmapped.Parameters (dropped by collector).
+    assert "unmapped.Parameters" not in s1ql, "must avoid the dropped field"
+    assert "unmapped.ClientApplication" in s1ql, s1ql
+    assert "POP3" in s1ql and "IMAP4" in s1ql and "EWS" in s1ql, s1ql
+    assert "New-InboxRule" in s1ql and "Set-InboxRule" in s1ql, s1ql
+
+
+def test_bec_phase5_target_rule_is_apigenie_custom_legacy_client():
+    """v5.1.13 — Phase 5 must point at the apigenie custom STAR rule
+    that keys off ``unmapped.ClientApplication``. Same reasoning as
+    Phase 4: the tenant's OCSF collector drops ``unmapped.Parameters``,
+    so the shipped rule is structurally unable to fire on this tenant.
+    """
+    phases = _phases()
+    p = phases["persistence"]
+    rules = p.get("target_rules", [])
+    assert len(rules) == 1, rules
+    r = rules[0]
+    assert r.get("custom") is True, "Phase 5 target rule must be marked custom=True"
+    assert r["name"].startswith("[apigenie]"), r["name"]
+    assert "Legacy Client Protocol" in r["name"], r["name"]
+    s1ql = r["s1ql"]
+    assert "unmapped.Parameters" not in s1ql, "must avoid the dropped field"
+    assert "unmapped.ClientApplication" in s1ql, s1ql
+    assert "POP3" in s1ql and "IMAP4" in s1ql and "EWS" in s1ql, s1ql
+    assert "Add-MailboxPermission" in s1ql, s1ql
+    # The rule still excludes the system actor — mandatory exclusion
+    # carried over from the shipped Mailbox Permissions Delegation rule.
+    assert "NT AUTHORITY" in s1ql, s1ql
+
+
 # ── Catalogue invariants ─────────────────────────────────────────────────────
 
 
