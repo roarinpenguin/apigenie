@@ -43,14 +43,52 @@ _register("bec_phishing", "Business Email Compromise (BEC)",
             "duration_pct": 10,
             "periodicity": 3,
             "field_overrides": {
-                # v5.1.9: classification=impostor + impostorScore>80 + sandbox THREAT
-                # + quarantineFolder empty → fires "Impostor Email Unblocked".
-                "threatsInfoMap.0.threatType": "url",
-                "threatsInfoMap.0.classification": "impostor",
-                "threatsInfoMap.0.threat": "https://login-microsoftonline.evil.com/oauth2",
-                "messageParts.0.sandboxStatus": "THREAT",
+                # v5.1.12 — dot-notation rewrite. v5.1.9 stamped
+                # ``threatsInfoMap.0.X`` / ``messageParts.0.X`` which
+                # detection_rules._apply_overrides walks via _set_nested. That
+                # helper does NOT understand list indices: it sees an integer
+                # path segment as just another dict key, so the resulting
+                # event ends up with ``threatsInfoMap = {"0": {...}}`` (a
+                # dict) and — worse — the Proofpoint template's own
+                # ``messageParts`` *array* gets clobbered into the same
+                # ``{"0": {...}}`` shape because _set_nested overwrites
+                # any non-dict node it encounters mid-path. The Proofpoint
+                # parser on the S1 side strictly enforces the documented
+                # array shape and silently drops the malformed event, so the
+                # "Proofpoint Impostor Email Unblocked" rule never sees a
+                # candidate. (This is the exact pitfall called out in
+                # sources/proofpoint.py:82-88.)
+                #
+                # Fix: replace the *whole* list at top level. Same effect
+                # for the s1ql ``contains '"classification":"impostor"'``
+                # substring match, but the parser keeps the event intact.
+                "threatsInfoMap": [
+                    {
+                        "threatType": "url",
+                        "classification": "impostor",
+                        "threat": "https://login-microsoftonline.evil.com/oauth2",
+                    },
+                ],
+                # Override the whole messageParts list rather than poking
+                # into index 0; preserve the template-realistic shape so
+                # the parser accepts it.
+                "messageParts": [
+                    {
+                        "contentType": "text/html",
+                        "disposition": "inline",
+                        "filename": "message.html",
+                        "sandboxStatus": "THREAT",
+                    },
+                ],
                 "subject": "Urgent: CFO wire transfer approval needed",
-                "quarantineFolder": "",
+                # v5.1.12 — was ``quarantineFolder: ""``. The s1ql clause
+                # ``NOT (unmapped.quarantineFolder = *)`` uses the SDL
+                # wildcard, which matches any non-null value including
+                # the empty string. Setting the field to ``None`` (which
+                # JSON-serialises to ``null``) is the correct way to
+                # leave the field absent in the data lake, so the NOT
+                # clause does NOT exclude our impostor event.
+                "quarantineFolder": None,
                 "spamScore": 90,
                 "phishScore": 95,
                 "impostorScore": 90,

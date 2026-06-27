@@ -62,8 +62,44 @@ def test_bec_phase1_fires_proofpoint_impostor_email_unblocked():
         or '"sandboxStatus":"THREAT"' in body
         or (isinstance(ev.get("impostorScore"), int) and ev["impostorScore"] > 80)
     ), body
-    # s1ql: NOT (quarantineFolder = *)  — empty string means not quarantined
-    assert ev.get("quarantineFolder", "") == "", ev
+    # v5.1.12 — s1ql: NOT (quarantineFolder = *). The SDL wildcard
+    # matches any non-null value including the empty string; only
+    # ``None`` (JSON null) leaves the field truly absent. The previous
+    # value "" silently caused the rule to exclude every BEC Phase 1
+    # event.
+    assert ev.get("quarantineFolder") is None, ev
+
+
+def test_bec_phase1_overrides_preserve_proofpoint_array_shape():
+    """Regression for v5.1.12 — _apply_overrides must not clobber the
+    Proofpoint template's ``messageParts`` array. Pre-fix the override
+    used dot-notation ``messageParts.0.sandboxStatus`` which forced
+    _set_nested to rewrite the list as ``{"0": {...}}``, breaking the
+    parser. The fix replaces the whole list. This test guards against
+    a future edit that re-introduces the index-into-list pattern."""
+    phases = _phases()
+    p = phases["initial-access"]
+    # Use a base resembling the Proofpoint template (messageParts is
+    # an array of dicts) — the production code path goes through this
+    # shape via sources/proofpoint.py:_generate_message.
+    base = {
+        "messageParts": [
+            {"contentType": "text/html", "sandboxStatus": "unsupported"},
+        ],
+        "quarantineFolder": None,
+    }
+    ev = _apply(p, base=base)
+    # messageParts must stay a *list* after the override, not become
+    # a dict. The Proofpoint parser drops malformed events silently.
+    assert isinstance(ev.get("messageParts"), list), (
+        "Override clobbered messageParts into a non-list shape — "
+        "the Proofpoint parser will discard the event."
+    )
+    # The override's sandboxStatus must be present in the first part.
+    assert ev["messageParts"][0].get("sandboxStatus") == "THREAT", ev["messageParts"]
+    # threatsInfoMap is a list of dicts; no dict-with-"0"-key smell.
+    assert isinstance(ev.get("threatsInfoMap"), list), ev.get("threatsInfoMap")
+    assert ev["threatsInfoMap"][0].get("classification") == "impostor", ev["threatsInfoMap"]
 
 
 # ── Phase 2 — Okta Impersonation Session Initiated ───────────────────────────
