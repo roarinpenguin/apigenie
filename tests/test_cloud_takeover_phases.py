@@ -42,6 +42,7 @@ def _reset_injector_state():
     from sources import m365
     detection_rules._injected_total.clear()
     detection_rules._last_fired.clear()
+    detection_rules._save_rules([])  # wipe persisted rules — test isolation
     m365._BLOB_CACHE.clear()
 
 
@@ -67,6 +68,17 @@ def test_phase6_retargeted_to_m365():
     assert p["field_overrides"]["Workload"] == "AzureActiveDirectory"
 
 
+def test_phase4_targets_entra_via_azure_role_rule():
+    p = _phase("privilege-escalation")
+    assert p["source"] == "entra_id", "phase 4 must target Entra ID (Azure AD)"
+    fo = p["field_overrides"]
+    assert fo["activityDisplayName"] == "Add member to role"
+    assert fo["operationType"] == "Assign", (
+        "operationType must be 'Assign' (background uses 'Add') to fire the rule "
+        "without background noise")
+    assert any("Global Administrator" in str(t) for t in fo["targetResources"])
+
+
 def test_consent_phase_carries_allprincipals_marker():
     p = _phase("persistence")
     mp = p["field_overrides"].get("ModifiedProperties", "")
@@ -77,7 +89,7 @@ def test_consent_phase_carries_allprincipals_marker():
 @pytest.mark.parametrize("phase_id, expected_in_s1ql", [
     ("credential-access", "security.threat.detected"),
     ("persistence", "ConsentType: AllPrincipals"),
-    ("privilege-escalation", "unmapped.RoleName = 'Global Administrator'"),
+    ("privilege-escalation", "unmapped.operationType = 'Assign'"),
     ("collection", None),  # Bulk File Download — anomaly rule, no s1ql asserted
     ("persistence-2", "activity_name = 'Add service principal.'"),
 ])
@@ -94,19 +106,22 @@ def test_each_alerting_phase_documents_target_rule(phase_id, expected_in_s1ql):
 # ── Delivery: M365 capped phases survive the two-step content→audit poll ─────
 
 
-@pytest.mark.parametrize("phase_id, operation, marker_field, marker_value", [
-    ("persistence", "Consent to application.", "ModifiedProperties", "ConsentType: AllPrincipals"),
-    ("privilege-escalation", "Activate eligible role.", "RoleName", "Global Administrator"),
-    ("persistence-2", "Add service principal.", "Workload", "AzureActiveDirectory"),
-])
-def test_m365_phase_event_reaches_collector_with_discriminator(
-        phase_id, operation, marker_field, marker_value):
+def test_consent_phase_allprincipals_marker_survives_two_step():
+    """The consent phase event must reach the collector carrying the
+    ``ConsentType: AllPrincipals`` marker the ACTIVE shipped rule keys on.
+
+    We filter by the marker (not by Operation) because the M365 *background*
+    also emits ``Consent to application.`` — only the scenario injection sets
+    the AllPrincipals ModifiedProperties, so the marker uniquely isolates the
+    capped event. (The generic exactly-once two-step delivery guarantee is
+    covered by ``test_m365_blob_cache.py``.)
+    """
     from fastapi.testclient import TestClient
 
     import app as apigenie_app
 
     _reset_injector_state()
-    _make_rule("m365", _phase(phase_id)["field_overrides"])
+    _make_rule("m365", _phase("persistence")["field_overrides"])
 
     client = TestClient(apigenie_app.app)
     tenant = "my-roarin-111-m365tenant"
@@ -121,30 +136,55 @@ def test_m365_phase_event_reaches_collector_with_discriminator(
     blobs = r.json()
     assert blobs, "content listing must return blobs"
 
-    matches = []
+    marked = []
     for blob in blobs:
         path = urlparse(blob["contentUri"]).path
         r2 = client.get(path, headers=headers)
         assert r2.status_code == 200, r2.text
-        matches.extend(e for e in r2.json() if e.get("Operation") == operation)
+        marked.extend(
+            e for e in r2.json()
+            if "ConsentType: AllPrincipals" in str(e.get("ModifiedProperties", "")))
 
-    assert len(matches) == 1, (
-        f"capped {operation!r} event must be ingested exactly once, got {len(matches)}")
-    delivered = str(matches[0].get(marker_field, ""))
-    assert marker_value in delivered, (
-        f"{operation!r}: delivered event {marker_field} must contain {marker_value!r}, "
-        f"got {delivered!r}")
+    assert len(marked) == 1, (
+        f"the capped AllPrincipals consent event must reach the collector exactly "
+        f"once, got {len(marked)}")
+    assert marked[0].get("Operation") == "Consent to application."
 
 
 # ── Delivery: Okta phase fires the ThreatInsight rule shape ──────────────────
+
+
+def test_pim_phase4_injects_into_entra_via_alias_canonicalization():
+    """Phase 4 (source='entra_id') must inject into the azure_ad generator.
+
+    Regression for the alias bug: ``inject_detection_events`` keyed rules on an
+    EXACT source match, so an 'entra_id' rule never matched the 'azure_ad'
+    generator. The fix canonicalizes both sides. Here we create the rule with
+    the alias ('entra_id', exactly as the scenario engine tags it) and assert
+    the azure_ad audit feed injects the Azure role-assignment event.
+    """
+    import detection_rules
+    from sources import azure_ad
+
+    _reset_injector_state()
+    _make_rule("entra_id", _phase("privilege-escalation")["field_overrides"])
+
+    resp = azure_ad.get_audit_logs_response(limit=50)
+    events = resp["value"]
+    hits = [e for e in events
+            if e.get("activityDisplayName") == "Add member to role"
+            and e.get("operationType") == "Assign"]
+    assert len(hits) == 1, (
+        f"entra_id phase rule must inject exactly one Azure role assignment, got {len(hits)}")
+    assert "Global Administrator" in str(hits[0].get("targetResources")), (
+        "delivered event targetResources must carry the privileged role name")
 
 
 def test_okta_phase_emits_security_threat_detected():
     import detection_rules
     from sources import okta
 
-    detection_rules._injected_total.clear()
-    detection_rules._last_fired.clear()
+    _reset_injector_state()
     _make_rule("okta", _phase("credential-access")["field_overrides"])
 
     logs, _ = okta.get_logs_response(limit=100)

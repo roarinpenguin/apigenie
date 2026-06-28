@@ -601,35 +601,47 @@ _register("cloud_account_takeover", "Cloud Account Takeover",
             "mitre_tactic": "Privilege Escalation",
             "mitre_technique": "T1078.004",
             "name": "PIM role escalation to Global Admin",
-            "source": "m365",
+            # v5.1.26 — retarget m365→entra_id. With Entra ID now streaming
+            # (dataSource.name='Azure Active Directory'), the SHIPPED platform rule
+            # "Azure User Added to a Highly Privileged Built-in Role" fires on the
+            # directory-audit role assignment and — being a platform rule —
+            # resolves the Target Asset (a custom O365 rule could not). Verified
+            # field landing in the lake: the rule keys on
+            # unmapped.activityDisplayName='Add member to role',
+            # unmapped.operationType='Assign' (background uses 'Add' → NO noise),
+            # and unmapped.targetResources contains 'Global Administrator'.
+            "source": "entra_id",
             "time_offset_pct": 40,
             "duration_pct": 15,
             "periodicity": 10,
             # v5.1.20 — escalating to Global Admin is a single action.
             "max_events": 1,
             "field_overrides": {
-                "Operation": "Activate eligible role.",
-                "Workload": "AzureActiveDirectory",
-                "RoleName": "Global Administrator",
-                "Justification": "Emergency access needed",
-                "ActivationDuration": "PT8H",
+                "activityDisplayName": "Add member to role",
+                "operationType": "Assign",
+                "result": "success",
+                "category": "RoleManagement",
+                "loggedByService": "Core Directory",
+                # targetResources must carry the privileged role name the rule's
+                # full-text `contains` keys on; a Role-typed target both satisfies
+                # the rule and reads correctly in the alert detail.
+                "targetResources": [
+                    {"displayName": "Global Administrator", "type": "Role"},
+                ],
             },
-            # v5.1.25 — no shipped rule matches the O365-sourced PIM activation
-            # (all shipped PIM rules key on dataSource 'Azure Active Directory' /
-            # 'Azure Platform', which is NOT ingested here). ApiGenie emits PIM via
-            # the M365 feed, so a CUSTOM STAR rule on the verified scalar fields is
-            # required. RoleName lands as unmapped.RoleName.
             "target_rules": [
                 {
-                    "name": "[apigenie] O365 PIM Activation to Global Administrator",
-                    "source": "m365",
-                    "severity": "High",
+                    "name": "Azure User Added to a Highly Privileged Built-in Role",
+                    "source": "entra_id",
+                    "severity": "Medium",
                     "mitre": "T1078.004",
-                    "custom": True,  # must be CREATED on the tenant
+                    "shipped_status": "Disabled",  # must be ENABLED on the tenant
                     "s1ql": (
-                        "dataSource.name = 'Microsoft O365' and "
-                        "activity_name = 'Activate eligible role.' and "
-                        "unmapped.RoleName = 'Global Administrator'"
+                        "dataSource.name = 'Azure Active Directory' and "
+                        "unmapped.activityDisplayName = 'Add member to role' and "
+                        "unmapped.operationType = 'Assign' and "
+                        "unmapped.targetResources contains 'Global Administrator' and "
+                        "unmapped.initiatedBy.app.displayName != 'MS-PIM'"
                     ),
                 },
             ],

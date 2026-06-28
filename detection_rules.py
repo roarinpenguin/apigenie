@@ -223,8 +223,21 @@ def inject_detection_events(source: str, logs: list[dict[str, Any]]) -> list[dic
         caller_id = get_current_user()
     except Exception:
         caller_id = None
+    # Canonicalize source ids before matching so alias-named rules match the
+    # canonical source the generator injects under. A scenario phase with
+    # ``source='entra_id'`` (or ``'defender'``) creates a temp rule tagged with
+    # that alias, but ``azure_ad`` / ``microsoft_defender`` generators call
+    # ``inject_detection_events`` with the canonical module id — without
+    # canonicalizing both sides the rule would never inject. Lazy import keeps
+    # detection_rules free of a hard ``sources`` dependency / import cycle.
+    try:
+        from sources import canonical_source_id as _canon
+    except Exception:
+        def _canon(s):
+            return s
+    _src_c = _canon(source)
     rules = [r for r in _load_rules()
-             if r["source"] == source
+             if _canon(r["source"]) == _src_c
              and r.get("enabled", True)
              and _rule_visible_to_caller(r, caller_id)]
     if not rules or not logs:

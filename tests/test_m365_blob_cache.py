@@ -94,6 +94,7 @@ def _make_capped_m365_rule(overrides=None):
 def _reset_injector_state():
     import detection_rules
     from sources import m365
+    detection_rules._save_rules([])  # wipe persisted rules — test isolation
     detection_rules._injected_total.clear()
     detection_rules._last_fired.clear()
     m365._BLOB_CACHE.clear()
@@ -224,12 +225,21 @@ def test_all_bec_m365_phases_reach_collector_once(operation, overrides):
     blobs = r.json()
     assert blobs, "content listing must return blobs"
 
+    # Some Operations (consent) are ALSO emitted by the M365 background noise,
+    # so match on the override's unique ModifiedProperties marker when present
+    # to isolate the scenario-injected event from benign background traffic.
+    marker = overrides.get("ModifiedProperties")
     matches = []
     for blob in blobs:
         path = urlparse(blob["contentUri"]).path
         r2 = client.get(path, headers=headers)
         assert r2.status_code == 200, r2.text
-        matches.extend(e for e in r2.json() if e.get("Operation") == operation)
+        for e in r2.json():
+            if e.get("Operation") != operation:
+                continue
+            if marker and marker not in str(e.get("ModifiedProperties", "")):
+                continue
+            matches.append(e)
 
     assert len(matches) == 1, (
         f"capped {operation!r} event must be ingested exactly once via the "
