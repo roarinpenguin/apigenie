@@ -26,13 +26,65 @@ from __future__ import annotations
 
 from urllib.parse import urlparse
 
+import pytest
 
-def _make_capped_m365_rule():
+
+# The three M365 BEC phases that carry max_events, with the exact
+# field_overrides the scenario library ships (attack_scenarios_library.py).
+# Each entry: (Operation, field_overrides) — these are the events that must
+# survive the two-step content→audit poll so the corresponding ACTIVE shipped
+# STAR rule can fire (verified on usea1-purple 2026-06-28):
+#   consent    → "Office 365 Admin Consent Granted for All Principals"
+#   anti-phish → "Office 365 Deactivation or Removal of Anti-Phish Rule"
+#   transport  → "Office 365 Creation of Mail Transport Rule"
+_BEC_M365_PHASES = [
+    pytest.param(
+        "Consent to application.",
+        {
+            "Operation": "Consent to application.",
+            "Workload": "AzureActiveDirectory",
+            "ResultStatus": "Success",
+            "ExternalAccess": True,
+            "ModifiedProperties": (
+                "ConsentAction.Permissions: "
+                "[Scope: Mail.Read,Mail.Send,offline_access ConsentType: AllPrincipals]"
+            ),
+            "ObjectId": "OAuth-App-Phishing-Toolkit",
+        },
+        id="consent-privilege-escalation",
+    ),
+    pytest.param(
+        "Remove-AntiPhishRule",
+        {
+            "Operation": "Remove-AntiPhishRule",
+            "Workload": "Exchange",
+            "ResultStatus": "Succeeded",
+            "Parameters": [{"Name": "Identity", "Value": "Office365 AntiPhish Default"}],
+        },
+        id="antiphish-defense-evasion",
+    ),
+    pytest.param(
+        "New-TransportRule",
+        {
+            "Operation": "New-TransportRule",
+            "Workload": "Exchange",
+            "ResultStatus": "Succeeded",
+            "Parameters": [
+                {"Name": "Name", "Value": "External Mail Sync"},
+                {"Name": "RedirectMessageTo", "Value": "exfil-drop@protonmail.com"},
+            ],
+        },
+        id="transport-persistence",
+    ),
+]
+
+
+def _make_capped_m365_rule(overrides=None):
     import detection_rules
     return detection_rules.create_rule({
         "name": "[SCENARIO] persistence — mail transport rule",
         "source": "m365",
-        "field_overrides": {"Operation": "New-TransportRule", "Workload": "Exchange"},
+        "field_overrides": overrides or {"Operation": "New-TransportRule", "Workload": "Exchange"},
         "periodicity": 2,
         "max_events": 1,
         "visibility": "public",
@@ -140,3 +192,52 @@ def test_route_two_step_delivers_capped_event_once():
     assert seen == 1, (
         f"the capped New-TransportRule event must be ingested exactly once via "
         f"the two-step content→audit flow, got {seen}")
+
+
+@pytest.mark.parametrize("operation, overrides", _BEC_M365_PHASES)
+def test_all_bec_m365_phases_reach_collector_once(operation, overrides):
+    """Every capped M365 BEC phase event must reach the collector exactly once.
+
+    Locks in the regression for all three M365 phases — consent
+    (privilege-escalation), Remove-AntiPhishRule (defense-evasion) and
+    New-TransportRule (persistence) — not just transport. Each phase's ACTIVE
+    shipped STAR rule keys off this event; if the two-step poll drops it (the
+    pre-v5.1.24 max_events double-injection bug) the alert never fires.
+    """
+    from fastapi.testclient import TestClient
+
+    import app as apigenie_app
+
+    _reset_injector_state()
+    _make_capped_m365_rule(overrides)
+
+    client = TestClient(apigenie_app.app)
+    tenant = "my-roarin-111-m365tenant"
+    headers = {"Authorization": "Bearer eyJ.fake.jwt"}
+
+    r = client.get(
+        f"/api/v1.0/{tenant}/activity/feed/subscriptions/content",
+        params={"contentType": "Audit.General"},
+        headers=headers,
+    )
+    assert r.status_code == 200, r.text
+    blobs = r.json()
+    assert blobs, "content listing must return blobs"
+
+    matches = []
+    for blob in blobs:
+        path = urlparse(blob["contentUri"]).path
+        r2 = client.get(path, headers=headers)
+        assert r2.status_code == 200, r2.text
+        matches.extend(e for e in r2.json() if e.get("Operation") == operation)
+
+    assert len(matches) == 1, (
+        f"capped {operation!r} event must be ingested exactly once via the "
+        f"two-step content→audit flow, got {len(matches)}")
+
+    # The shipped rule discriminators must survive onto the delivered event.
+    ev = matches[0]
+    for field, value in overrides.items():
+        assert ev.get(field) == value, (
+            f"{operation!r}: override {field}={value!r} must be present on the "
+            f"delivered event, got {ev.get(field)!r}")
