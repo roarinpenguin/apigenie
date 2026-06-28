@@ -202,7 +202,7 @@ def test_bec_phase4_target_rule_is_apigenie_custom_legacy_client():
     assert len(rules) == 1, rules
     r = rules[0]
     assert r.get("custom") is True, "Phase 4 target rule must be marked custom=True"
-    assert r["name"].startswith("[apigenie]"), r["name"]
+    assert not r["name"].startswith("[apigenie]"), "custom rule name must not carry the [apigenie] prefix"
     assert "Legacy Client Protocol" in r["name"], r["name"]
     s1ql = r["s1ql"]
     # Must use parsed fields, not unmapped.Parameters (dropped by collector).
@@ -224,7 +224,7 @@ def test_bec_phase5_target_rule_is_apigenie_custom_legacy_client():
     assert len(rules) == 1, rules
     r = rules[0]
     assert r.get("custom") is True, "Phase 5 target rule must be marked custom=True"
-    assert r["name"].startswith("[apigenie]"), r["name"]
+    assert not r["name"].startswith("[apigenie]"), "custom rule name must not carry the [apigenie] prefix"
     assert "Legacy Client Protocol" in r["name"], r["name"]
     s1ql = r["s1ql"]
     assert "unmapped.Parameters" not in s1ql, "must avoid the dropped field"
