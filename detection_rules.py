@@ -29,6 +29,12 @@ _lock = threading.Lock()
 # Track last fire time per rule to enforce periodicity
 _last_fired: dict[str, float] = {}
 
+# Track the cumulative number of events injected per rule across all poll
+# batches, so a rule carrying ``max_events`` emits at most that many events
+# over its whole lifetime (e.g. a BEC admin-action phase that should fire
+# ONCE, not scale with background log volume on every collector poll).
+_injected_total: dict[str, int] = {}
+
 
 # ── Storage ──────────────────────────────────────────────────────────────────
 
@@ -64,6 +70,13 @@ def create_rule(data: dict[str, Any]) -> dict[str, Any]:
         "periodicity": max(1, int(data.get("periodicity", 10))),
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
+    # Optional total-event cap: when set (int > 0), the injector emits at
+    # most this many events for the rule across its entire lifetime,
+    # regardless of periodicity or background log volume. ``None`` (the
+    # default) preserves the legacy unbounded count-based behaviour.
+    _me = data.get("max_events")
+    if isinstance(_me, (int, float)) and int(_me) > 0:
+        rule["max_events"] = int(_me)
     # Preserve scenario metadata if present (attack scenario temporary rules)
     if "_scenario_id" in data:
         rule["_scenario_id"] = data["_scenario_id"]
@@ -94,6 +107,12 @@ def update_rule(rule_id: str, data: dict[str, Any]) -> dict[str, Any] | None:
                         r[key] = data[key]
                 if "periodicity" in data:
                     r["periodicity"] = max(1, int(data["periodicity"]))
+                if "max_events" in data:
+                    _me = data["max_events"]
+                    if isinstance(_me, (int, float)) and int(_me) > 0:
+                        r["max_events"] = int(_me)
+                    else:
+                        r.pop("max_events", None)
                 _save_rules(rules)
                 log.info("Detection rule updated: %s", rule_id)
                 return r
@@ -108,6 +127,10 @@ def delete_rule(rule_id: str) -> bool:
         if len(rules) == before:
             return False
         _save_rules(rules)
+    # Drop the per-rule injection counters so a future rule that happens to
+    # reuse this id (and to keep the dicts from growing unbounded) starts clean.
+    _last_fired.pop(rule_id, None)
+    _injected_total.pop(rule_id, None)
     log.info("Detection rule deleted: %s", rule_id)
     return True
 
@@ -219,6 +242,17 @@ def inject_detection_events(source: str, logs: list[dict[str, Any]]) -> list[dic
         if not overrides:
             continue
 
+        # Total-event cap: a rule carrying ``max_events`` emits at most that
+        # many events across its whole lifetime. ``remaining`` is None when
+        # uncapped (legacy unbounded behaviour). Skip rules already at cap.
+        max_events = rule.get("max_events")
+        remaining: int | None = None
+        if isinstance(max_events, int) and max_events > 0:
+            already = _injected_total.get(rule_id, 0)
+            remaining = max_events - already
+            if remaining <= 0:
+                continue
+
         # Per-scenario log hook (v5.0 Phase 3): if this is a scenario temp
         # rule, every successful injection gets recorded into the scenario's
         # ring buffer. Resolve the recorder once per call to keep the cost
@@ -243,14 +277,18 @@ def inject_detection_events(source: str, logs: list[dict[str, Any]]) -> list[dic
             result.insert(pos, detection_event)
             _last_fired[rule_id] = now
             injected_count += 1
+            _injected_total[rule_id] = _injected_total.get(rule_id, 0) + 1
             if rule_scenario_id:
                 _scn_record(rule_scenario_id,
                             overrides.get("phase.id", ""),
                             rule.get("_attack_id", ""),
                             source, detection_event)
         else:
-            # Count-based: inject 1 event per N logs
+            # Count-based: inject 1 event per N logs, clamped by the
+            # remaining total-event budget when the rule is capped.
             count = max(1, len(logs) // periodicity)
+            if remaining is not None:
+                count = min(count, remaining)
             for _ in range(count):
                 base = random.choice(logs)
                 detection_event = _apply_overrides(base, overrides)
@@ -258,6 +296,7 @@ def inject_detection_events(source: str, logs: list[dict[str, Any]]) -> list[dic
                 pos = random.randint(0, len(result))
                 result.insert(pos, detection_event)
                 injected_count += 1
+                _injected_total[rule_id] = _injected_total.get(rule_id, 0) + 1
                 if rule_scenario_id:
                     _scn_record(rule_scenario_id,
                                 overrides.get("phase.id", ""),

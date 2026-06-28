@@ -1777,6 +1777,46 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
             </div>
           </div>
           <div id="scenario-mode-hint" style="font-size:.68rem;color:rgba(224,170,255,.4);min-height:16px"></div>
+          <!-- Persona details (v5.1.19): auto-populated but editable. The
+               bundle anchors the victim / attacker / host / payload identity
+               across every source the scenario touches. Edits are persisted
+               on the scenario record and used for the entire run. -->
+          <div style="border:1px solid rgba(199,125,255,.18);border-radius:8px;padding:10px 12px;background:rgba(36,0,70,.25)">
+            <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleScenarioPersonaEditor()">
+              <label style="font-size:.72rem;color:rgba(224,170,255,.6);font-weight:600;cursor:pointer">
+                <span id="scenario-persona-caret">&#9662;</span> Persona details
+                <span style="font-weight:400;color:rgba(224,170,255,.4)">&#8212; who this attack is about (editable)</span>
+              </label>
+              <button class="btn-sm" type="button" style="padding:3px 10px;font-size:.68rem;background:rgba(90,24,154,.4)" onclick="event.stopPropagation();regenerateScenarioPersona()" title="Roll a fresh random identity bundle">&#8635; Regenerate</button>
+            </div>
+            <div id="scenario-persona-body" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px;margin-top:10px">
+              <div>
+                <div style="font-size:.62rem;color:#c77dff;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Victim user</div>
+                <input id="persona-vu-name"     data-pslot="victim_user.name"     placeholder="Display name" style="width:100%;margin-bottom:4px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.3);border-radius:6px;padding:5px 8px;color:var(--mist);font-size:.74rem"/>
+                <input id="persona-vu-email"    data-pslot="victim_user.email"    placeholder="Email" style="width:100%;margin-bottom:4px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.3);border-radius:6px;padding:5px 8px;color:var(--mist);font-size:.74rem"/>
+                <input id="persona-vu-upn"      data-pslot="victim_user.upn"      placeholder="UPN" style="width:100%;margin-bottom:4px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.3);border-radius:6px;padding:5px 8px;color:var(--mist);font-size:.74rem"/>
+                <input id="persona-vu-username" data-pslot="victim_user.username" placeholder="Username" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.3);border-radius:6px;padding:5px 8px;color:var(--mist);font-size:.74rem"/>
+              </div>
+              <div>
+                <div style="font-size:.62rem;color:#c77dff;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Victim host</div>
+                <input id="persona-vh-hostname" data-pslot="victim_host.hostname" placeholder="Hostname" style="width:100%;margin-bottom:4px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.3);border-radius:6px;padding:5px 8px;color:var(--mist);font-size:.74rem"/>
+                <input id="persona-vh-ip"       data-pslot="victim_host.ip"       placeholder="IP" style="width:100%;margin-bottom:4px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.3);border-radius:6px;padding:5px 8px;color:var(--mist);font-size:.74rem"/>
+                <input id="persona-vh-os"       data-pslot="victim_host.os"       placeholder="OS" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.3);border-radius:6px;padding:5px 8px;color:var(--mist);font-size:.74rem"/>
+              </div>
+              <div>
+                <div style="font-size:.62rem;color:#c77dff;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Attacker</div>
+                <input id="persona-at-email"   data-pslot="attacker.email"   placeholder="Email" style="width:100%;margin-bottom:4px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.3);border-radius:6px;padding:5px 8px;color:var(--mist);font-size:.74rem"/>
+                <input id="persona-at-domain"  data-pslot="attacker.domain"  placeholder="Domain" style="width:100%;margin-bottom:4px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.3);border-radius:6px;padding:5px 8px;color:var(--mist);font-size:.74rem"/>
+                <input id="persona-at-ip"      data-pslot="attacker.ip"      placeholder="IP" style="width:100%;margin-bottom:4px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.3);border-radius:6px;padding:5px 8px;color:var(--mist);font-size:.74rem"/>
+                <input id="persona-at-country" data-pslot="attacker.country" placeholder="Country" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.3);border-radius:6px;padding:5px 8px;color:var(--mist);font-size:.74rem"/>
+              </div>
+              <div>
+                <div style="font-size:.62rem;color:#c77dff;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Malicious payload</div>
+                <input id="persona-mal-file"    data-pslot="malicious.file_name" placeholder="File name" style="width:100%;margin-bottom:4px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.3);border-radius:6px;padding:5px 8px;color:var(--mist);font-size:.74rem"/>
+                <input id="persona-mal-process" data-pslot="malicious.process"   placeholder="Process" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.3);border-radius:6px;padding:5px 8px;color:var(--mist);font-size:.74rem"/>
+              </div>
+            </div>
+          </div>
           <div>
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
               <label style="font-size:.72rem;color:rgba(224,170,255,.5)">Phases <span id="scenario-phase-count" style="color:rgba(224,170,255,.35)"></span></label>
@@ -7711,6 +7751,12 @@ function _renderScenarioPersona(d) {
 // _scenarioEditingId is null in create mode and the scenario id in edit mode.
 var _scenarioPhases = [];
 var _scenarioEditingId = null;
+// v5.1.19 — the editable persona bundle backing the modal's Persona
+// details section. Holds the FULL bundle (incl. fields not shown in the
+// editor: object_id, agent_uuid, sha256, md5, asn, cmd_line) so those
+// survive an edit. Seeded fresh in create mode, hydrated from the saved
+// scenario in edit mode.
+var _scenarioPersonas = null;
 // Tracks which scenario cards currently have the event log panel expanded so
 // the 8s scenarios auto-refresh can repopulate them instead of forcing the
 // user to re-click. Keyed by scenario id; values are truthy when open.
@@ -7788,6 +7834,10 @@ function openScenarioCreator() {
   });
   sel.value = '';
   document.getElementById('scenario-template-desc').textContent = '';
+  // Seed a fresh, editable persona bundle so the operator can tweak
+  // names/emails before saving (async; fills in when it resolves).
+  _scenarioPersonas = null;
+  regenerateScenarioPersona();
   renderScenarioPhasesEditor();
   document.getElementById('scenario-modal').classList.remove('hidden');
 }
@@ -7810,6 +7860,7 @@ async function openScenarioEditor(id) {
         time_offset_pct: p.time_offset_pct == null ? 0 : p.time_offset_pct,
         duration_pct: p.duration_pct == null ? 10 : p.duration_pct,
         periodicity: p.periodicity == null ? 5 : p.periodicity,
+        max_events: p.max_events == null ? null : p.max_events,
         field_overrides: p.field_overrides || {}
       };
     });
@@ -7829,10 +7880,80 @@ async function openScenarioEditor(id) {
     document.getElementById('scenario-visibility').value = s.visibility || 'private';
     document.getElementById('scenario-epp').value = (s.events_per_phase == null ? '' : s.events_per_phase);
     onScenarioModeChange();
+    // Hydrate the persona editor from the saved bundle; if a legacy
+    // scenario has none, roll a fresh one so the fields aren't blank.
+    _scenarioPersonas = (s.personas && typeof s.personas === 'object') ? s.personas : null;
+    if (_scenarioPersonas) { _populatePersonaInputs(_scenarioPersonas); }
+    else { regenerateScenarioPersona(); }
     document.getElementById('scenario-validation-errors').textContent = '';
     renderScenarioPhasesEditor();
     document.getElementById('scenario-modal').classList.remove('hidden');
   } catch(e) { alert('Failed: ' + e); }
+}
+
+// ── Persona editor (v5.1.19) ────────────────────────────────────────────────
+// The Persona details section is auto-populated but editable. _scenarioPersonas
+// holds the full bundle; the visible inputs (data-pslot="slot.field") overlay
+// the editable subset. All HTML/DOM built with concat + \\u escapes — never
+// template literals or literal backslash-n (see the JS-in-Python memory).
+
+function toggleScenarioPersonaEditor() {
+  var b = document.getElementById('scenario-persona-body');
+  var c = document.getElementById('scenario-persona-caret');
+  if (!b) return;
+  var hidden = b.style.display === 'none';
+  b.style.display = hidden ? 'grid' : 'none';
+  if (c) c.innerHTML = hidden ? '\\u25be' : '\\u25b8';
+}
+
+function _personaSet(bundle, path, val) {
+  var parts = path.split('.');
+  var o = bundle;
+  for (var i = 0; i < parts.length - 1; i++) {
+    if (typeof o[parts[i]] !== 'object' || o[parts[i]] === null) o[parts[i]] = {};
+    o = o[parts[i]];
+  }
+  o[parts[parts.length - 1]] = val;
+}
+
+function _personaGet(bundle, path) {
+  var parts = path.split('.');
+  var o = bundle;
+  for (var i = 0; i < parts.length; i++) {
+    if (o == null || typeof o !== 'object') return '';
+    o = o[parts[i]];
+  }
+  return (o == null) ? '' : o;
+}
+
+function _populatePersonaInputs(bundle) {
+  var inputs = document.querySelectorAll('#scenario-persona-body [data-pslot]');
+  for (var i = 0; i < inputs.length; i++) {
+    inputs[i].value = _personaGet(bundle || {}, inputs[i].getAttribute('data-pslot'));
+  }
+}
+
+function _collectPersonaBundle() {
+  // Deep-copy the seeded bundle so hidden fields (object_id, agent_uuid,
+  // sha256, md5, asn, cmd_line) survive; overlay the editable inputs on top.
+  var bundle = _scenarioPersonas ? JSON.parse(JSON.stringify(_scenarioPersonas)) : {};
+  var inputs = document.querySelectorAll('#scenario-persona-body [data-pslot]');
+  for (var i = 0; i < inputs.length; i++) {
+    var v = inputs[i].value.trim();
+    if (v !== '') _personaSet(bundle, inputs[i].getAttribute('data-pslot'), v);
+  }
+  return bundle;
+}
+
+async function regenerateScenarioPersona() {
+  try {
+    var r = await fetch('/admin/api/personas/generate', {credentials:'same-origin'});
+    var d = await r.json();
+    if (d && d.persona) {
+      _scenarioPersonas = d.persona;
+      _populatePersonaInputs(_scenarioPersonas);
+    }
+  } catch(e) { /* keep whatever is already in the inputs */ }
 }
 
 function onScenarioTemplateChange() {
@@ -7862,6 +7983,7 @@ function onScenarioTemplateChange() {
           time_offset_pct: p.time_offset_pct == null ? 0 : p.time_offset_pct,
           duration_pct: p.duration_pct == null ? 10 : p.duration_pct,
           periodicity: p.periodicity == null ? 5 : p.periodicity,
+          max_events: p.max_events == null ? null : p.max_events,
           field_overrides: p.field_overrides || {},
           // v5.1.10 — carry the phase \u2194 vendor STAR rule mapping all
           // the way from the template into the persisted scenario record
@@ -8027,6 +8149,7 @@ function _collectScenarioPayload() {
     mode:       modeEl ? modeEl.value : 'realtime',
     visibility: visEl  ? visEl.value  : 'private',
     events_per_phase: epp,
+    personas: _collectPersonaBundle(),
     phases: _scenarioPhases.map(function(p) {
       var out = {
         name: p.name, source: p.source,
@@ -8038,6 +8161,7 @@ function _collectScenarioPayload() {
       // assigns "phase-<index>" automatically (preserves the existing
       // convention in create_scenario()).
       if (p.phase_id && p.phase_id.trim()) out.phase_id = p.phase_id.trim();
+      if (p.max_events != null) out.max_events = p.max_events;
       // v5.1.10 — propagate the phase \u2194 STAR rule mapping when present.
       // Round-trips through create / update / import / export so the
       // scenario card's clickable target-rule pill survives every edit.
@@ -11701,6 +11825,21 @@ async def api_scenario_template_detail(key: str, ag_session: str | None = Cookie
     if not t:
         return JSONResponse({"error": "not_found"}, status_code=404)
     return JSONResponse(t)
+
+
+@router.get("/api/personas/generate")
+async def api_personas_generate(ag_session: str | None = Cookie(None)):
+    """Roll a fresh persona bundle for the scenario editor.
+
+    The Create/Edit modal calls this to seed the (editable) persona
+    fields so the operator can tweak names/emails for a demo before
+    saving. The returned bundle is the same shape ``create_scenario`` /
+    ``update_scenario`` accept back as the ``personas`` payload key.
+    """
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import personas
+    return JSONResponse({"persona": personas.generate_bundle()})
 
 
 @router.get("/api/scenarios")

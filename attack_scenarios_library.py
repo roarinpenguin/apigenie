@@ -54,6 +54,9 @@ _register("bec_phishing", "Business Email Compromise (BEC)",
             "time_offset_pct": 0,
             "duration_pct": 10,
             "periodicity": 3,
+            # v5.1.19 — realistic volume: a BEC pretext is one (maybe two)
+            # impostor email(s), not a flood. Cap total events for the phase.
+            "max_events": 2,
             "field_overrides": {
                 # v5.1.12 — dot-notation rewrite. v5.1.9 stamped
                 # ``threatsInfoMap.0.X`` / ``messageParts.0.X`` which
@@ -142,6 +145,8 @@ _register("bec_phishing", "Business Email Compromise (BEC)",
             "time_offset_pct": 10,
             "duration_pct": 15,
             "periodicity": 5,
+            # v5.1.19 — one stolen-token impersonation session (small margin).
+            "max_events": 2,
             "field_overrides": {
                 # v5.1.9: eventType + legacyEventType → fires "Impersonation Session".
                 "eventType": "user.session.impersonation.initiate",
@@ -182,6 +187,8 @@ _register("bec_phishing", "Business Email Compromise (BEC)",
             "time_offset_pct": 25,
             "duration_pct": 20,
             "periodicity": 4,
+            # v5.1.19 — admin consent is a single discrete action.
+            "max_events": 1,
             "field_overrides": {
                 # v5.1.9: exact Operation literal + ModifiedProperties string with
                 # the AllPrincipals marker → fires "Admin Consent Granted...".
@@ -229,6 +236,8 @@ _register("bec_phishing", "Business Email Compromise (BEC)",
             "time_offset_pct": 45,
             "duration_pct": 15,
             "periodicity": 8,
+            # v5.1.19 — removing the anti-phish policy is a single action.
+            "max_events": 1,
             "field_overrides": {
                 # v5.1.16: Remove-AntiPhishRule on Exchange Online. The shipped
                 # platform rule matches activity_name only (scalar), so no
@@ -275,6 +284,8 @@ _register("bec_phishing", "Business Email Compromise (BEC)",
             "time_offset_pct": 60,
             "duration_pct": 40,
             "periodicity": 3,
+            # v5.1.19 — one transport rule is created; cap to a single event.
+            "max_events": 1,
             "field_overrides": {
                 # v5.1.16: New-TransportRule that redirects all inbound mail to
                 # an external mailbox. The shipped platform rule matches

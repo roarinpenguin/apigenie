@@ -968,6 +968,12 @@ def _create_temp_rule(phase: dict, attack_id: str, scenario_id: str,
         "_scenario_id": scenario_id,
         "_attack_id": attack_id,
     }
+    # Optional realistic total-event cap for discrete-action phases (e.g. a
+    # BEC admin action performed once). When set, the injector emits at most
+    # this many events for the whole phase instead of scaling with the
+    # background log volume on every collector poll.
+    if phase.get("max_events") is not None:
+        rule_data["max_events"] = phase.get("max_events")
 
     rule = detection_rules.create_rule(rule_data)
     return rule.get("id") if rule else None
