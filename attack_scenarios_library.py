@@ -506,12 +506,33 @@ _register("cloud_account_takeover", "Cloud Account Takeover",
             # v5.1.20 — a stolen-token sign-in is one (maybe two) sessions.
             "max_events": 2,
             "field_overrides": {
-                "eventType": "user.session.start",
+                # v5.1.25 — fire the shipped "Okta High Severity Threat Detected"
+                # rule (Okta ThreatInsight). Verified against the lake: the Okta
+                # collector maps these to unmapped.eventType / unmapped.severity /
+                # status. The background noise NEVER emits security.threat.detected,
+                # so this is a clean, scenario-only discriminator. The earlier
+                # debugContext.debugData.risk/behaviors overrides are DROPPED by the
+                # collector (they land as null), so they cannot anchor a rule.
+                "eventType": "security.threat.detected",
+                "severity": "HIGH",
                 "outcome.result": "SUCCESS",
-                "client.geographicalContext.country": "Nigeria",
-                "debugContext.debugData.risk": "HIGH",
-                "debugContext.debugData.behaviors": "ANOMALOUS_DEVICE,ANOMALOUS_LOCATION",
+                "displayMessage": "Okta ThreatInsight: malicious sign-in with stolen session token",
+                "client.geographicalContext.country": "NG",
             },
+            "target_rules": [
+                {
+                    "name": "Okta High Severity Threat Detected",
+                    "source": "okta",
+                    "severity": "High",
+                    "mitre": "T1528",
+                    "shipped_status": "Disabled",  # must be ENABLED on the tenant
+                    "s1ql": (
+                        "dataSource.name = 'Okta' and "
+                        "(unmapped.eventType contains ('security.threat.detected','security.attack.start')) "
+                        "and not (status = 'DENY') and not (unmapped.severity in ('INFO','WARN'))"
+                    ),
+                },
+            ],
         },
         {
             "phase_id": "persistence",
@@ -525,12 +546,37 @@ _register("cloud_account_takeover", "Cloud Account Takeover",
             # v5.1.20 — granting consent is a single discrete action.
             "max_events": 1,
             "field_overrides": {
+                # v5.1.25 — fire the ACTIVE shipped "Office 365 Admin Consent
+                # Granted for All Principals" rule (same rule BEC phase 3 proved).
+                # It keys on unmapped.Operation + unmapped.ModifiedProperties
+                # contains 'ConsentType: AllPrincipals', so the illicit app must be
+                # granted tenant-wide (AllPrincipals) consent — a single-user
+                # UserConsent does NOT fire it.
                 "Operation": "Consent to application.",
                 "Workload": "AzureActiveDirectory",
                 "ApplicationName": "MailReader Pro",
-                "Permissions": "Mail.Read Mail.Send Mail.ReadWrite User.Read Files.ReadWrite.All",
-                "ConsentType": "UserConsent",
+                "ResultStatus": "Success",
+                "ModifiedProperties": (
+                    "ConsentAction.Permissions: "
+                    "[Scope: Mail.Read,Mail.Send,Mail.ReadWrite,Files.ReadWrite.All "
+                    "ConsentType: AllPrincipals]"
+                ),
+                "ObjectId": "OAuth-App-MailReader-Pro",
             },
+            "target_rules": [
+                {
+                    "name": "Office 365 Admin Consent Granted for All Principals",
+                    "source": "m365",
+                    "severity": "Low",
+                    "mitre": "T1098.003",
+                    "shipped_status": "Active",
+                    "s1ql": (
+                        "dataSource.name = 'Microsoft O365' and "
+                        "unmapped.Operation = 'Consent to application.' and "
+                        "unmapped.ModifiedProperties contains 'ConsentType: AllPrincipals'"
+                    ),
+                },
+            ],
         },
         {
             "phase_id": "discovery",
@@ -568,6 +614,25 @@ _register("cloud_account_takeover", "Cloud Account Takeover",
                 "Justification": "Emergency access needed",
                 "ActivationDuration": "PT8H",
             },
+            # v5.1.25 — no shipped rule matches the O365-sourced PIM activation
+            # (all shipped PIM rules key on dataSource 'Azure Active Directory' /
+            # 'Azure Platform', which is NOT ingested here). ApiGenie emits PIM via
+            # the M365 feed, so a CUSTOM STAR rule on the verified scalar fields is
+            # required. RoleName lands as unmapped.RoleName.
+            "target_rules": [
+                {
+                    "name": "[apigenie] O365 PIM Activation to Global Administrator",
+                    "source": "m365",
+                    "severity": "High",
+                    "mitre": "T1078.004",
+                    "custom": True,  # must be CREATED on the tenant
+                    "s1ql": (
+                        "dataSource.name = 'Microsoft O365' and "
+                        "activity_name = 'Activate eligible role.' and "
+                        "unmapped.RoleName = 'Global Administrator'"
+                    ),
+                },
+            ],
         },
         {
             "phase_id": "collection",
@@ -586,23 +651,54 @@ _register("cloud_account_takeover", "Cloud Account Takeover",
                 "SiteUrl": "https://contoso.sharepoint.com/sites/Finance",
                 "SourceFileName": "Merger-Plans-Confidential.docx",
             },
+            "target_rules": [
+                {
+                    "name": "Office 365 Bulk File Download",
+                    "source": "m365",
+                    "severity": "Medium",
+                    "mitre": "T1530",
+                    "shipped_status": "Active",
+                    "note": "Anomaly/threshold rule; the capped 5-file burst should trip it — validate at runtime.",
+                },
+            ],
         },
         {
             "phase_id": "persistence-2",
             "mitre_tactic": "Persistence",
             "mitre_technique": "T1136.003",
             "name": "Backdoor service principal created",
-            "source": "entra_id",
+            # v5.1.25 — retarget entra_id→m365. The Entra ID / Azure AD collector
+            # is NOT ingested on this tenant, but the identical directory op
+            # arrives via the M365 Management Activity feed (verified in the lake:
+            # dataSource.name='Microsoft O365', metadata.product.name=
+            # 'AzureActiveDirectory', activity_name='Add service principal.'). The
+            # shipped "Office 365 Service Principal Addition" rule matches it and,
+            # being a platform rule, resolves the Target Asset.
+            "source": "m365",
             "time_offset_pct": 80,
             "duration_pct": 20,
             "periodicity": 10,
             # v5.1.20 — one backdoor service principal is created.
             "max_events": 1,
             "field_overrides": {
-                "operationName": "Add service principal",
-                "category": "ApplicationManagement",
-                "resultType": "Success",
+                "Operation": "Add service principal.",
+                "Workload": "AzureActiveDirectory",
+                "ResultStatus": "Success",
             },
+            "target_rules": [
+                {
+                    "name": "Office 365 Service Principal Addition",
+                    "source": "m365",
+                    "severity": "Info",
+                    "mitre": "T1136.003",
+                    "shipped_status": "Disabled",  # must be ENABLED on the tenant
+                    "s1ql": (
+                        "dataSource.name = 'Microsoft O365' and "
+                        "metadata.product.name = 'AzureActiveDirectory' and "
+                        "activity_name = 'Add service principal.'"
+                    ),
+                },
+            ],
         },
     ]
 )
