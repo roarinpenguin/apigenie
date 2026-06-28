@@ -564,6 +564,59 @@ class TestQueryRulesScopeAware:
         assert out["total"] == 0
 
 
+# ── v5.1.17 — browse drawer reflects scope-effective status ───────────
+
+class TestEnrichScopedStatus:
+    """The library browse drawer (``/admin/api/s1/rules`` →
+    ``_enrich_scoped_status``) must show the per-site activation state,
+    not the catalog default. A rule already enabled on the site has to
+    render "Disable on S1", not "Enable on S1" (the reported glitch).
+    This is the same enrichment the scenario-phase picker applies via
+    ``query_rules_for_phase``."""
+
+    def test_catalog_disabled_overridden_to_enabled_at_site(self, s1, fake_api):
+        routes, calls = fake_api
+        # Scoped platform-rules says the rule is Active at the site.
+        routes["/web/api/v2.1/detection-library/platform-rules"] = {
+            "data": [{"id": "rule-1", "status": "Active"}]}
+        tok = s1.set_request_override(
+            "https://alice.sentinelone.net", "alice-token",
+            account_id="ACCT", site_id="SITE",
+        )
+        try:
+            # Catalog status is Disabled — must be overridden to Enabled.
+            result = {"rules": [{"id": "rule-1", "name": "X",
+                                 "status": "Disabled"}], "total": 1}
+            out = s1._enrich_scoped_status(result, context="browse")
+        finally:
+            s1.clear_request_override(tok)
+        assert out["rules"][0]["status"] == "Enabled"
+        # The scoped read must target the site scope.
+        gets = [c for c in calls if c[0] == "GET"
+                and c[1] == "/web/api/v2.1/detection-library/platform-rules"]
+        assert gets, "expected a scoped /platform-rules GET"
+        assert gets[0][2].get("scopeLevel") == "site"
+        assert gets[0][2].get("scopeId") == "SITE"
+
+    def test_falls_back_to_catalog_status_when_no_scoped_override(self, s1, fake_api):
+        """If the site has no per-scope override (empty data), keep the
+        catalog status but still normalise it to the two-value contract."""
+        routes, _ = fake_api
+        routes["/web/api/v2.1/detection-library/platform-rules"] = {"data": []}
+        tok = s1.set_request_override(
+            "https://alice.sentinelone.net", "alice-token",
+            account_id="ACCT", site_id="SITE",
+        )
+        try:
+            result = {"rules": [{"id": "rule-9", "name": "Y",
+                                 "status": "Active"}], "total": 1}
+            out = s1._enrich_scoped_status(result, context="browse")
+        finally:
+            s1.clear_request_override(tok)
+        # "Active" catalog value normalised to the UI contract "Enabled".
+        assert out["rules"][0]["status"] == "Enabled"
+
+
 # ── platform-rule settings: inheritance lock ─────────────────────────
 
 class TestPlatformSettingsInheritance:

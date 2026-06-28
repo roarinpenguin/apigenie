@@ -557,15 +557,38 @@ def query_rules_for_phase(source: str, mitre_tactic: str, limit: int = 10) -> di
     UI gesture, not a hot loop.
     """
     result = query_rules(source=source, mitre_tactic=mitre_tactic, limit=limit)
-    if "error" in result or not result.get("rules"):
+    return _enrich_scoped_status(result, context="for-phase")
+
+
+def _enrich_scoped_status(result: dict[str, Any], *, context: str = "browse"
+                          ) -> dict[str, Any]:
+    """Override each rule's *catalog* status with its scope-effective
+    (per-site / per-account) activation state.
+
+    The catalog endpoint ``/detection-library/rules`` returns the
+    rule's default activation set by SentinelOne for the rule
+    definition. Per-tenant overrides (``Enable on Site RoarinDemo``)
+    live on ``/detection-library/platform-rules?scopeLevel=site&
+    scopeId=X``. Both the scenario-phase picker AND the library browse
+    drawer must show the scoped state — otherwise a rule that is
+    enabled at site scope still renders an ``Enable on S1`` button
+    (the reported glitch), because the catalog status is ``Disabled``.
+
+    Mutates ``result['rules']`` in place and returns it. Fail-soft: on
+    any error, missing scope, or empty scoped response, the catalog
+    status is kept (and still normalised to the Enabled/Disabled
+    two-value contract). One extra API call per call — acceptable since
+    both callers are hit on explicit UI gestures, not hot loops.
+    """
+    if not isinstance(result, dict) or "error" in result or not result.get("rules"):
         return result
     scope = _resolve_scope_for_write()
     if not scope:
-        return result
+        return _normalize_all_statuses(result)
     scope_level, scope_id = scope
     rule_ids = [str(r["id"]) for r in result["rules"] if r.get("id")]
     if not rule_ids:
-        return result
+        return _normalize_all_statuses(result)
     # ``platformRuleIds`` accepts a comma-separated list per the swagger,
     # and ``limit`` must be ≥ the number of IDs we expect back or the
     # response pagination would silently drop some.
@@ -579,27 +602,33 @@ def query_rules_for_phase(source: str, mitre_tactic: str, limit: int = 10) -> di
         },
     )
     if "error" in scoped:
-        log.info("for-phase: scoped status enrich failed (%s) — using "
-                 "catalog status", scoped.get("error"))
-        return result
+        log.info("%s: scoped status enrich failed (%s) — using "
+                 "catalog status", context, scoped.get("error"))
+        return _normalize_all_statuses(result)
     data_list = scoped.get("data", []) or []
     if not data_list:
-        log.info("for-phase: /platform-rules scope=%s:%s returned 0 "
+        log.info("%s: /platform-rules scope=%s:%s returned 0 "
                  "entries for ids=%s — site has no per-scope override "
                  "for these rules yet",
-                 scope_level, scope_id, ",".join(rule_ids[:3]))
-        return result
+                 context, scope_level, scope_id, ",".join(rule_ids[:3]))
+        return _normalize_all_statuses(result)
     by_id = {str(r.get("id")): r for r in data_list}
     for rule in result["rules"]:
         scoped_rule = by_id.get(str(rule.get("id")))
         if not scoped_rule or "status" not in scoped_rule:
             continue
         rule["status"] = _normalize_rule_status(scoped_rule["status"])
-    # Also normalize any catalog-only rule that didn't get overridden
-    # — the catalog endpoint occasionally emits the rich enum too on
-    # newer console builds, and an un-normalised "Enabling" would slip
-    # through and cause the same "button bounces back" symptom.
-    for rule in result["rules"]:
+    return _normalize_all_statuses(result)
+
+
+def _normalize_all_statuses(result: dict[str, Any]) -> dict[str, Any]:
+    """Collapse every rule's ``status`` to the Enabled/Disabled
+    two-value contract the front-end checks for. The catalog endpoint
+    occasionally emits the rich enum (``Activating``/``Draft``) too on
+    newer console builds; an un-normalised value would slip through and
+    cause the same "button bounces back" symptom.
+    """
+    for rule in result.get("rules", []):
         if "status" in rule:
             rule["status"] = _normalize_rule_status(rule["status"])
     return result

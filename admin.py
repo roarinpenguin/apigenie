@@ -12227,6 +12227,12 @@ async def api_s1_rules(request: Request, ag_session: str | None = Cookie(None)):
         query=params.get("query"),
         limit=int(params.get("limit", "10")),
     )
+    # Override each rule's catalog status with its scope-effective
+    # (per-site) activation state so the browse drawer reflects the real
+    # console state — a rule already enabled on the site must show
+    # "Disable on S1", not "Enable on S1" (the reported glitch). Same
+    # enrichment the scenario-phase picker already applies.
+    result = s1._enrich_scoped_status(result, context="browse")
     return JSONResponse(result)
 
 
