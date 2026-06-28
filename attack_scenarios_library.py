@@ -11,8 +11,18 @@ from typing import Any
 TEMPLATES: dict[str, dict[str, Any]] = {}
 
 
-def _register(key: str, name: str, description: str, phases: list[dict]) -> None:
-    TEMPLATES[key] = {"key": key, "name": name, "description": description, "phases": phases}
+def _register(key: str, name: str, description: str, phases: list[dict],
+              recommended_duration: dict | None = None) -> None:
+    # ``recommended_duration`` ({"value": int, "unit": str}) lets a template
+    # advertise the wall-clock run length it needs. It is pre-filled into the
+    # Create-Scenario modal when the template is selected. apigenie imposes no
+    # cadence of its own — events are generated on demand when the operator's
+    # collector polls. What matters is that each phase window is wider than the
+    # collector's poll interval (commonly ~120s) so at least one poll lands in
+    # it; the recommended duration sizes the M365-heavy phases comfortably
+    # above that with a couple of poll opportunities to spare.
+    TEMPLATES[key] = {"key": key, "name": name, "description": description,
+                      "phases": phases, "recommended_duration": recommended_duration}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -28,9 +38,10 @@ _register("bec_phishing", "Business Email Compromise (BEC)",
     "Each M365 phase keys off SCALAR OCSF fields (activity_name / Operation), which the STAR "
     "engine evaluates correctly; the Parameters-array based platform rules are avoided because "
     "the collector flattens arrays into indexed keys the array-container path can't see. NOTE: "
-    "run this scenario for >=20 minutes so each M365 phase window overlaps at least one collector "
-    "poll (M365 polls every 4 min); shorter runs cause Phase 3/4 windows to fall between polls "
-    "and emit no events.",
+    "the back-half phases are M365; run this scenario long enough that each M365 phase window is "
+    "wider than your collector's poll interval (commonly ~120s) so every phase overlaps at least "
+    "one poll. ~30 minutes gives each M365 phase 2-3 poll opportunities; much shorter runs can "
+    "cause the narrow Phase 3/4 windows to fall between polls and emit no events.",
     [
         # ── Phase 1 ─────────────────────────────────────────────────────────
         # Target rule (v5.1.15): "Proofpoint Impostor Email Unblocked" — the
@@ -314,7 +325,14 @@ _register("bec_phishing", "Business Email Compromise (BEC)",
                 },
             ],
         },
-    ]
+    ],
+    # The back-half phases are all M365 (privilege-escalation / defense-evasion
+    # / persistence). apigenie emits on demand, so the only timing constraint is
+    # that each phase window be wider than the collector's poll interval
+    # (commonly ~120s). At 30 min the narrowest M365 window (defense-evasion,
+    # 15%) is ~4.5 min — ~2 poll opportunities at 120s. Much shorter runs can
+    # let Phase 3/4 fall between polls and emit nothing.
+    recommended_duration={"value": 30, "unit": "minutes"},
 )
 
 
@@ -832,6 +850,7 @@ def get_templates() -> list[dict[str, Any]]:
             "phase_count": len(t["phases"]),
             "sources": list(set(p["source"] for p in t["phases"])),
             "mitre_tactics": list(dict.fromkeys(p["mitre_tactic"] for p in t["phases"])),
+            "recommended_duration": t.get("recommended_duration"),
         })
     return result
 

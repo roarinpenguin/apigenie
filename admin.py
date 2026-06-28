@@ -1737,15 +1737,15 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
               <option value="">&#8212; Empty (build from scratch) &#8212;</option>
             </select>
           </div>
-          <div id="scenario-template-desc" style="flex:0 0 auto;font-size:.72rem;color:rgba(224,170,255,.82);line-height:1.55;min-height:18px;max-height:7.5em;overflow-y:auto;overflow-wrap:break-word;word-break:break-word;padding-right:4px"></div>
+          <div id="scenario-template-desc" style="flex:0 0 auto;font-size:.72rem;color:rgba(224,170,255,.82);line-height:1.55;min-height:18px;overflow-wrap:break-word;word-break:break-word"></div>
           <div style="display:flex;gap:10px">
             <div style="flex:1"><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Name</label>
               <input id="scenario-name" type="text" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/></div>
             <div><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Duration</label>
               <div style="display:flex;gap:4px">
-                <input id="scenario-dur-val" type="number" min="1" value="4" style="width:64px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/>
+                <input id="scenario-dur-val" type="number" min="1" value="30" style="width:64px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/>
                 <select id="scenario-dur-unit" style="background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
-                  <option value="minutes">minutes</option><option value="hours" selected>hours</option><option value="days">days</option><option value="weeks">weeks</option>
+                  <option value="minutes" selected>minutes</option><option value="hours">hours</option><option value="days">days</option><option value="weeks">weeks</option>
                 </select>
               </div>
             </div>
@@ -7962,6 +7962,20 @@ function onScenarioTemplateChange() {
   var key = document.getElementById('scenario-template').value;
   var t = _scenarioTemplates.find(function(x) { return x.key === key; });
   document.getElementById('scenario-template-desc').textContent = t ? t.description : '';
+  // Pre-fill the duration with the template's recommended run length when it
+  // advertises one (M365-heavy templates need >= the connector poll cadence so
+  // every phase window overlaps a poll). Empty selection resets to the short
+  // demo default.
+  var durVal = document.getElementById('scenario-dur-val');
+  var durUnit = document.getElementById('scenario-dur-unit');
+  var rd = t && t.recommended_duration;
+  if (rd && rd.value && rd.unit) {
+    durVal.value = rd.value;
+    durUnit.value = rd.unit;
+  } else if (!key) {
+    durVal.value = 30;
+    durUnit.value = 'minutes';
+  }
   if (!key) {
     // Empty template = blank scenario, single phase to get the user started.
     _scenarioPhases = [_blankPhase()];
