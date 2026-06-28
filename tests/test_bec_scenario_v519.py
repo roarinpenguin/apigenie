@@ -129,111 +129,80 @@ def test_bec_phase3_fires_o365_admin_consent_all_principals():
     assert "ConsentType: AllPrincipals" in str(ev.get("ModifiedProperties", "")), ev
 
 
-# ── Phase 4 — O365 Inbox Rule Suspicious Parameters ──────────────────────────
+# ── Phase 4 — O365 Anti-Phish Rule Removal (defense evasion) ──────────────────
 
 
-def test_bec_phase4_fires_o365_inbox_rule_suspicious_parameters():
+def test_bec_phase4_fires_o365_antiphish_rule_removal():
+    """v5.1.16 — Phase 4 emits Remove-AntiPhishRule on Exchange Online so the
+    SHIPPED scalar-field platform rule 'Office 365 Deactivation or Removal of
+    Anti-Phish Rule' fires AND resolves the acting user as the Target Asset."""
     phases = _phases()
     p = phases["defense-evasion"]
     assert p["source"] == "m365"
     ev = _apply(p)
-    # activity_name in ('New-InboxRule','Set-InboxRule') — apigenie sets `Operation`
-    # which S1 parser maps to activity_name.
-    assert ev.get("Operation") in ("New-InboxRule", "Set-InboxRule"), ev
-    params_json = _flat(ev.get("Parameters", []))
-    # Third s1ql branch: MoveToFolder→(Conv History | RSS Feeds | Deleted Items |
-    # Junk Email) AND MarkAsRead=True (the silent-hide pattern).
-    assert '"Name": "MoveToFolder"' in params_json or '"Name":"MoveToFolder"' in params_json
-    move_target_ok = any(
-        f'"Value": "{folder}"' in params_json or f'"Value":"{folder}"' in params_json
-        for folder in ("Conversation History", "RSS Feeds", "Deleted Items", "Junk Email")
-    )
-    assert move_target_ok, params_json
-    assert '"Name": "MarkAsRead"' in params_json or '"Name":"MarkAsRead"' in params_json
-    assert '"Value": "True"' in params_json or '"Value":"True"' in params_json
-
-
-# ── Phase 5 — O365 Mailbox Permissions Delegation ────────────────────────────
-
-
-def test_bec_phase5_fires_o365_mailbox_permissions_delegation():
-    phases = _phases()
-    p = phases["persistence"]
-    assert p["source"] == "m365"
-    ev = _apply(p)
-    # s1ql: activity_name='Add-MailboxPermission'
-    assert ev.get("Operation") == "Add-MailboxPermission", ev
+    # activity_name in ('Remove-AntiPhishRule','Disable-AntiPhishRule') — apigenie
+    # sets `Operation`, which the S1 collector maps to activity_name.
+    assert ev.get("Operation") in ("Remove-AntiPhishRule", "Disable-AntiPhishRule"), ev
     # s1ql: metadata.product.name='Exchange'  ← apigenie sets Workload
     assert ev.get("Workload") == "Exchange", ev
-    # s1ql: unmapped.Parameters contains:matchcase ('FullAccess','SendAs','SendOnBehalf')
-    params_json = _flat(ev.get("Parameters", []))
-    assert any(
-        access in params_json for access in ("FullAccess", "SendAs", "SendOnBehalf")
-    ), params_json
 
 
-# ── Phase 5 narrative — must not be system-actor ──────────────────────────────
+# ── Phase 5 — O365 Mail Transport Rule Creation (persistence/exfil) ───────────
 
 
-def test_bec_phase5_userid_not_system():
-    """The Mailbox Permissions Delegation rule excludes
-    ``NT AUTHORITY\\SYSTEM (Microsoft.Exchange.ServiceHost)`` as the
-    actor — apigenie's M365 ``_base`` uses a real user identity
-    pulled from the profile context; we just guarantee the override
-    doesn't accidentally re-introduce the system actor."""
+def test_bec_phase5_fires_o365_transport_rule_creation():
+    """v5.1.16 — Phase 5 emits New-TransportRule on Exchange Online so the
+    SHIPPED scalar-field platform rule 'Office 365 Creation of Mail Transport
+    Rule' fires AND resolves the acting user as the Target Asset."""
     phases = _phases()
     p = phases["persistence"]
-    overrides = p["field_overrides"]
-    # The override must not pin UserId to the system actor.
-    assert "NT AUTHORITY" not in str(overrides.get("UserId", ""))
+    assert p["source"] == "m365"
+    ev = _apply(p)
+    # s1ql: activity_name='New-TransportRule'
+    assert ev.get("Operation") == "New-TransportRule", ev
+    # s1ql: metadata.product.name='Exchange'  ← apigenie sets Workload
+    assert ev.get("Workload") == "Exchange", ev
+    # Realism: the transport rule redirects mail to an external attacker mailbox.
+    params_json = _flat(ev.get("Parameters", []))
+    assert "RedirectMessageTo" in params_json, params_json
 
 
-# ── v5.1.13 — Phase 4 / Phase 5 target_rules switched to apigenie custom rules ──
+# ── v5.1.16 — Phase 4 / Phase 5 target shipped scalar-field platform rules ─────
 
 
-def test_bec_phase4_target_rule_is_apigenie_custom_legacy_client():
-    """v5.1.13 — Phase 4 must point at the apigenie custom STAR rule
-    that keys off ``unmapped.ClientApplication``. The shipped S1 rule
-    that queries ``unmapped.Parameters`` cannot fire on this tenant
-    because the OCSF collector drops the Parameters array."""
+def test_bec_phase4_target_rule_is_shipped_antiphish():
+    """v5.1.16 — Phase 4 must point at the SHIPPED scalar-field platform rule
+    so the alert resolves the Target Asset. It must NOT be a custom rule and
+    must NOT depend on the unmapped.Parameters array (which the STAR engine
+    cannot evaluate once the collector flattens it into indexed keys)."""
     phases = _phases()
     p = phases["defense-evasion"]
     rules = p.get("target_rules", [])
     assert len(rules) == 1, rules
     r = rules[0]
-    assert r.get("custom") is True, "Phase 4 target rule must be marked custom=True"
-    assert not r["name"].startswith("[apigenie]"), "custom rule name must not carry the [apigenie] prefix"
-    assert "Legacy Client Protocol" in r["name"], r["name"]
+    assert not r.get("custom"), "Phase 4 must target a shipped platform rule, not a custom rule"
+    assert r["name"] == "Office 365 Deactivation or Removal of Anti-Phish Rule", r["name"]
     s1ql = r["s1ql"]
-    # Must use parsed fields, not unmapped.Parameters (dropped by collector).
-    assert "unmapped.Parameters" not in s1ql, "must avoid the dropped field"
-    assert "unmapped.ClientApplication" in s1ql, s1ql
-    assert "POP3" in s1ql and "IMAP4" in s1ql and "EWS" in s1ql, s1ql
-    assert "New-InboxRule" in s1ql and "Set-InboxRule" in s1ql, s1ql
+    assert "unmapped.Parameters" not in s1ql, "scalar-only rule must not key off the Parameters array"
+    assert "Remove-AntiPhishRule" in s1ql and "Disable-AntiPhishRule" in s1ql, s1ql
+    assert "metadata.product.name = 'Exchange'" in s1ql, s1ql
 
 
-def test_bec_phase5_target_rule_is_apigenie_custom_legacy_client():
-    """v5.1.13 — Phase 5 must point at the apigenie custom STAR rule
-    that keys off ``unmapped.ClientApplication``. Same reasoning as
-    Phase 4: the tenant's OCSF collector drops ``unmapped.Parameters``,
-    so the shipped rule is structurally unable to fire on this tenant.
-    """
+def test_bec_phase5_target_rule_is_shipped_transport_rule():
+    """v5.1.16 — Phase 5 must point at the SHIPPED scalar-field 'Creation of
+    Mail Transport Rule' platform rule so the alert resolves the Target Asset,
+    and must not depend on the unmapped.Parameters array."""
     phases = _phases()
     p = phases["persistence"]
     rules = p.get("target_rules", [])
     assert len(rules) == 1, rules
     r = rules[0]
-    assert r.get("custom") is True, "Phase 5 target rule must be marked custom=True"
-    assert not r["name"].startswith("[apigenie]"), "custom rule name must not carry the [apigenie] prefix"
-    assert "Legacy Client Protocol" in r["name"], r["name"]
+    assert not r.get("custom"), "Phase 5 must target a shipped platform rule, not a custom rule"
+    assert r["name"] == "Office 365 Creation of Mail Transport Rule", r["name"]
     s1ql = r["s1ql"]
-    assert "unmapped.Parameters" not in s1ql, "must avoid the dropped field"
-    assert "unmapped.ClientApplication" in s1ql, s1ql
-    assert "POP3" in s1ql and "IMAP4" in s1ql and "EWS" in s1ql, s1ql
-    assert "Add-MailboxPermission" in s1ql, s1ql
-    # The rule still excludes the system actor — mandatory exclusion
-    # carried over from the shipped Mailbox Permissions Delegation rule.
-    assert "NT AUTHORITY" in s1ql, s1ql
+    assert "unmapped.Parameters" not in s1ql, "scalar-only rule must not key off the Parameters array"
+    assert "New-TransportRule" in s1ql, s1ql
+    assert "metadata.product.name = 'Exchange'" in s1ql, s1ql
 
 
 # ── Catalogue invariants ─────────────────────────────────────────────────────
