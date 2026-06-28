@@ -82,6 +82,12 @@ def create_rule(data: dict[str, Any]) -> dict[str, Any]:
         rule["_scenario_id"] = data["_scenario_id"]
     if "_attack_id" in data:
         rule["_attack_id"] = data["_attack_id"]
+    # Narrative-fill metadata (v5.1.21): persona-identity subset + sibling
+    # source used by ``inject_detection_events`` to emit persona-anchored
+    # context + a look-alike neighbourhood around the alerts. Opaque to the
+    # CRUD layer — built by the attack-scenario engine, never user-authored.
+    if "_narrative" in data:
+        rule["_narrative"] = data["_narrative"]
     with _lock:
         rules = _load_rules()
         rules.append(rule)
@@ -306,5 +312,34 @@ def inject_detection_events(source: str, logs: list[dict[str, Any]]) -> list[dic
     if injected_count:
         log.debug("Injected %d detection events into %s batch (%d→%d)",
                   injected_count, source, len(logs), len(result))
+
+    # ── Narrative fill (v5.1.21) ─────────────────────────────────────────────
+    # Beyond the (capped) alerts, splice in persona-anchored *context* logs and
+    # a look-alike *neighbourhood* so an analyst — or SentinelOne Purple AI's
+    # agentic auto-investigation — pivoting off an alert finds a coherent cohort
+    # instead of an isolated, obviously-synthetic event. These carry
+    # ``attack.id`` / ``phase.id`` (so the operator can isolate the whole
+    # campaign in the lake) but NEVER the alert-triggering overrides, so they do
+    # not raise alerts. Only scenario temp rules carry ``_narrative``; plain
+    # user rules skip this path entirely.
+    narrative_rules = [r for r in rules if r.get("_narrative")]
+    if narrative_rules:
+        import scenario_narrative
+        narr_count = 0
+        for rule in narrative_rules:
+            try:
+                batch = scenario_narrative.build_override_batch(
+                    rule["_narrative"], len(logs), random)
+            except Exception as exc:
+                log.warning("narrative fill failed for %s: %s", rule.get("id"), exc)
+                continue
+            for ov in batch:
+                base = random.choice(logs)
+                ev = _apply_overrides(base, ov)
+                result.insert(random.randint(0, len(result)), ev)
+                narr_count += 1
+        if narr_count:
+            log.debug("Narrative fill: +%d persona-context events into %s batch",
+                      narr_count, source)
 
     return result

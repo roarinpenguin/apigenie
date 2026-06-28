@@ -251,6 +251,59 @@ def generate_bundle() -> dict[str, dict[str, Any]]:
     }
 
 
+def derive_neighbor_bundle(bundle: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """Return a *sibling* of *bundle*: a different person on a different host,
+    but in the SAME victim domain and SAME /24 subnet.
+
+    Used to populate the ~20% "neighbourhood" of an attack scenario — other
+    users of the same domain, other UPNs/SPNs, other hosts/IPs of the same
+    source network. SentinelOne Purple AI's agentic auto-investigation queries
+    for events *similar* to the one that fired an alert; a plausible cohort of
+    same-domain / same-subnet entities makes that triage land somewhere real
+    instead of on isolated, obviously-synthetic telemetry.
+
+    The ``attacker`` and ``malicious`` slots (if present) are carried over
+    unchanged — a campaign has one adversary, not a crowd of look-alikes.
+    Accepts a *partial* bundle (only the slots a source actually projects).
+    """
+    src = bundle or {}
+    vu = src.get("victim_user") or {}
+    vh = src.get("victim_host") or {}
+
+    # ── Sibling user: same domain, different identity ──
+    email = vu.get("email") or vu.get("upn") or ""
+    domain = email.split("@", 1)[1] if "@" in email else random.choice(_TARGET_DOMAINS)
+    display, username, local_part = random.choice(_VICTIM_POOL)
+    sib_email = f"{local_part}@{domain}"
+    neighbor_user = {
+        "name":      display,
+        "username":  username,
+        "email":     sib_email,
+        "upn":       sib_email,
+        "object_id": str(uuid.uuid4()),
+    }
+
+    # ── Sibling host: same /24 when the victim IP is RFC1918, else fresh ──
+    vip = vh.get("ip") or ""
+    if vip.count(".") == 3 and vip.startswith(("10.", "192.168.", "172.")):
+        sib_ip = f"{vip.rsplit('.', 1)[0]}.{random.randint(1, 254)}"
+    else:
+        sib_ip = _internal_ip()
+    neighbor_host = {
+        "hostname":   _hostname_from_username(username),
+        "ip":         sib_ip,
+        "os":         vh.get("os") or random.choice([
+            "Windows 11", "Windows 10", "macOS 14", "macOS 13",
+        ]),
+        "agent_uuid": uuid.uuid4().hex,
+    }
+
+    out = dict(src)
+    out["victim_user"] = neighbor_user
+    out["victim_host"] = neighbor_host
+    return out
+
+
 def resolve_path(bundle: dict[str, Any] | None, path: str) -> Any | None:
     """Walk a dotted persona path. ``None`` on any miss.
 

@@ -366,6 +366,14 @@ def create_scenario(data: dict[str, Any]) -> dict[str, Any]:
         # v5.3 cross-source entity correlation (see persona splicer
         # in ``_create_temp_rule``).
         "personas": bundle,
+        # v5.1.21 — narrative fill config. Beyond the capped alerts, ~80% of
+        # the scenario's synthetic volume is persona-anchored context and ~20%
+        # is a same-domain / same-subnet neighbourhood, so a pivot off an alert
+        # (or Purple AI's agentic auto-investigation) lands on a coherent
+        # cohort. Operators may override the ratio / volume per scenario.
+        "narrative": data.get("narrative") or {
+            "enabled": True, "context_ratio": 0.8, "factor": 0.5,
+        },
     }
     # Ensure each phase has an id
     for i, phase in enumerate(scenario["phases"]):
@@ -974,6 +982,30 @@ def _create_temp_rule(phase: dict, attack_id: str, scenario_id: str,
     # background log volume on every collector poll.
     if phase.get("max_events") is not None:
         rule_data["max_events"] = phase.get("max_events")
+
+    # v5.1.21 — narrative fill. Precompute the persona-identity subset + a
+    # sibling source so the injector can emit persona-anchored *context* logs
+    # and a look-alike *neighbourhood* around the (capped) alerts. The whole
+    # cohort carries attack.id / phase.id so the operator can isolate the
+    # campaign in the lake; the neighbourhood gives Purple AI's agentic
+    # auto-investigation a plausible "similar events" set to triage against.
+    try:
+        import sources as _sources
+        import scenario_narrative
+        projection = _sources.get_persona_projection(source) or {}
+        narrative_tags: dict[str, Any] = {}
+        if source == "proofpoint" and isinstance(overrides.get("policyRoutes"), list):
+            # Proofpoint's parser drops unmapped fields — carry the correlation
+            # tokens on the native policyRoutes field, same as the alert path.
+            narrative_tags["policyRoutes"] = list(overrides["policyRoutes"])
+        meta = scenario_narrative.build_metadata(
+            overrides, projection, attack_id,
+            phase.get("phase_id", "unknown"), source,
+            tags=narrative_tags, cfg=scenario.get("narrative"))
+        if meta:
+            rule_data["_narrative"] = meta
+    except Exception as exc:
+        log.warning("narrative metadata build failed for source %s: %s", source, exc)
 
     rule = detection_rules.create_rule(rule_data)
     return rule.get("id") if rule else None
