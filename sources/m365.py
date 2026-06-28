@@ -239,26 +239,32 @@ def _ediscovery(ctx=None) -> dict[str, Any]:
 # ── 5. Admin operations (Exchange Online) ────────────────────────────────────
 
 def _admin_exchange(ctx=None) -> dict[str, Any]:
-    # v5.1.8 baseline-noise tuning. The following Operations each trigger a
-    # vendor-shipped STAR / Custom Detection rule in most S1 tenants:
+    # v5.1.23 quiet-baseline. Every Operation below that fires a vendor-shipped
+    # STAR / Custom Detection rule on a typical S1 tenant is pinned to weight 0
+    # so a PASSIVE demo tenant emits ZERO background STAR alerts — the only
+    # alerts come from active attack scenarios. (v5.1.8 had pinned them to 1,
+    # but even at 1 a ~30-min run produced ~20 background transport-rule alerts
+    # spread across random users, polluting the scenario's "few centred alerts"
+    # signal.) The Operations remain in the catalog at weight 0, so:
+    #   - scenarios still emit them at will via ``field_overrides["Operation"]``
+    #     (the override path bypasses _wchoice entirely), and
+    #   - operators can re-enable background noise by reweighting from the
+    #     Event Mix UI.
+    # The alert-triggering ops and the rules they fire:
     # - ``Set-Mailbox``                  → mailbox forwarding rules
-    # - ``New-TransportRule`` / ``Set-TransportRule`` / ``Remove-TransportRule``
-    #                                     → transport-rule tampering rules
-    # - ``Add-RoleGroupMember``          → privileged-role-granted rules
-    # - ``New-ManagementRoleAssignment`` → "Office 365 Assignment of Management Group Role"
-    # Their baseline weights are pinned to 1 so a passive demo tenant does not
-    # generate a continuous stream of STAR-rule alerts that drown out the
-    # signal from an active attack scenario. The Operations remain available;
-    # scenarios (and operator-authored event-mix overrides) can still emit them
-    # at any desired rate by setting ``field_overrides["Operation"]`` on a
-    # scenario phase or by reweighting the catalog from the Event Mix UI.
+    # - ``New/Set/Remove-TransportRule`` → transport-rule tampering rules
+    # - ``Add-RoleGroupMember`` / ``New-ManagementRoleAssignment`` → privileged-role rules
+    # - ``Set-*Policy`` (AntiPhish / SafeLinks / Malware / HostedContentFilter) → policy-tamper rules
+    # - ``Disable-Mailbox``              → mailbox-disabled rules
+    # Benign admin noise (``Set-OrganizationConfig``, ``Remove-RoleGroupMember``)
+    # keeps weight so the category still emits realistic, non-alerting context.
     ops = [
-        ("Set-Mailbox", 1), ("New-TransportRule", 1), ("Set-TransportRule", 1),
-        ("Remove-TransportRule", 1), ("Set-OrganizationConfig", 8),
-        ("Add-RoleGroupMember", 1), ("Remove-RoleGroupMember", 5),
-        ("New-ManagementRoleAssignment", 1), ("Set-HostedContentFilterPolicy", 7),
-        ("Set-MalwareFilterPolicy", 5), ("Set-SafeLinksPolicy", 5),
-        ("Set-AntiPhishPolicy", 5), ("Disable-Mailbox", 2),
+        ("Set-Mailbox", 0), ("New-TransportRule", 0), ("Set-TransportRule", 0),
+        ("Remove-TransportRule", 0), ("Set-OrganizationConfig", 8),
+        ("Add-RoleGroupMember", 0), ("Remove-RoleGroupMember", 5),
+        ("New-ManagementRoleAssignment", 0), ("Set-HostedContentFilterPolicy", 0),
+        ("Set-MalwareFilterPolicy", 0), ("Set-SafeLinksPolicy", 0),
+        ("Set-AntiPhishPolicy", 0), ("Disable-Mailbox", 0),
     ]
     op = _wchoice(ops)
     e = _base(op, "Exchange", ctx)
@@ -353,16 +359,15 @@ def _oauth_consent(ctx=None) -> dict[str, Any]:
 # ── 9. Inbox rules / mail forwarding ────────────────────────────────────────
 
 def _inbox_rules(ctx=None) -> dict[str, Any]:
-    # v5.1.8 — Inbox-rule manipulation Operations are extremely high-signal
-    # in S1 (most tenants ship a "Suspicious Inbox Rule" / "Mailbox
-    # Forwarding" STAR rule). At the previous weights every baseline
-    # ``_inbox_rules`` dispatch produced a STAR alert on demo tenants,
-    # making it impossible to tell scenario alerts from background noise.
-    # Weights pinned to 1 for the rule-creating Operations; the legitimate
-    # ``Remove-InboxRule`` / ``UpdateInboxRules`` traffic remains visible
-    # so the category still emits some events when picked.
-    ops = [("New-InboxRule", 1), ("Set-InboxRule", 1), ("Remove-InboxRule", 10),
-           ("Set-Mailbox", 1), ("UpdateInboxRules", 15)]
+    # v5.1.23 quiet-baseline. Inbox-rule manipulation Operations are extremely
+    # high-signal in S1 (most tenants ship a "Suspicious Inbox Rule" / "Mailbox
+    # Forwarding" STAR rule). The rule-CREATING / forwarding Operations are
+    # pinned to weight 0 so a passive tenant emits no background STAR alerts;
+    # scenarios still emit them via ``field_overrides["Operation"]`` (which
+    # bypasses _wchoice). The benign ``Remove-InboxRule`` / ``UpdateInboxRules``
+    # traffic keeps weight so the category still emits non-alerting context.
+    ops = [("New-InboxRule", 0), ("Set-InboxRule", 0), ("Remove-InboxRule", 10),
+           ("Set-Mailbox", 0), ("UpdateInboxRules", 15)]
     op = _wchoice(ops)
     e = _base(op, "Exchange", ctx)
     if "InboxRule" in op:
