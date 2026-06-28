@@ -654,9 +654,13 @@ _register("cloud_account_takeover", "Cloud Account Takeover",
             "source": "m365",
             "time_offset_pct": 55,
             "duration_pct": 25,
-            "periodicity": 3,
-            # v5.1.20 — "mass" download, but capped so the demo stays legible.
-            "max_events": 5,
+            "periodicity": 1,
+            # v5.1.27 — the shipped "Office 365 Bulk File Download" rule is a
+            # HIGH-VOLUME threshold rule: a 5-file burst (v5.1.20) was below
+            # threshold and fired 0 alerts (validated on att-20260628-3123).
+            # Emit a dense ~60-file burst by the persona within the window so
+            # the per-user volume trips the rule.
+            "max_events": 60,
             "field_overrides": {
                 "Operation": "FileDownloaded",
                 "Workload": "SharePoint",
@@ -670,7 +674,7 @@ _register("cloud_account_takeover", "Cloud Account Takeover",
                     "severity": "Medium",
                     "mitre": "T1530",
                     "shipped_status": "Active",
-                    "note": "Anomaly/threshold rule; the capped 5-file burst should trip it — validate at runtime.",
+                    "note": "High-volume threshold rule; needs a dense per-user burst (~60 files) to trip — validated insufficient at 5.",
                 },
             ],
         },

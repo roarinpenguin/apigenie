@@ -336,9 +336,14 @@ def _teams(ctx=None) -> dict[str, Any]:
 # ── 8. OAuth / app consent ──────────────────────────────────────────────────
 
 def _oauth_consent(ctx=None) -> dict[str, Any]:
+    # v5.1.27 — "Add service principal." removed from background noise: the
+    # shipped "Office 365 Service Principal Addition" rule has no scenario-only
+    # discriminator (unlike consent's AllPrincipals marker), so background SP
+    # adds flooded the rule with type=System events that buried the persona-
+    # anchored scenario alert (validated on att-20260628-3123). The op now
+    # arrives ONLY via the Cloud Takeover persistence-2 phase.
     ops = [("Consent to application.", 40), ("Add OAuth2PermissionGrant.", 25),
-           ("Add application.", 15), ("Add service principal.", 10),
-           ("Update application.", 10)]
+           ("Add application.", 20), ("Update application.", 15)]
     op = _wchoice(ops)
     e = _base(op, "AzureActiveDirectory", ctx)
     app_names = ["MailReader Pro", "CloudBackup360", "SalesSync", "Unknown App",
