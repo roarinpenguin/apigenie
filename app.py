@@ -37,7 +37,7 @@ from sources.azure_ad import get_audit_logs_response as entra_audit, get_signin_
 from sources.cisco_duo import get_admin_logs_response as duo_admin, get_auth_logs_response as duo_auth
 from sources.darktrace import get_analyst_incidents, get_model_breaches, get_status as darktrace_status
 from sources.gcp_audit import get_audit_logs_response as gcp_audit
-from sources.m365 import get_content_response as m365_content, get_subscriptions_response as m365_subscriptions
+from sources.m365 import get_content_response as m365_content, get_subscriptions_response as m365_subscriptions, pop_blob_events as m365_pop_blob_events
 from sources.microsoft_defender import get_alerts_response as defender_alerts, get_recommendations_response as defender_recs
 from sources.netskope import get_alerts_response as netskope_alerts, get_audit_events_response as netskope_audit
 from sources.okta import get_logs_response as okta_logs
@@ -444,8 +444,13 @@ async def m365_content_blob(
     _auth: BearerAuth, tenant_id: str, content_id: str,
     contentType: str = Query("Audit.General"),
 ) -> list[dict[str, Any]]:
-    data = m365_content(content_type=contentType, limit=10)
-    return data["events"]
+    # Serve the SAME events generated+injected at listing time and stashed
+    # under this blob id (see sources/m365._BLOB_CACHE). This guarantees a
+    # capped scenario alert event (max_events) generated during the
+    # /subscriptions/content poll actually reaches the collector here, instead
+    # of being regenerated — which previously double-consumed the cap and
+    # starved the blob fetch, so the alert event never landed in the lake.
+    return m365_pop_blob_events(content_id)
 
 
 # =============================================================================

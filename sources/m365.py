@@ -23,6 +23,8 @@ Endpoints mirror the O365 Management Activity API:
 from __future__ import annotations
 
 import random
+import threading
+from collections import OrderedDict
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
@@ -580,6 +582,61 @@ _EVENT_TEMPLATES: dict[str, tuple[Any, float]] = {
 }
 
 
+# ── Content-blob cache ───────────────────────────────────────────────────────
+# The O365 Management Activity API is a TWO-STEP poll: the collector first
+# GETs ``/subscriptions/content`` (a listing of content *blobs*, each a
+# ``contentUri``), then GETs every ``contentUri`` to fetch the actual audit
+# records. apigenie must therefore generate each poll's events ONCE — at
+# listing time — and hand back the SAME events when the collector fetches the
+# blob. Regenerating fresh events on the blob fetch (the pre-v5.1.24 behaviour)
+# meant ``inject_detection_events`` ran twice per poll: once for the discarded
+# listing batch (which silently consumed a scenario rule's ``max_events``
+# budget) and once for the blob batch (now starved of budget). Net effect:
+# capped scenario alert events (e.g. a single New-TransportRule) were recorded
+# in apigenie's timeline but NEVER reached the collector, while uncapped
+# narrative-fill events sailed through — exactly the "events in the lake but no
+# alert" symptom. The cache fixes this: generate+inject once, stash per blob
+# id, serve on fetch. Bounded LRU so a long-running server can't leak memory.
+_BLOB_CACHE: "OrderedDict[str, list[dict[str, Any]]]" = OrderedDict()
+_BLOB_CACHE_MAX = 20000
+_BLOB_CACHE_LOCK = threading.Lock()
+
+
+def _cache_blob(blob_id: str, events: list[dict[str, Any]]) -> None:
+    with _BLOB_CACHE_LOCK:
+        _BLOB_CACHE[blob_id] = events
+        while len(_BLOB_CACHE) > _BLOB_CACHE_MAX:
+            _BLOB_CACHE.popitem(last=False)
+
+
+def _benign_batch(limit: int = 10) -> list[dict[str, Any]]:
+    """Generate a batch of normal M365 events WITHOUT detection injection.
+
+    Used as the fallback when a collector fetches a blob id that is no longer
+    cached (already consumed, or evicted). Crucially this path does NOT call
+    ``inject_detection_events`` so it can never double-consume a scenario
+    rule's ``max_events`` budget.
+    """
+    ctx = profiles.get_context("m365")
+    count = profiles.scale_count("m365", min(limit, 100))
+    templates = event_mix.apply(_EVENT_TEMPLATES, "m365")
+    return [weighted_choice(templates)(ctx=ctx) for _ in range(count)]
+
+
+def pop_blob_events(content_id: str, *, fallback_limit: int = 10) -> list[dict[str, Any]]:
+    """Return (and evict) the events stashed for ``content_id`` at listing time.
+
+    Falls back to a benign, injection-free batch when the id is unknown — real
+    collectors fetch each blob exactly once, shortly after the listing, so the
+    fallback is rare (stale retry, server restart, or an internal caller).
+    """
+    with _BLOB_CACHE_LOCK:
+        events = _BLOB_CACHE.pop(content_id, None)
+    if events is not None:
+        return events
+    return _benign_batch(limit=fallback_limit)
+
+
 # ── Public API ──────────────────────────────────────────────────────────────
 
 def get_content_response(
@@ -626,12 +683,17 @@ def get_content_response(
         uri_prefix = (f"https://manage.office.com/api/v1.0/"
                       f"{random.choice(_TENANT_IDS)}/activity/feed/audit/")
 
-    # Wrap in content blob format (like the real API returns content URIs)
+    # Wrap in content blob format (like the real API returns content URIs).
+    # One blob per event; the blob id is shared between contentUri's last
+    # path segment and contentId so the follow-up ``GET /audit/<id>`` resolves
+    # the SAME event we generated+injected here (see _BLOB_CACHE rationale).
     blobs = []
     for ev in events:
+        blob_id = generate_uuid()
+        _cache_blob(blob_id, [ev])
         blobs.append({
-            "contentUri": f"{uri_prefix}{generate_uuid()}",
-            "contentId": generate_uuid(),
+            "contentUri": f"{uri_prefix}{blob_id}",
+            "contentId": blob_id,
             "contentType": content_type,
             "contentCreated": ev.get("CreationTime", _now()),
             "contentExpiration": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(timespec="milliseconds") + "Z",
