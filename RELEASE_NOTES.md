@@ -2,6 +2,34 @@
 
 ---
 
+## v5.1.29 — *Remove historical scenario mode*
+
+> *Released June 2026.* The `historical` attack-scenario mode (introduced
+> in v5.1 Phase C) is **removed**. It pre-staged every event with backdated
+> timestamps in an on-disk backlog that collectors drained on their next
+> poll. The raw telemetry *was* backdated correctly in the lake — but
+> **SentinelOne AI-SIEM detections fire when the platform ingests the
+> telemetry**, i.e. at "now", not at the event's backdated time. So the
+> alerts always clustered at ingest time regardless of the historical
+> timeline, and the only way to place alerts coherently in the past would
+> be to hand-craft and push the alerts directly, bypassing the very
+> detections the scenario exists to exercise. Not worth it.
+>
+> **Realtime is now the only mode.** Changes:
+> - `attack_scenarios`: dropped `mode` / `events_per_phase` from create /
+>   update / load, removed `pre_stage_historical_events`,
+>   `drain_historical_backlog`, the on-disk backlog (`*_backlog.jsonl` /
+>   `.idx.json`), `_SOURCE_TS_FIELD`, `_format_ts`, and the historical
+>   branch in `start_scenario`.
+> - `detection_rules.inject_detection_events`: removed the backlog drain.
+> - Admin UI: removed the Mode selector, Events/phase input, mode hint,
+>   mode pill, and `onScenarioModeChange`. Visibility is unchanged.
+> - Docs: `ATTACK_SCENARIOS.md`, the Guide, and README updated.
+> - Pre-existing scenarios that still carry `mode`/`events_per_phase` on
+>   disk keep the keys (ignored) and run realtime.
+
+---
+
 ## v5.1 — *Security hardening + time-shifted attack stories*
 
 > *Released June 2026.* Three bodies of work land in one release, all

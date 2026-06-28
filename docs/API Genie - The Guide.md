@@ -173,15 +173,11 @@ You now have three sources answering your collectors with per-user telemetry, an
 
 3. **Start from the Business Email Compromise template.** Open **⚔ Attack Scenarios** → **+ New Scenario** and pick **Business Email Compromise (BEC)** from *Start from template*. It auto-fills a five-phase kill chain — phishing email → credential theft → mailbox access → inbox rule → exfiltration — each phase wired to the source it needs (the source is shown on every phase row). Give it a **Name** and **Duration**.
 
-   ![Creating the ready-made BEC scenario — phases, per-phase sources, and the Mode selector](images/screenshots/portal-scenario-bec-create.png)
+   ![Creating the ready-made BEC scenario — phases, per-phase sources, and the Visibility selector](images/screenshots/portal-scenario-bec-create.png)
 
-4. **Pick the time mode — Realtime or Historical.** The **Mode** selector decides *when* the events exist:
-   - **Realtime** *(default)* — phases activate over wall-clock and events fire as collectors poll inside each phase window. The attack unfolds live, as your audience watches; if nobody polls during a phase, that window stays empty. This is the v5.0 behaviour.
-   - **Historical** — at launch, API Genie pre-computes *every* event for the whole duration and back-dates it across `[now − duration, now]`. The scenario goes green immediately with the full story already in the past; the next poll on each source returns its slice of the backlog in one time-ordered batch. Ideal for post-incident replay, or a "this attack happened over the last 4 hours" demo opener. (Choosing Historical reveals an optional **Events/phase** field; blank = auto.)
+4. **Set Visibility (and how the timing works).** Scenarios run **live**: phases activate over wall-clock and events fire as collectors poll inside each phase window — the attack unfolds as your audience watches, and timestamps are backdated across the configured duration so the campaign reads correctly on the timeline. The **Visibility** selector decides *who* sees it: **Private** *(default)* keeps the run scoped to your own collector token; **Public** lets every caller on the instance see it.
 
-   On the cards the mode shows as a pill — green **REALTIME** or purple **HISTORICAL** — and each card carries a **Setup notes** link:
-
-   ![Realtime vs Historical scenarios, with the per-card Setup notes link](images/screenshots/portal-scenario-modes.png)
+   > **Note:** an earlier *Historical* mode (pre-stage the whole attack already in the past) was removed in v5.1.29 — SentinelOne AI-SIEM detections fire when telemetry is *ingested*, so the resulting alerts always landed at "now" regardless of the backdated event times. Realtime is now the only mode.
 
 5. **Check which collectors the scenario needs.** Every card has a **Setup notes ▾** disclosure that auto-lists, for each source the scenario touches, the collector you must point at API Genie for the story to land. For **BEC** that means **Proofpoint**, **Okta**, and **Microsoft 365** — configure those three collectors (see §2 and Part IV) with the source identifiers you registered, and the scenario plays out end-to-end.
 

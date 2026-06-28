@@ -1750,20 +1750,10 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
               </div>
             </div>
           </div>
-          <!-- v5.1 Phase C: Mode + Visibility row. Mode picks the time
-               semantics (Realtime keeps today's scheduler; Historical
-               pre-stages every event with backdated timestamps so demos
-               start with the full story already in the past). Visibility
-               controls whether other users' collectors see this run's
-               backlog: private = only the owner's caller token sees it. -->
+          <!-- Visibility controls whether other users' collectors see this
+               scenario's injected events: private = only the owner's caller
+               token sees it; public = visible to every caller. -->
           <div style="display:flex;gap:10px;align-items:flex-end">
-            <div style="flex:1">
-              <label style="font-size:.72rem;color:rgba(224,170,255,.5)">Mode</label>
-              <select id="scenario-mode" onchange="onScenarioModeChange()" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
-                <option value="realtime" selected>Realtime &mdash; events fire on a live schedule as collectors poll</option>
-                <option value="historical">Historical &mdash; pre-stage every event with backdated timestamps</option>
-              </select>
-            </div>
             <div style="flex:1">
               <label style="font-size:.72rem;color:rgba(224,170,255,.5)">Visibility</label>
               <select id="scenario-visibility" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem">
@@ -1771,12 +1761,7 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
                 <option value="public">Public &mdash; visible to every caller</option>
               </select>
             </div>
-            <div id="scenario-epp-wrap" style="flex:0 0 110px;display:none">
-              <label style="font-size:.72rem;color:rgba(224,170,255,.5)" title="Optional. Events per phase (historical mode only). Empty = auto from phase duration + periodicity.">Events/phase</label>
-              <input id="scenario-epp" type="number" min="1" placeholder="auto" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/>
-            </div>
           </div>
-          <div id="scenario-mode-hint" style="font-size:.68rem;color:rgba(224,170,255,.4);min-height:16px"></div>
           <!-- Persona details (v5.1.19): auto-populated but editable. The
                bundle anchors the victim / attacker / host / payload identity
                across every source the scenario touches. Edits are persisted
@@ -7455,11 +7440,6 @@ async function loadScenarios() {
       h += '<div style="display:flex;gap:16px;font-size:.68rem;color:rgba(224,170,255,.4);margin-top:6px;align-items:center;flex-wrap:wrap">';
       h += '<span>' + (dur.value || '?') + ' ' + (dur.unit || '') + '</span>';
       h += '<span>' + (phases.length) + ' phases</span>';
-      // Mode pill (Historical gets a distinct accent so it stands out).
-      var modeVal = s.mode || 'realtime';
-      var modeBg  = modeVal === 'historical' ? 'rgba(199,125,255,.18)' : 'rgba(46,204,113,.15)';
-      var modeFg  = modeVal === 'historical' ? '#c77dff' : '#2ecc71';
-      h += '<span class="pill" title="Time semantics for this scenario." style="background:' + modeBg + ';color:' + modeFg + ';font-size:.62rem;text-transform:uppercase;letter-spacing:.5px">' + escHtml(modeVal) + '</span>';
       // Visibility pill — yellow = private (collector-token-scoped),
       // grey = public (every caller sees the backlog).
       var visVal = s.visibility || 'public';
@@ -7786,24 +7766,6 @@ function _blankPhase() {
   };
 }
 
-function onScenarioModeChange() {
-  // v5.1 Phase C — toggle the events-per-phase control + an inline
-  // hint that explains what the operator just picked. Historical mode
-  // pre-stages everything at launch and stamps backdated timestamps;
-  // realtime mode keeps today's scheduler-driven UX.
-  var mode = (document.getElementById('scenario-mode') || {}).value || 'realtime';
-  var eppWrap = document.getElementById('scenario-epp-wrap');
-  var hint = document.getElementById('scenario-mode-hint');
-  if (eppWrap) eppWrap.style.display = (mode === 'historical') ? '' : 'none';
-  if (hint) {
-    if (mode === 'historical') {
-      hint.textContent = 'Historical: every event for the duration is pre-computed at launch with timestamps spanning [now \u2212 duration, now]. Collectors drain the full backlog on their next poll. No live scheduler runs.';
-    } else {
-      hint.textContent = 'Realtime: the scheduler activates phases over wall-clock; events fire as collectors pull. Current default.';
-    }
-  }
-}
-
 function openScenarioCreator() {
   // Create mode: blank state, template selector visible, both Save+Create buttons
   // are shown but Save stays hidden until we actually have an id to PUT against.
@@ -7817,13 +7779,8 @@ function openScenarioCreator() {
   document.getElementById('scenario-name').value = '';
   document.getElementById('scenario-dur-val').value = '4';
   document.getElementById('scenario-dur-unit').value = 'hours';
-  // v5.1 Phase C — reset Mode + Visibility + events-per-phase to the
-  // safe defaults: realtime + private + auto. The hint line under the
-  // row gets refreshed by onScenarioModeChange.
-  document.getElementById('scenario-mode').value = 'realtime';
+  // Reset Visibility to the safe default (private).
   document.getElementById('scenario-visibility').value = 'private';
-  document.getElementById('scenario-epp').value = '';
-  onScenarioModeChange();
   document.getElementById('scenario-validation-errors').textContent = '';
   // Populate template dropdown.
   var sel = document.getElementById('scenario-template');
@@ -7874,12 +7831,8 @@ async function openScenarioEditor(id) {
     var dur = s.duration || {};
     document.getElementById('scenario-dur-val').value = dur.value || 4;
     document.getElementById('scenario-dur-unit').value = dur.unit || 'hours';
-    // v5.1 Phase C — hydrate Mode + Visibility + events-per-phase from
-    // the persisted scenario so the editor reflects what was saved.
-    document.getElementById('scenario-mode').value = s.mode || 'realtime';
+    // Hydrate Visibility from the persisted scenario.
     document.getElementById('scenario-visibility').value = s.visibility || 'private';
-    document.getElementById('scenario-epp').value = (s.events_per_phase == null ? '' : s.events_per_phase);
-    onScenarioModeChange();
     // Hydrate the persona editor from the saved bundle; if a legacy
     // scenario has none, roll a fresh one so the fields aren't blank.
     _scenarioPersonas = (s.personas && typeof s.personas === 'object') ? s.personas : null;
@@ -8146,23 +8099,17 @@ function _collectScenarioPayload() {
     return null;
   }
   errBox.textContent = '';
-  // v5.1 Phase C — pick up Mode / Visibility / events-per-phase. The
-  // backend tolerates omitted values (defaults to realtime / private /
-  // auto) so an old client that doesn't render these stays compatible.
-  var modeEl = document.getElementById('scenario-mode');
+  // Visibility is the only Phase C knob still exposed. The backend
+  // tolerates an omitted value (defaults to private) so an old client
+  // that doesn't render it stays compatible.
   var visEl  = document.getElementById('scenario-visibility');
-  var eppEl  = document.getElementById('scenario-epp');
-  var eppRaw = eppEl ? eppEl.value.trim() : '';
-  var epp    = eppRaw === '' ? null : (parseInt(eppRaw, 10) || null);
   return {
     name: document.getElementById('scenario-name').value.trim(),
     duration: {
       value: parseFloat(document.getElementById('scenario-dur-val').value) || 4,
       unit: document.getElementById('scenario-dur-unit').value
     },
-    mode:       modeEl ? modeEl.value : 'realtime',
     visibility: visEl  ? visEl.value  : 'private',
-    events_per_phase: epp,
     personas: _collectPersonaBundle(),
     phases: _scenarioPhases.map(function(p) {
       var out = {

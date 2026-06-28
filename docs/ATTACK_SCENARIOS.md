@@ -543,35 +543,24 @@ Each scenario card gets an **Events (N)** button next to **Export**. Clicking it
 | 3.1 | Per-scenario event log + REST + card UI | **Shipped (v5.0)** |
 | 3.2 | `attack.id` search in Request Inspector — filter events by attack.id across all sources | **Shipped (v5.0)** |
 | 3.3 | Exportable attack timeline (JSON) for demo handoff | **Shipped (v5.0)** |
-| C   | Mode (realtime/historical) + Visibility (private/public) + auto-generated Setup notes | **Shipped (v5.1)** |
+| C   | Visibility (private/public) + auto-generated Setup notes | **Shipped (v5.1)** — historical mode removed in v5.1.29 (see below) |
 
 ---
 
-## Mode and Visibility (v5.1)
+## Visibility (v5.1)
 
-v5.0 shipped a forward-running scheduler: every scenario started at `t=0` on launch, walked its phases over wall-clock, and only emitted events when collectors polled inside an active phase window. v5.1 adds two orthogonal dimensions to the scenario model that change *when* and *to whom* the events are delivered.
+Scenarios run on a forward-running scheduler: every scenario starts at `t=0` on launch, walks its phases over wall-clock, and emits events when collectors poll inside an active phase window. Timestamps within the run are backdated relative to the configured duration (a "1 week" run spreads phase timestamps across the past 7 days), so the campaign reads correctly on the timeline.
 
-### Mode — realtime vs historical
-
-A new dropdown on the **Create Attack Scenario** / **Edit Attack Scenario** modal, right beneath Name + Duration:
-
-| Mode | Semantics | When to pick it |
-|------|-----------|-----------------|
-| `realtime` *(default)* | Phases activate over wall-clock; events fire as collectors poll inside each phase window. If nobody polls for an hour during phase 2, that hour is empty. **Identical to v5.0 behaviour.** | Live demos where you want the attack to unfold as the audience watches. |
-| `historical` | At launch, every event for the full duration is pre-computed in one shot and stamped with a `_ts` drawn uniformly from `[now − duration, now]`. The events land in `data/scenarios/<scenario-id>_backlog.jsonl` and a sidecar `<scenario-id>_backlog.idx.json` tracks a per-`(source, caller)` drain cursor. On the next pull from each collector, the entire backlog for that source is returned in one batch, already correctly time-ordered. | Post-incident replay, "this attack happened over the last 4 hours" demo openers, or any time the operator wants the full story already in the past at the moment the scenario goes green. |
-
-Optional **Events/phase** input appears next to the Mode dropdown only when `historical` is selected. Blank = auto, computed as `phase_duration_seconds * periodicity / 60 * APIGENIE_SCN_ASSUMED_RATE_PER_MIN` (default rate 12). Set a number to force an exact count per phase.
+> **Removed in v5.1.29 — historical mode.** Earlier builds offered a `historical` mode that pre-staged every event with backdated timestamps in an on-disk backlog, drained on the next collector poll. The raw telemetry *was* backdated correctly, **but SentinelOne AI-SIEM detections fire when the platform ingests the telemetry** — i.e. at "now", not at the backdated event time. There is no way to make the resulting alerts land coherently in the past short of hand-crafting the alerts and pushing them directly (bypassing the detections), which defeats the purpose of exercising real rules. Historical mode has therefore been removed. **Realtime is now the only mode.** The `mode` and `events_per_phase` fields are no longer accepted; pre-existing `historical` scenarios on disk simply run as realtime.
 
 ### Visibility — private vs public
 
-Independent of Mode. Controls which collectors see the scenario's events on their next poll:
+Controls which collectors see the scenario's injected events on their next poll:
 
-| Visibility | Drain scope |
+| Visibility | Scope |
 |------------|-------------|
-| `private` *(default)* | Only the launching user's caller token drains the backlog (or, in realtime mode, sees the injected detection events). Parallel demos on the same ApiGenie instance stay isolated per operator. |
-| `public` | Every caller drains the backlog independently from their own offset. Useful when several test collectors share one ApiGenie and you *want* them all to see the story. |
-
-The four combinations are all legal: *Realtime + Private* (your private live demo), *Realtime + Public* (today's v5.0 default), *Historical + Private* (post-mortem replay, just for you), *Historical + Public* (shared post-mortem replay).
+| `private` *(default)* | Only the launching user's caller token sees the injected detection events. Parallel demos on the same ApiGenie instance stay isolated per operator. |
+| `public` | Every caller sees the events. Useful when several test collectors share one ApiGenie and you *want* them all to see the story. |
 
 ### Setup notes — every scenario tells you how to configure it
 
@@ -583,27 +572,25 @@ The block is rendered as an expandable card on each scenario row in the admin UI
 
 ### Status pills on the scenario card
 
-After launch, each scenario row shows two pills next to the duration / phase count: green `REALTIME` vs purple `HISTORICAL`, and amber `PRIVATE` vs muted `PUBLIC`. So even if you forget what you picked at launch, the card tells you at a glance.
+After launch, each scenario row shows a visibility pill next to the duration / phase count: amber `PRIVATE` vs muted `PUBLIC`. So even if you forget what you picked at launch, the card tells you at a glance.
 
-### How the drain works
+### How visibility gating works
 
-When a collector polls a source, `detection_rules.inject_detection_events` asks `attack_scenarios.drain_historical_backlog(source)` for events visible to the resolved caller, prepends them to the live batch, and advances the cursor for that `(source, caller)` pair. Realtime scenarios skip the drain entirely (the backlog file does not exist).
+When a collector polls a source, `detection_rules.inject_detection_events` injects each active phase's detection event only for rules visible to the resolved caller (`_rule_visible_to_caller`): admin/public rules fire for everyone, private rules only for their owner. A `private` scenario therefore stays isolated to the launching operator's caller token.
 
 ### REST surface additions
 
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
-| `mode` | `"realtime" \| "historical"` | `"realtime"` | Picked at create time; mutable on edit before launch. Locked while running. |
 | `visibility` | `"private" \| "public"` | `"private"` | Mutable on edit before launch. |
-| `events_per_phase` | `int \| null` | `null` (auto) | Only honoured in historical mode. |
-| `owner_id` | `str \| null` | session user id at create time | Backs the private-visibility drain check. |
+| `owner_id` | `str \| null` | session user id at create time | Backs the private-visibility check. |
 | `setup_notes` | `object` | auto-generated | Excluded from `export_scenario()`; regenerated on `update_scenario()` and `import_scenario()`. |
 
-### Migration from v5.0
+### Migration
 
-- **No DB migration.** Scenarios are JSON-on-disk; `_load_scenarios()` back-fills `mode=realtime`, `visibility=public`, `owner_id=null`, `events_per_phase=null` for every pre-v5.1 file.
+- **No DB migration.** Scenarios are JSON-on-disk; `_load_scenarios()` back-fills `visibility=public`, `owner_id=null` for every pre-v5.1 file.
+- **Pre-v5.1.29 scenarios with `mode`/`events_per_phase`** keep those keys on disk but they are ignored — every scenario runs realtime.
 - **Pre-v5.1 scenarios have no `setup_notes`** until they are opened in the editor and re-saved (or re-imported). The Setup notes card will show *"No setup notes available — add phases or update the scenario to (re)generate them."* in the meantime — cosmetic only.
-- **Stop + Delete** on a historical scenario removes both `<id>_backlog.jsonl` and `<id>_backlog.idx.json` from `data/scenarios/`. **Stop alone** does not — so you can re-launch a paused historical run.
 
 ---
 

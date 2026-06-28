@@ -242,20 +242,6 @@ def inject_detection_events(source: str, logs: list[dict[str, Any]]) -> list[dic
 
     Returns the modified log list (may be longer than the input).
     """
-    # v5.1 Phase C — drain any historical-mode scenario backlog for this
-    # source first. Drained events are prepended to the live batch with
-    # their original (backdated) timestamps preserved; per-source and
-    # per-caller cursors ensure each caller's collector consumes its
-    # slice exactly once. The drain is per-call cheap (one stat per
-    # scenario, JSONL scan only when there is something to consume).
-    try:
-        import attack_scenarios
-        backlog = attack_scenarios.drain_historical_backlog(source)
-    except Exception:
-        backlog = []
-    if backlog:
-        logs = list(backlog) + list(logs)
-
     # Resolve the caller (set by auth.py when a request's credential matches a
     # registered identifier; None for unauthenticated / bus-based ingest).
     # Imported lazily to avoid a hard dependency for callers that don't set it.
