@@ -180,6 +180,47 @@ def test_pim_phase4_injects_into_entra_via_alias_canonicalization():
         "delivered event targetResources must carry the privileged role name")
 
 
+def test_collection_phase_mints_unique_objectids_and_user_type():
+    """The bulk-download phase must mint a UNIQUE ``unmapped.ObjectId`` per
+    event (via the ``{{seq}}`` placeholder) and force ``UserType=0`` so the
+    shipped "Office 365 Bulk File Download" threshold rule trips.
+
+    Regression for att-20260628-4125: static overrides built on a RANDOM base
+    event collapsed to ~20 distinct ObjectIds (54/84 empty) and only ~15
+    type-User events, so ``estimate_distinct(unmapped.ObjectId) >= 100 AND
+    actor.user.type='User'`` never matched.
+    """
+    import detection_rules
+
+    p = _phase("collection")
+    fo = p["field_overrides"]
+    assert fo["UserType"] == 0, "must force actor.user.type='User'"
+    assert "{{seq}}" in fo["ObjectId"], "ObjectId must mint a unique value per event"
+    assert p["max_events"] >= 110, "burst must clear the >=100 distinct threshold with margin"
+
+    events = [detection_rules._apply_overrides({"seed": 1}, fo) for _ in range(150)]
+    object_ids = {e["ObjectId"] for e in events}
+    assert len(object_ids) == 150, (
+        f"each injected download must carry a unique ObjectId, got {len(object_ids)} distinct")
+    assert all(e["UserType"] == 0 for e in events)
+    assert all(e["Operation"] == "FileDownloaded" for e in events)
+
+
+def test_seq_placeholder_only_expands_when_present():
+    """``{{seq}}`` expansion must be a no-op for static overrides (no token)
+    and for non-string values, so it can never corrupt existing phases."""
+    import detection_rules
+
+    static = detection_rules._apply_overrides(
+        {}, {"Operation": "Consent to application.", "UserType": 0})
+    assert static["Operation"] == "Consent to application."
+    assert static["UserType"] == 0
+
+    a = detection_rules._apply_overrides({}, {"ObjectId": "f-{{seq}}"})["ObjectId"]
+    b = detection_rules._apply_overrides({}, {"ObjectId": "f-{{seq}}"})["ObjectId"]
+    assert a != b, "consecutive expansions must differ"
+
+
 def test_okta_phase_emits_security_threat_detected():
     import detection_rules
     from sources import okta

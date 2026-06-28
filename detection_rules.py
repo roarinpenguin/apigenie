@@ -10,6 +10,7 @@ Rules are stored in ``DATA_ROOT/detection_rules.json``.
 from __future__ import annotations
 
 import copy
+import itertools
 import json
 import logging
 import os
@@ -34,6 +35,20 @@ _last_fired: dict[str, float] = {}
 # over its whole lifetime (e.g. a BEC admin-action phase that should fire
 # ONCE, not scale with background log volume on every collector poll).
 _injected_total: dict[str, int] = {}
+
+# Monotonic counter backing the ``{{seq}}`` field-override placeholder. Each
+# injected event that references ``{{seq}}`` consumes the next value, so an
+# override can mint a UNIQUE value per event (e.g. a distinct ObjectId / file
+# URL for every download in a bulk-exfil burst, which high-volume threshold
+# rules count via ``estimate_distinct``). A static override value can only ever
+# produce one distinct value no matter how many events fire.
+_seq_counter = itertools.count(1)
+_seq_lock = threading.Lock()
+
+
+def _next_seq() -> int:
+    with _seq_lock:
+        return next(_seq_counter)
 
 
 # ── Storage ──────────────────────────────────────────────────────────────────
@@ -161,11 +176,37 @@ def _set_nested(obj: dict, dotted_key: str, value: Any) -> None:
     obj[parts[-1]] = value
 
 
+def _expand_placeholders(value: Any) -> Any:
+    """Expand per-event placeholder tokens in a string override value.
+
+    Supported tokens (expanded fresh for EACH injected event):
+      ``{{seq}}``  — next value of the global monotonic counter (unique int)
+      ``{{uuid}}`` — a fresh uuid4 hex
+
+    Non-string values (ints, lists, dicts) pass through untouched, and strings
+    without a ``{{`` marker skip the work entirely, so this is a no-op for the
+    overwhelming majority of overrides that carry static values.
+    """
+    if not isinstance(value, str) or "{{" not in value:
+        return value
+    if "{{seq}}" in value:
+        value = value.replace("{{seq}}", str(_next_seq()))
+    while "{{uuid}}" in value:
+        value = value.replace("{{uuid}}", uuid.uuid4().hex, 1)
+    return value
+
+
 def _apply_overrides(log_entry: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
-    """Apply field overrides to a log entry (deep copy first)."""
+    """Apply field overrides to a log entry (deep copy first).
+
+    Override values may embed per-event placeholder tokens (see
+    ``_expand_placeholders``) so a single override definition mints a unique
+    value per injected event — required by high-volume threshold rules that
+    count distinct entities (e.g. ``estimate_distinct(unmapped.ObjectId)``).
+    """
     entry = copy.deepcopy(log_entry)
     for key, value in overrides.items():
-        _set_nested(entry, key, value)
+        _set_nested(entry, key, _expand_placeholders(value))
     return entry
 
 

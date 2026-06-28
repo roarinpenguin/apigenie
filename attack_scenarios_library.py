@@ -655,17 +655,31 @@ _register("cloud_account_takeover", "Cloud Account Takeover",
             "time_offset_pct": 55,
             "duration_pct": 25,
             "periodicity": 1,
-            # v5.1.27 — the shipped "Office 365 Bulk File Download" rule is a
-            # HIGH-VOLUME threshold rule: a 5-file burst (v5.1.20) was below
-            # threshold and fired 0 alerts (validated on att-20260628-3123).
-            # Emit a dense ~60-file burst by the persona within the window so
-            # the per-user volume trips the rule.
-            "max_events": 60,
+            # v5.1.28 — the shipped "Office 365 Bulk File Download" rule is a
+            # HIGH-VOLUME threshold rule whose metric is
+            # ``estimate_distinct(unmapped.ObjectId) >= 100`` over events that
+            # ALSO satisfy ``actor.user.type = 'User'`` (UserType 0). Validated
+            # on att-20260628-4125: a 60-event burst built by overriding a
+            # RANDOM base event produced only ~20 distinct ObjectIds (54/84 were
+            # empty — the base wasn't a SharePoint record) and only ~15 type-User
+            # events, so the rule never tripped. Two fixes:
+            #   1. UserType:0 forces actor.user.type='User' on every event.
+            #   2. ObjectId carries the ``{{seq}}`` placeholder so each injected
+            #      download gets a UNIQUE file URL — distinct count now scales
+            #      1:1 with the burst instead of collapsing to one static value.
+            # max_events 150 clears the >=100 threshold with margin for the
+            # HyperLogLog estimate error.
+            "max_events": 150,
             "field_overrides": {
                 "Operation": "FileDownloaded",
                 "Workload": "SharePoint",
+                "UserType": 0,
                 "SiteUrl": "https://contoso.sharepoint.com/sites/Finance",
-                "SourceFileName": "Merger-Plans-Confidential.docx",
+                "SourceFileName": "Merger-Plans-Confidential-{{seq}}.docx",
+                "ObjectId": (
+                    "https://contoso.sharepoint.com/sites/Finance/"
+                    "Confidential/Merger-Plans-Confidential-{{seq}}.docx"
+                ),
             },
             "target_rules": [
                 {
@@ -674,7 +688,7 @@ _register("cloud_account_takeover", "Cloud Account Takeover",
                     "severity": "Medium",
                     "mitre": "T1530",
                     "shipped_status": "Active",
-                    "note": "High-volume threshold rule; needs a dense per-user burst (~60 files) to trip — validated insufficient at 5.",
+                    "note": "High-volume threshold rule: estimate_distinct(unmapped.ObjectId) >= 100 AND actor.user.type='User'. Needs unique ObjectId per event ({{seq}}) + UserType:0 — validated 5 and 60 static-ObjectId bursts both insufficient.",
                 },
             ],
         },
