@@ -334,6 +334,9 @@ _register("ransomware_lateral", "Ransomware via Lateral Movement",
             "time_offset_pct": 0,
             "duration_pct": 8,
             "periodicity": 5,
+            # v5.1.20 — realistic volume: a successful exploit is one (maybe
+            # two) IPS hits, not a flood. Cap total events for the phase.
+            "max_events": 2,
             "field_overrides": {
                 "type": "THREAT",
                 "subtype": "vulnerability",
@@ -353,6 +356,8 @@ _register("ransomware_lateral", "Ransomware via Lateral Movement",
             "time_offset_pct": 8,
             "duration_pct": 12,
             "periodicity": 4,
+            # v5.1.20 — a few beacon sessions, not continuous background noise.
+            "max_events": 3,
             "field_overrides": {
                 "type": "TRAFFIC",
                 "subtype": "end",
@@ -372,6 +377,8 @@ _register("ransomware_lateral", "Ransomware via Lateral Movement",
             "time_offset_pct": 20,
             "duration_pct": 15,
             "periodicity": 6,
+            # v5.1.20 — a single LSASS-access detection.
+            "max_events": 1,
             "field_overrides": {
                 "type": "threat",
                 "threatInfo.threatName": "LSASS Access Detected",
@@ -395,6 +402,8 @@ _register("ransomware_lateral", "Ransomware via Lateral Movement",
             "time_offset_pct": 35,
             "duration_pct": 20,
             "periodicity": 5,
+            # v5.1.20 — a couple of PsExec hops across hosts.
+            "max_events": 2,
             "field_overrides": {
                 "type": "threat",
                 "threatInfo.threatName": "Lateral Movement via PsExec",
@@ -419,6 +428,8 @@ _register("ransomware_lateral", "Ransomware via Lateral Movement",
             "time_offset_pct": 55,
             "duration_pct": 15,
             "periodicity": 4,
+            # v5.1.20 — a handful of directory list operations.
+            "max_events": 3,
             "field_overrides": {
                 "operationName": "List groups",
                 "category": "GroupManagement",
@@ -435,6 +446,8 @@ _register("ransomware_lateral", "Ransomware via Lateral Movement",
             "time_offset_pct": 70,
             "duration_pct": 30,
             "periodicity": 3,
+            # v5.1.20 — one ransomware-behaviour detection (mitigated).
+            "max_events": 1,
             "field_overrides": {
                 "type": "threat",
                 "threatInfo.threatName": "Ransomware Behavior - File Encryption",
@@ -472,6 +485,8 @@ _register("cloud_account_takeover", "Cloud Account Takeover",
             "time_offset_pct": 0,
             "duration_pct": 12,
             "periodicity": 5,
+            # v5.1.20 — a stolen-token sign-in is one (maybe two) sessions.
+            "max_events": 2,
             "field_overrides": {
                 "eventType": "user.session.start",
                 "outcome.result": "SUCCESS",
@@ -489,6 +504,8 @@ _register("cloud_account_takeover", "Cloud Account Takeover",
             "time_offset_pct": 12,
             "duration_pct": 13,
             "periodicity": 8,
+            # v5.1.20 — granting consent is a single discrete action.
+            "max_events": 1,
             "field_overrides": {
                 "Operation": "Consent to application.",
                 "Workload": "AzureActiveDirectory",
@@ -506,6 +523,8 @@ _register("cloud_account_takeover", "Cloud Account Takeover",
             "time_offset_pct": 25,
             "duration_pct": 15,
             "periodicity": 4,
+            # v5.1.20 — a few recon downloads while the attacker maps the tenant.
+            "max_events": 3,
             "field_overrides": {
                 "Operation": "FileDownloaded",
                 "Workload": "SharePoint",
@@ -522,6 +541,8 @@ _register("cloud_account_takeover", "Cloud Account Takeover",
             "time_offset_pct": 40,
             "duration_pct": 15,
             "periodicity": 10,
+            # v5.1.20 — escalating to Global Admin is a single action.
+            "max_events": 1,
             "field_overrides": {
                 "Operation": "Activate eligible role.",
                 "Workload": "AzureActiveDirectory",
@@ -539,6 +560,8 @@ _register("cloud_account_takeover", "Cloud Account Takeover",
             "time_offset_pct": 55,
             "duration_pct": 25,
             "periodicity": 3,
+            # v5.1.20 — "mass" download, but capped so the demo stays legible.
+            "max_events": 5,
             "field_overrides": {
                 "Operation": "FileDownloaded",
                 "Workload": "SharePoint",
@@ -555,6 +578,8 @@ _register("cloud_account_takeover", "Cloud Account Takeover",
             "time_offset_pct": 80,
             "duration_pct": 20,
             "periodicity": 10,
+            # v5.1.20 — one backdoor service principal is created.
+            "max_events": 1,
             "field_overrides": {
                 "operationName": "Add service principal",
                 "category": "ApplicationManagement",
