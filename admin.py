@@ -1737,7 +1737,7 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
               <option value="">&#8212; Empty (build from scratch) &#8212;</option>
             </select>
           </div>
-          <div id="scenario-template-desc" style="font-size:.72rem;color:rgba(224,170,255,.4);min-height:18px"></div>
+          <div id="scenario-template-desc" style="flex:0 0 auto;font-size:.72rem;color:rgba(224,170,255,.82);line-height:1.55;min-height:18px;max-height:7.5em;overflow-y:auto;overflow-wrap:break-word;word-break:break-word;padding-right:4px"></div>
           <div style="display:flex;gap:10px">
             <div style="flex:1"><label style="font-size:.72rem;color:rgba(224,170,255,.5)">Name</label>
               <input id="scenario-name" type="text" style="width:100%;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/></div>
