@@ -21,7 +21,7 @@ import s1_detection_library as s1
 RULES = [
     ("collection",        "Office 365 Bulk File Download",                              "2426879488223447370"),
     ("exfiltration",      "Office 365 Creation of Mail Transport Rule",                "1948788857810956431"),
-    ("exfiltration-2",    "Netskope Insider Threat Suspicious Activity",               "2193712804726176570"),
+    ("exfiltration-2",    "Netskope Malware Upload",                                   "2184096624764239069"),
     ("persistence",       "Cisco Duo Authentication Attempt from Untrusted Endpoint",  "2264071526218353464"),
     ("defense-evasion",   "Office 365 Mailbox Audit Logging Bypass",                   "1948788857802567820"),
     ("credential-access", "Okta High Severity Threat Detected",                        "2406746351552083042"),

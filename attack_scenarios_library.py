@@ -979,55 +979,55 @@ _register("insider_threat", "Insider Threat — Disgruntled Employee",
             "phase_id": "exfiltration-2",
             "mitre_tactic": "Exfiltration",
             "mitre_technique": "T1567",
-            "name": "Netskope insider-threat: large upload to personal cloud",
+            "name": "Netskope: large malware-flagged upload to personal cloud",
             "source": "netskope",
             "time_offset_pct": 35,
             "duration_pct": 15,
             "periodicity": 6,
-            # max_events bumped 3->6 for activation-latency robustness (see Duo).
             "max_events": 6,
-            # Fires the shipped "Netskope Insider Threat Suspicious Activity" rule:
-            #   activity_name='Uba' and unmapped.scenario='Insider threat'
-            #   and unmapped.activity='Upload' and count>1 and unmapped.file_size>1000000
-            # GROUNDED against the lake (run att-20260629-2392, raw OCSF inspection):
-            #   * activity_name = alert_type VERBATIM, case-preserving
-            #     ('Malware'->'Malware', 'uba'->'uba'). The rule wants 'Uba', so we
-            #     MUST send alert_type='Uba' (capital U). This was the primary
-            #     blocker on the first run (we sent 'uba' -> activity_name='uba').
-            #     Bonus: 'Uba' also uniquely tags OUR alert events vs the lowercase
-            #     'uba' background stream, so the lake check is unambiguous.
-            #   * The Netskope collector's unmapped.* is a near-complete pass-through
-            #     of non-null raw fields (instance, connection_id, organization_unit,
-            #     etc. all survive), so the raw 'activity' field -> unmapped.activity
-            #     (confirmed: background 'Download' alerts land as unmapped.activity=
-            #     'Download') and a raw 'scenario' field passes through to
-            #     unmapped.scenario. Raw 'count' -> OCSF top-level 'count'.
-            #     file_size -> unmapped.file_size (confirmed).
+            # RE-TARGETED v5.2.2. The shipped "Netskope Insider Threat Suspicious
+            # Activity" rule requires activity_name='Uba', which the Netskope
+            # collector CANNOT produce. activity_name is derived from alert_type
+            # via a fixed lookup that emits lowercase 'uba' for alert_type='uba'
+            # and REJECTS the unknown key 'Uba' (run att-20260629-4397: zero 'Uba'
+            # events tenant-wide, AND our entire insider payload --
+            # unmapped.activity='Upload', unmapped.scenario, file_size=5242880 --
+            # was ABSENT because the collector dropped the record with the unknown
+            # alert_type). Neither 'uba' nor 'Uba' input can yield activity_name=
+            # 'Uba', so that rule is unfireable from apigenie.
+            # Re-pointed to the Active, array-free shipped "Netskope Malware Upload"
+            # rule, which keys ONLY on values the collector emits and passes through
+            # (every one confirmed present in the lake, run att-20260629-4397):
+            #   activity_name='Malware'      <- alert_type='Malware'   (verbatim map)
+            #   unmapped.action='Detection'  <- raw action='Detection' (pass-through)
+            #   unmapped.activity='Upload'   <- raw activity='Upload'   (pass-through)
+            # Narrative stays coherent: the departing insider uploads a file to
+            # personal cloud storage that Netskope flags on the way out -- same
+            # exfiltration beat, on a rule that actually fires here.
             "field_overrides": {
-                "alert_type": "Uba",
-                "alert_name": "Insider Threat: Mass Download Before Resignation",
-                "scenario": "Insider threat",
+                "alert_type": "Malware",
+                "alert_name": "Malware Detected in Upload to Personal Cloud",
+                "action": "Detection",
                 "activity": "Upload",
-                "count": 5,
                 "file_size": 5242880,
                 "app": "Dropbox",
                 "object_type": "File",
                 "severity": "critical",
-                "category": "UEBA",
+                "category": "Cloud Storage",
             },
             "target_rules": [
                 {
-                    "name": "Netskope Insider Threat Suspicious Activity",
+                    "name": "Netskope Malware Upload",
                     "source": "netskope",
                     "severity": "Low",
                     "mitre": "T1567",
-                    "shipped_status": "Disabled",  # must be ENABLED on the tenant
+                    "rule_id": "2184096624764239069",
+                    "shipped_status": "Active",
                     "s1ql": (
                         "dataSource.name = 'Netskope' and "
-                        "activity_name = 'Uba' and "
-                        "unmapped.scenario = 'Insider threat' and "
-                        "unmapped.activity = 'Upload' and "
-                        "count > 1 and unmapped.file_size > 1000000"
+                        "activity_name = 'Malware' and "
+                        "unmapped.action = 'Detection' and "
+                        "unmapped.activity = 'Upload'"
                     ),
                 },
             ],
@@ -1041,26 +1041,26 @@ _register("insider_threat", "Insider Threat — Disgruntled Employee",
             "time_offset_pct": 50,
             "duration_pct": 15,
             "periodicity": 4,
-            # v5.2.1 — bumped 2->6. Live run att-20260629-2392 proved the rule
-            # is Active and our events satisfy its s1ql in PQ, yet it produced
-            # zero alerts: the 2-event burst was too thin to survive the
-            # platform rule's activation latency / streaming-eval cadence (the
-            # high-volume collection + late Okta phases fired; every thin phase
-            # missed). A wider burst gives the streaming rule several polls'
-            # worth of matching events to catch.
+            # GROUNDED v5.2.2 (runs att-20260629-2392 + -4397). This rule is
+            # Active and our injected events land in the lake matching its s1ql
+            # EXACTLY -- PQ confirms unmapped.event_type='authentication',
+            # status='success' and status_detail='endpoint_is_not_trusted' on the
+            # 6 events -- yet it produced ZERO alerts on BOTH runs.
+            #   * NOT a volume problem: the Okta phase fires reliably at
+            #     max_events=2, so a 6-event burst is plenty. (The earlier
+            #     "thin burst" theory is DISPROVEN.)
+            #   * Leading suspect: the real-time STAR engine matches case-
+            #     SENSITIVELY whereas PQ string-equality is case-INSENSITIVE, so a
+            #     value that "matches" in PQ need not match at eval time. Pending
+            #     console-side confirmation of rule scope + exact stored case.
+            #     apigenie's data side is provably correct, so do NOT code-churn
+            #     this phase on a volume theory.
             "max_events": 6,
-            # Fires the shipped "Cisco Duo Authentication Attempt from Untrusted
-            # Endpoint" rule (High):
-            #   unmapped.event_type='authentication' and
-            #   status_detail contains ('endpoint_is_not_trusted') and status='success'
-            # The Duo auth-log generator already emits event_type='authentication';
-            # the collector maps the raw 'result' field to status and 'reason' to
-            # status_detail (mirrors the shipped fraud rule keying status='fraud').
-            # So result='success' → status='success' and reason='endpoint_is_not_trusted'
-            # → status_detail. A foreign access_device location reinforces the
-            # off-hours / out-of-country narrative on the alert detail.
-            # NEEDS LIVE CONFIRMATION: that result→status and reason→status_detail
-            # is how this tenant's Duo collector maps the fields.
+            # Shipped "Cisco Duo Authentication Attempt from Untrusted Endpoint"
+            # (High). The Duo collector maps raw result->status and reason->
+            # status_detail (confirmed in the lake: result='success'->status=
+            # 'success', reason='endpoint_is_not_trusted'->status_detail). A
+            # foreign access_device location reinforces the off-hours narrative.
             "field_overrides": {
                 "event_type": "authentication",
                 "result": "success",
@@ -1108,16 +1108,20 @@ _register("insider_threat", "Insider Threat — Disgruntled Employee",
             "time_offset_pct": 65,
             "duration_pct": 20,
             "periodicity": 6,
-            # v5.2.1 — RE-TARGETED. The original "Inbox Rule to Automatically
-            # Delete All Messages" target keys on unmapped.Parameters, which
-            # never lands on this tenant (see the exfiltration phase note + run
-            # att-20260629-2392). Re-pointed to the array-free shipped "Office
-            # 365 Mailbox Audit Logging Bypass" (activity_name=
-            # 'Set-MailboxAuditBypassAssociation' only). Bypassing mailbox audit
-            # logging is an even cleaner evidence-tampering / defense-evasion
-            # beat than the inbox auto-delete, and its discriminator is a
-            # top-level field that lands reliably.
-            # max_events bumped 1->6 for activation-latency robustness (see Duo).
+            # RE-TARGETED v5.2.1 off the array-dependent "Inbox Rule to
+            # Automatically Delete All Messages" (unmapped.Parameters never lands
+            # here) to the array-free "Office 365 Mailbox Audit Logging Bypass"
+            # (activity_name='Set-MailboxAuditBypassAssociation' only) -- a
+            # cleaner evidence-tampering beat keyed on a top-level field.
+            # GROUNDED v5.2.2 (run att-20260629-4397): the 6 events land with the
+            # exact activity_name + metadata.product.name='Exchange' the rule
+            # needs (verified in PQ), yet 0 alerts fired. The rule was freshly
+            # ENABLED just before the run, so the leading suspect is platform
+            # rule-activation latency -- its 6 events all streamed in one ~6-min
+            # window that likely preceded the rule going live (the co-enabled
+            # transport rule fired only because OTHER scenarios flood it
+            # continuously past activation). Now that the rule is established, a
+            # fresh run should catch it -- re-run before code-churning this phase.
             "max_events": 6,
             "field_overrides": {
                 "Operation": "Set-MailboxAuditBypassAssociation",

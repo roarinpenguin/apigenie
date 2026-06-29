@@ -11,10 +11,12 @@ rules discovered on usea1-purple (detection-library catalog, 2026-06-29):
   forwarding rule keyed on unmapped.Parameters, proven to never land on this
   tenant (run att-20260629-2392); a mail transport rule that BCCs externally
   is the same exfil intent on an array-free, top-level discriminator.
-* exfiltration-2    → "Netskope Insider Threat Suspicious Activity"
-  (activity_name='Uba', scenario='Insider threat', activity='Upload',
-  count>1, file_size>1MB). alert_type must be 'Uba' (capital U): the collector
-  maps alert_type→activity_name verbatim (case-preserving).
+* exfiltration-2    → "Netskope Malware Upload" (Active). RE-TARGETED v5.2.2:
+  the "Netskope Insider Threat Suspicious Activity" rule needs
+  activity_name='Uba', which the collector CANNOT emit (it lowercases 'uba'
+  and rejects the unknown key 'Uba' outright — run att-20260629-4397). The
+  Malware Upload rule keys on activity_name='Malware' + unmapped.action=
+  'Detection' + unmapped.activity='Upload', all reliably emitted/passed through.
 * persistence       → "Cisco Duo Authentication Attempt from Untrusted
   Endpoint" (event_type='authentication', status_detail~endpoint_is_not_trusted,
   status='success').
@@ -76,7 +78,7 @@ def test_template_passes_scenario_validation():
 @pytest.mark.parametrize("phase_id, rule_name, expected_in_s1ql", [
     ("collection",        "Office 365 Bulk File Download",                         None),
     ("exfiltration",      "Office 365 Creation of Mail Transport Rule",            "New-TransportRule"),
-    ("exfiltration-2",    "Netskope Insider Threat Suspicious Activity",          "unmapped.scenario = 'Insider threat'"),
+    ("exfiltration-2",    "Netskope Malware Upload",                              "unmapped.action = 'Detection'"),
     ("persistence",       "Cisco Duo Authentication Attempt from Untrusted Endpoint", "endpoint_is_not_trusted"),
     ("defense-evasion",   "Office 365 Mailbox Audit Logging Bypass",               "Set-MailboxAuditBypassAssociation"),
     ("credential-access", "Okta High Severity Threat Detected",                   "security.threat.detected"),
@@ -115,15 +117,16 @@ def test_exfiltration_phase_is_array_free_transport_rule():
     assert "Parameters" not in p["target_rules"][0]["s1ql"]
 
 
-def test_netskope_phase_satisfies_insider_threat_rule():
+def test_netskope_phase_satisfies_malware_upload_rule():
     p = _phase("exfiltration-2")
     fo = p["field_overrides"]
-    # alert_type maps to activity_name VERBATIM; the rule wants 'Uba' (capital U).
-    assert fo["alert_type"] == "Uba"
-    assert fo["scenario"] == "Insider threat"
-    assert fo["activity"] == "Upload"
-    assert fo["count"] > 1, "rule requires count > 1"
-    assert fo["file_size"] > 1_000_000, "rule requires file_size > 1MB"
+    # RE-TARGETED: the 'Uba' insider rule is unfireable (collector can't produce
+    # activity_name='Uba'); use the Active 'Netskope Malware Upload' rule.
+    assert fo["alert_type"] == "Malware", "alert_type maps verbatim to activity_name='Malware'"
+    assert fo["action"] == "Detection", "rule needs unmapped.action='Detection'"
+    assert fo["activity"] == "Upload", "rule needs unmapped.activity='Upload'"
+    # The old 'Uba' discriminators must be gone so we don't chase an unfireable rule.
+    assert fo["alert_type"] != "Uba"
 
 
 def test_duo_phase_satisfies_untrusted_endpoint_rule():
