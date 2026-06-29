@@ -382,6 +382,20 @@ def _perm_requirement(path: str, method: str) -> tuple[str, tuple[str, ...]] | N
             return (C.WEBHOOKS, (P.MODIFY,))
         if m == "DELETE":
             return (C.WEBHOOKS, (P.DELETE,))
+    # WEF Bindings (v5.2): operational verbs (cert/test/enabled) are
+    # MANAGE/MODIFY because they change runtime behaviour, not the
+    # binding shape; data verbs follow the standard CRUD gates.
+    if path == "/admin/api/wef/bindings":
+        if m == "POST":
+            return (C.WEF_BINDINGS, (P.CREATE,))
+    elif path.startswith("/admin/api/wef/bindings/"):
+        if path.endswith("/cert") or path.endswith("/test") \
+                or path.endswith("/enabled"):
+            return (C.WEF_BINDINGS, (P.MANAGE, P.MODIFY))
+        if m in ("PUT", "PATCH"):
+            return (C.WEF_BINDINGS, (P.MODIFY,))
+        if m == "DELETE":
+            return (C.WEF_BINDINGS, (P.DELETE,))
     return None
 
 
@@ -1151,6 +1165,7 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
   <a class="nav-item" data-portal="user" onclick="showTab('push', this); loadPushProfiles()"><span class="nav-icon">🚀</span> Log Push</a>
   <a class="nav-item" data-portal="user" onclick="showTab('alert-push', this); loadAlertProfiles()"><span class="nav-icon">🚨</span> Alert Push</a>
   <a class="nav-item" data-portal="user" onclick="showTab('webhooks', this); loadWebhooks()"><span class="nav-icon">🪝</span> Webhooks</a>
+  <a class="nav-item" data-portal="user" onclick="showTab('wef-bindings', this); loadWefBindings()"><span class="nav-icon">📡</span> WEF Bindings</a>
   <a class="nav-item" data-portal="user" onclick="showTab('identifiers', this); loadIdentifiers()"><span class="nav-icon">🔑</span> Source Identifiers</a>
   <a class="nav-item" data-portal="user" onclick="showTab('scenarios', this); loadScenarios()"><span class="nav-icon">⚔</span> Attack Scenarios</a>
   <a class="nav-item" data-portal="user" onclick="showTab('config', this)"><span class="nav-icon">🔧</span> Source Details</a>
@@ -1871,6 +1886,116 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
       </div>
     </div>
 
+    <!-- WEF BINDINGS TAB (v5.2) -->
+    <div class="pane" id="pane-wef-bindings">
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span>WEF Bindings</span>
+          <button class="btn-sm" onclick="newWefBinding()">+ New Binding</button>
+        </div>
+        <p style="font-size:.78rem;color:rgba(224,170,255,.45);margin-bottom:10px">
+          Each binding is a background push loop that emits SOAP/WS-Eventing
+          envelopes to a real Windows Event Collector at a per-binding rate.
+          Authentication is Basic (username + Fernet-encrypted password) or
+          mTLS (client-cert PEM bundle, stored encrypted on disk).
+          Toggle <b>Enabled</b> to start / stop the loop; use <b>Test</b>
+          to send one batch synchronously and see the WEC response inline.
+        </p>
+        <div id="wef-list" style="min-height:120px"><p class="empty">Loading…</p></div>
+      </div>
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span>Recent activity</span>
+          <button class="btn-sm" style="padding:3px 10px;font-size:.68rem" onclick="loadWefHistory()">↻ Refresh</button>
+        </div>
+        <p style="font-size:.72rem;color:rgba(224,170,255,.4);margin:-4px 0 8px">
+          Cross-binding push log (last 50 attempts). One row per
+          <code>push_once</code> call — runner loop, <b>Test</b> button, or
+          scheduled batch. Cleared on container restart.
+        </p>
+        <div id="wef-history"><p class="empty">No recent pushes yet.</p></div>
+      </div>
+    </div>
+
+    <!-- WEF Binding Editor Modal -->
+    <div class="modal-overlay hidden" id="wef-modal">
+      <div class="modal-card" style="max-width:780px">
+        <div class="modal-head">
+          <div class="modal-title" id="wef-modal-title">New WEF Binding</div>
+          <button class="modal-close" onclick="closeWefModal()">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row"><label>Name</label>
+            <input type="text" id="wef-name" placeholder="e.g. DC01 → WEC1"/></div>
+          <div class="form-row"><label>Target host</label>
+            <input type="text" id="wef-host" placeholder="wec1.lab.example.com"/></div>
+          <div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <div><label>Port</label>
+              <input type="number" id="wef-port" value="5986" min="1" max="65535"/>
+              <div style="font-size:.7rem;color:rgba(224,170,255,.4);margin-top:2px">
+                5985 = HTTP · 5986 = HTTPS · any other = HTTPS
+              </div></div>
+            <div><label>Path</label>
+              <input type="text" id="wef-path" value="/wsman/SubscriptionManager/WEC"/></div>
+          </div>
+          <div class="form-row"><label>Authentication</label>
+            <div style="display:flex;gap:14px">
+              <label style="display:flex;align-items:center;gap:5px;font-weight:normal">
+                <input type="radio" name="wef-auth" value="basic" checked
+                       onchange="wefToggleAuth()"/> Basic</label>
+              <label style="display:flex;align-items:center;gap:5px;font-weight:normal">
+                <input type="radio" name="wef-auth" value="client_cert"
+                       onchange="wefToggleAuth()"/> mTLS (client cert)</label>
+            </div></div>
+          <div id="wef-basic-fields">
+            <div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+              <div><label>Username</label>
+                <input type="text" id="wef-basic-user" placeholder="wef-svc"/></div>
+              <div><label>Password</label>
+                <input type="password" id="wef-basic-pw"
+                       placeholder="leave blank to keep existing"/></div>
+            </div>
+          </div>
+          <div id="wef-cert-fields" style="display:none">
+            <div class="form-row"><label>Client certificate PEM bundle</label>
+              <input type="file" id="wef-cert-file" accept=".pem,.crt,.cer,.key,.bundle"/>
+              <div id="wef-cert-status" style="font-size:.75rem;color:rgba(224,170,255,.5);margin-top:4px">
+                Upload combined cert + private key in PEM format. Stored Fernet-encrypted on disk.
+              </div></div>
+          </div>
+          <div class="form-row"><label>TLS verify</label>
+            <label style="display:flex;align-items:center;gap:6px;font-weight:normal">
+              <input type="checkbox" id="wef-tls-verify" checked/>
+              Verify WEC certificate (uncheck for lab self-signed)</label></div>
+          <div class="form-row"><label>Channels (event log sources)</label>
+            <div id="wef-channels" style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;font-weight:normal;font-size:.85rem"></div>
+            <div style="font-size:.7rem;color:rgba(224,170,255,.4);margin-top:4px">
+              Each batch samples a uniform mix across the selected channels.
+            </div></div>
+          <div class="form-row"><label>Log profile (optional)</label>
+            <select id="wef-profile-id"><option value="">— None — placeholder values</option></select>
+            <div style="font-size:.7rem;color:rgba(224,170,255,.4);margin-top:4px">
+              When set, ``TargetUserName`` / ``WorkstationName`` / ``IpAddress``
+              fields draw from the profile's user &amp; machine pools instead
+              of synthetic placeholders. Deleting the profile leaves this
+              binding running in placeholder mode (no error state).
+            </div></div>
+          <div class="form-row" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
+            <div><label>Rate (events/min)</label>
+              <input type="number" id="wef-rate" value="60" min="1" max="60000"/></div>
+            <div><label>Batch size</label>
+              <input type="number" id="wef-batch" value="10" min="1" max="500"/></div>
+            <div><label>Jitter %</label>
+              <input type="number" id="wef-jitter" value="0" min="0" max="50"/></div>
+          </div>
+        </div>
+        <div class="modal-foot"><div style="display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn-sm" style="background:rgba(90,24,154,.3)" onclick="closeWefModal()">Cancel</button>
+          <button class="btn-sm" onclick="saveWefBinding()">Save</button>
+        </div></div>
+      </div>
+    </div>
+
     <!-- CONFIG TAB -->
     <div class="pane" id="pane-config">
       <div class="card">
@@ -2333,7 +2458,7 @@ function showTab(tab, el) {
   document.getElementById('pane-' + tab).classList.add('active');
   if (el) el.classList.add('active');
   activeTab = tab;
-  const titles = {requests:'Request Inspector', observability:'Observability', intrusions:'Intrusions', listeners:'Listeners', profiles:'Log Profiles & Detection Rules', push:'Log Push', 'alert-push':'Alert Push', webhooks:'Webhooks', scenarios:'Attack Scenarios', investigate:'Investigations', logs:'Container Logs', config:'Source Details', identifiers:'Source Identifiers', settings:'System Settings'};
+  const titles = {requests:'Request Inspector', observability:'Observability', intrusions:'Intrusions', listeners:'Listeners', profiles:'Log Profiles & Detection Rules', push:'Log Push', 'alert-push':'Alert Push', webhooks:'Webhooks', 'wef-bindings':'WEF Bindings', scenarios:'Attack Scenarios', investigate:'Investigations', logs:'Container Logs', config:'Source Details', identifiers:'Source Identifiers', settings:'System Settings'};
   // Resize viz canvases when the Observability tab becomes active.
   if (tab === 'observability') {
     if (window._sankey) window._sankey.resize();
@@ -8570,6 +8695,391 @@ function deleteProfile() {
     .then(()=>{toast('Profile deleted'); closeProfileEditor(); loadProfiles();})
     .catch(e=>toast('Delete failed: '+e,true));
 }
+
+// ── WEF Bindings (v5.2) ────────────────────────────────────────────────────
+// Outbound Windows Event Forwarding push loops. The list panel renders one
+// card per binding with live status (status code, sent_total, last_error,
+// age). The modal is the editor form; auth-method radio toggles between the
+// Basic credentials block and the mTLS PEM file picker. Cert upload uses
+// FileReader + btoa so we never need python-multipart on the server.
+
+// Closed set of WEF channels mirrored from
+// sources/windows_event_forwarding.py CHANNELS. Adding a channel is a
+// two-file change (catalog + this list); keeping it explicit here keeps
+// the form usable even when the bindings API isn't reachable.
+const WEF_CHANNELS = [
+  'Security',
+  'System',
+  'Directory Service',
+  'DNS Server',
+  'Windows-PowerShell-Operational',
+  'Microsoft-Windows-Sysmon/Operational',
+];
+
+var _wefList = [];          // list of binding rows (last GET)
+var _wefDraft = null;       // { id?, name, config, password? } being edited
+var _wefProfiles = [];      // [{id, name}] cached for the binding editor dropdown
+
+async function loadWefBindings() {
+  var box = document.getElementById('wef-list');
+  if (!box) return;
+  box.innerHTML = '<p class="empty">Loading…</p>';
+  try {
+    var r = await fetch('/admin/api/wef/bindings', {credentials:'same-origin'});
+    if (!r.ok) { box.innerHTML = '<p class="empty">Error: ' + r.status + '</p>'; return; }
+    var d = await r.json();
+    _wefList = d.bindings || [];
+    _wefRenderList();
+  } catch(e) { box.innerHTML = '<p class="empty">Error: ' + e + '</p>'; }
+  // Log profiles dropdown — best-effort, never blocks the list render.
+  // Missing API / 403 leaves the cache empty; the modal still works with
+  // just the "None" option.
+  try {
+    var pr = await fetch('/admin/api/profiles', {credentials:'same-origin'});
+    if (pr.ok) {
+      var pd = await pr.json();
+      _wefProfiles = pd.profiles || [];
+    }
+  } catch(e) { /* keep previous cache */ }
+  // Cross-binding "Recent activity" feed (Phase F). Loaded alongside
+  // the bindings so the operator sees one consistent view per refresh.
+  loadWefHistory();
+}
+
+async function loadWefHistory() {
+  var box = document.getElementById('wef-history');
+  if (!box) return;
+  try {
+    var r = await fetch('/admin/api/wef/history?limit=50', {credentials:'same-origin'});
+    if (!r.ok) { return; /* silent — empty state stays */ }
+    var d = await r.json();
+    var entries = d.history || [];
+    if (!entries.length) {
+      box.innerHTML = '<p class="empty">No recent pushes yet.</p>';
+      return;
+    }
+    box.innerHTML = entries.map(_wefHistoryEntryHtml).join('');
+  } catch(e) { /* silent — keep last successful render */ }
+}
+
+function _wefHistoryEntryHtml(e) {
+  // Mirror _alertHistoryEntryHtml visual shape so the two activity
+  // feeds (alerts / WEF) feel like one product surface.
+  var ok = !!e.ok;
+  var clr = ok ? '#2ecc71' : '#ff5050';
+  var dot = ok ? '✓' : '✗';
+  var sc = (e.status_code === null || e.status_code === undefined) ? '' : ('HTTP ' + e.status_code);
+  var errBit = e.error ? ' <span style="color:#ff8080">' + escHtml(String(e.error)) + '</span>' : '';
+  var nameBit = e.binding_name
+    ? ('<code style="font-size:.66rem;color:#c77dff">' + escHtml(String(e.binding_name)) + '</code>')
+    : '';
+  var ageBit = _wefFmtAge(e.ts);
+  return '<div style="display:flex;gap:8px;align-items:center;padding:5px 8px;border-bottom:1px solid rgba(199,125,255,.08);font-size:.7rem">' +
+         '<span style="color:' + clr + ';width:16px">' + dot + '</span>' +
+         '<span style="color:rgba(224,170,255,.5);min-width:90px">' + escHtml(ageBit) + '</span>' +
+         nameBit +
+         '<span style="color:rgba(224,170,255,.4)">' + (e.sent || 0) + ' sent</span>' +
+         '<span style="color:rgba(224,170,255,.4)">' + escHtml(sc) + '</span>' +
+         errBit +
+         '</div>';
+}
+
+function _wefRenderList() {
+  var box = document.getElementById('wef-list');
+  if (!box) return;
+  if (!_wefList.length) {
+    box.innerHTML = '<p class="empty">No bindings yet. Click <b>+ New Binding</b> to create one.</p>';
+    return;
+  }
+  var rows = _wefList.map(function(b) {
+    var cfg = b.config || {};
+    var st = b.status || {};
+    var authBadge = cfg.auth_method === 'client_cert'
+      ? '<span class="pill" style="background:rgba(127,90,240,.25)">mTLS</span>'
+      : '<span class="pill" style="background:rgba(90,24,154,.3)">Basic</span>';
+    var enabledBadge = b.enabled
+      ? '<span class="pill" style="background:rgba(50,200,120,.25);color:#7fffb0">● running</span>'
+      : '<span class="pill" style="background:rgba(160,160,160,.18);color:#bbb">○ stopped</span>';
+    var status = _wefStatusBadge(st);
+    var target = escHtml(cfg.target_host || '?') + ':' + escHtml(String(cfg.target_port || ''));
+    var channels = (cfg.channels_enabled || []).length;
+    return '' +
+      '<div class="card" style="padding:10px;margin-bottom:8px">' +
+      '  <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">' +
+      '    <div style="display:flex;flex-direction:column;gap:2px;min-width:240px">' +
+      '      <div style="font-weight:600">' + escHtml(b.name || '(unnamed)') + '</div>' +
+      '      <div style="font-size:.78rem;color:rgba(224,170,255,.55)">' + target +
+      '        <span style="color:rgba(224,170,255,.3)"> · ' + channels + ' channel' + (channels === 1 ? '' : 's') +
+      '          · ' + escHtml(String(cfg.rate_per_min || 60)) + '/min</span></div>' +
+      '    </div>' +
+      '    <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap">' +
+      authBadge + enabledBadge + status +
+      '    </div>' +
+      '    <div style="display:flex;gap:5px">' +
+      '      <button class="btn-sm" onclick="testWef(\\'' + escAttr(b.id) + '\\')">⚡ Test</button>' +
+      '      <button class="btn-sm" onclick="toggleWefEnabled(\\'' + escAttr(b.id) + '\\', ' + (!b.enabled) + ')">' +
+            (b.enabled ? '⏸ Stop' : '▶ Start') + '</button>' +
+      '      <button class="btn-sm" onclick="editWefBinding(\\'' + escAttr(b.id) + '\\')">Edit</button>' +
+      '      <button class="btn-sm" style="background:rgba(180,40,40,.3)" onclick="deleteWef(\\'' + escAttr(b.id) + '\\')">🗑</button>' +
+      '    </div>' +
+      '  </div>' +
+      (st.last_error ? '<div style="margin-top:6px;font-size:.75rem;color:#ff8888">' +
+        '⚠ last error: ' + escHtml(st.last_error) + '</div>' : '') +
+      '</div>';
+  }).join('');
+  box.innerHTML = rows;
+}
+
+function _wefStatusBadge(st) {
+  var code = st.last_status_code;
+  var sent = st.sent_total || 0;
+  var age = _wefFmtAge(st.last_push_at);
+  if (code === null || code === undefined) {
+    return '<span class="pill" style="background:rgba(160,160,160,.18);color:#999">never pushed</span>';
+  }
+  var bg = (code >= 200 && code < 300) ? 'rgba(50,200,120,.25)' : 'rgba(220,60,60,.25)';
+  var fg = (code >= 200 && code < 300) ? '#7fffb0' : '#ff8888';
+  return '<span class="pill" style="background:' + bg + ';color:' + fg + '">' +
+         code + ' · ' + sent + ' sent · ' + age + '</span>';
+}
+
+function _wefFmtAge(iso) {
+  if (!iso) return '—';
+  var t = Date.parse(iso);
+  if (!t) return '—';
+  var s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.floor(s / 60) + 'm ago';
+  if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+  return Math.floor(s / 86400) + 'd ago';
+}
+
+function escAttr(s) { return String(s || '').replace(/'/g, "\\'").replace(/"/g, '&quot;'); }
+
+function newWefBinding() {
+  _wefDraft = {id: null, name: '', config: {
+    target_host: '', target_port: 5986, target_path: '/wsman/SubscriptionManager/WEC',
+    auth_method: 'basic', basic_username: '', tls_verify: true,
+    channels_enabled: ['Security'], rate_per_min: 60, batch_size: 10, jitter_pct: 0,
+  }};
+  document.getElementById('wef-modal-title').textContent = 'New WEF Binding';
+  _wefFillForm();
+  document.getElementById('wef-modal').classList.remove('hidden');
+}
+
+async function editWefBinding(bid) {
+  try {
+    var r = await fetch('/admin/api/wef/bindings/' + encodeURIComponent(bid),
+                        {credentials:'same-origin'});
+    if (!r.ok) { toast('Load failed: ' + r.status, true); return; }
+    var b = await r.json();
+    _wefDraft = {id: b.id, name: b.name, config: Object.assign({}, b.config)};
+    document.getElementById('wef-modal-title').textContent = 'Edit WEF Binding';
+    _wefFillForm();
+    document.getElementById('wef-modal').classList.remove('hidden');
+  } catch(e) { toast('Load failed: ' + e, true); }
+}
+
+function closeWefModal() {
+  document.getElementById('wef-modal').classList.add('hidden');
+  _wefDraft = null;
+}
+
+function _wefFillForm() {
+  var d = _wefDraft || {}; var c = d.config || {};
+  document.getElementById('wef-name').value = d.name || '';
+  document.getElementById('wef-host').value = c.target_host || '';
+  document.getElementById('wef-port').value = c.target_port || 5986;
+  document.getElementById('wef-path').value = c.target_path || '/wsman/SubscriptionManager/WEC';
+  document.getElementById('wef-basic-user').value = c.basic_username || '';
+  document.getElementById('wef-basic-pw').value = '';
+  document.getElementById('wef-tls-verify').checked = c.tls_verify !== false;
+  document.getElementById('wef-rate').value = c.rate_per_min || 60;
+  document.getElementById('wef-batch').value = c.batch_size || 10;
+  document.getElementById('wef-jitter').value = c.jitter_pct || 0;
+  document.getElementById('wef-cert-file').value = '';
+  // Auth radio
+  var auth = c.auth_method || 'basic';
+  document.querySelectorAll('input[name="wef-auth"]').forEach(function(r) {
+    r.checked = (r.value === auth);
+  });
+  wefToggleAuth();
+  // Cert status badge
+  var certBox = document.getElementById('wef-cert-status');
+  if (c.cert_uploaded) {
+    certBox.innerHTML = '✓ <b>Certificate already uploaded.</b> Pick a new file to replace it, or leave blank to keep.';
+    certBox.style.color = '#7fffb0';
+  } else {
+    certBox.textContent = 'Upload combined cert + private key in PEM format. Stored Fernet-encrypted on disk.';
+    certBox.style.color = 'rgba(224,170,255,.5)';
+  }
+  // Channels
+  _wefRenderChannels(c.channels_enabled || ['Security']);
+  // Log profile dropdown — rebuilt every open so a new profile created
+  // in another tab shows up without forcing the operator to reload.
+  _wefRenderProfiles(c.profile_id || '');
+}
+
+function _wefRenderProfiles(selectedId) {
+  var sel = document.getElementById('wef-profile-id');
+  if (!sel) return;
+  var opts = ['<option value="">— None — placeholder values</option>'];
+  _wefProfiles.forEach(function(p) {
+    var pid = String(p.id || '');
+    var nm  = String(p.name || pid);
+    opts.push('<option value="' + escAttr(pid) + '"' +
+              (pid === selectedId ? ' selected' : '') +
+              '>' + escHtml(nm) + '</option>');
+  });
+  // If the saved profile_id no longer exists in the cache (deleted out
+  // of band), keep it visible as a "(missing)" entry so the operator
+  // knows the binding is now in placeholder fallback mode rather than
+  // silently switching to "None".
+  if (selectedId && !_wefProfiles.some(function(p) { return String(p.id) === selectedId; })) {
+    opts.push('<option value="' + escAttr(selectedId) + '" selected>' +
+              escHtml(selectedId) + ' (missing — falls back to placeholder)</option>');
+  }
+  sel.innerHTML = opts.join('');
+}
+
+function _wefRenderChannels(selected) {
+  var box = document.getElementById('wef-channels');
+  if (!box) return;
+  var sel = new Set(selected || []);
+  box.innerHTML = WEF_CHANNELS.map(function(ch) {
+    var id = 'wef-ch-' + ch.replace(/[^a-z0-9]/gi, '');
+    return '<label style="display:flex;align-items:center;gap:5px"><input type="checkbox" id="' +
+           id + '" data-channel="' + escAttr(ch) + '"' + (sel.has(ch) ? ' checked' : '') +
+           '/>' + escHtml(ch) + '</label>';
+  }).join('');
+}
+
+function wefToggleAuth() {
+  var radio = document.querySelector('input[name="wef-auth"]:checked');
+  var auth = radio ? radio.value : 'basic';
+  document.getElementById('wef-basic-fields').style.display = (auth === 'basic') ? '' : 'none';
+  document.getElementById('wef-cert-fields').style.display = (auth === 'client_cert') ? '' : 'none';
+}
+
+function _wefCollectConfig() {
+  var authRadio = document.querySelector('input[name="wef-auth"]:checked');
+  var channels = Array.from(document.querySelectorAll('#wef-channels input[type="checkbox"]:checked'))
+                      .map(function(cb) { return cb.dataset.channel; });
+  var profSel = document.getElementById('wef-profile-id');
+  var profId  = profSel ? (profSel.value || '').trim() : '';
+  return {
+    target_host: document.getElementById('wef-host').value.trim(),
+    target_port: parseInt(document.getElementById('wef-port').value, 10),
+    target_path: document.getElementById('wef-path').value.trim(),
+    auth_method: authRadio ? authRadio.value : 'basic',
+    basic_username: document.getElementById('wef-basic-user').value.trim() || null,
+    tls_verify: document.getElementById('wef-tls-verify').checked,
+    rate_per_min: parseInt(document.getElementById('wef-rate').value, 10) || 60,
+    batch_size: parseInt(document.getElementById('wef-batch').value, 10) || 10,
+    jitter_pct: parseInt(document.getElementById('wef-jitter').value, 10) || 0,
+    channels_enabled: channels.length ? channels : ['Security'],
+    profile_id: profId || null,
+  };
+}
+
+function _wefBase64File(file) {
+  return new Promise(function(resolve, reject) {
+    var fr = new FileReader();
+    fr.onload = function() {
+      // result is "data:...;base64,XXX" — strip the prefix
+      var s = fr.result || '';
+      var idx = s.indexOf(',');
+      resolve(idx >= 0 ? s.slice(idx + 1) : s);
+    };
+    fr.onerror = function() { reject(fr.error); };
+    fr.readAsDataURL(file);
+  });
+}
+
+async function saveWefBinding() {
+  if (!_wefDraft) return;
+  var name = document.getElementById('wef-name').value.trim();
+  if (!name) { toast('Name is required', true); return; }
+  var cfg = _wefCollectConfig();
+  var pw = document.getElementById('wef-basic-pw').value;
+  var payload = {name: name, config: cfg};
+  if (pw) payload.password = pw;
+  var isUpdate = !!_wefDraft.id;
+  var url = isUpdate ? ('/admin/api/wef/bindings/' + encodeURIComponent(_wefDraft.id))
+                     : '/admin/api/wef/bindings';
+  try {
+    var r = await fetch(url, {
+      method: isUpdate ? 'PUT' : 'POST',
+      credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    var d = await r.json();
+    if (!r.ok) { toast('Save failed: ' + (d.error || r.status), true); return; }
+    _wefDraft.id = d.id;
+    // PEM upload (only if user picked a file).
+    var fileInput = document.getElementById('wef-cert-file');
+    if (fileInput && fileInput.files && fileInput.files[0]) {
+      try {
+        var b64 = await _wefBase64File(fileInput.files[0]);
+        var rc = await fetch('/admin/api/wef/bindings/' + encodeURIComponent(d.id) + '/cert', {
+          method: 'POST', credentials: 'same-origin',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({pem: b64}),
+        });
+        var dc = await rc.json();
+        if (!rc.ok) { toast('Cert upload failed: ' + (dc.error || rc.status), true); }
+      } catch(e) { toast('Cert upload failed: ' + e, true); }
+    }
+    toast(isUpdate ? 'Saved' : 'Created');
+    closeWefModal();
+    await loadWefBindings();
+  } catch(e) { toast('Save failed: ' + e, true); }
+}
+
+async function testWef(bid) {
+  try {
+    var r = await fetch('/admin/api/wef/bindings/' + encodeURIComponent(bid) + '/test',
+                        {method:'POST', credentials:'same-origin'});
+    var d = await r.json();
+    if (d.ok) {
+      toast('Test push OK: HTTP ' + d.status_code + ', ' + (d.sent || 0) + ' events');
+    } else {
+      toast('Test push failed: ' + (d.error || ('HTTP ' + d.status_code)), true);
+    }
+    // loadWefBindings also refreshes the activity feed via loadWefHistory,
+    // so the operator's test push lands in the Recent activity card
+    // without a manual refresh click.
+    await loadWefBindings();
+  } catch(e) { toast('Test failed: ' + e, true); }
+}
+
+async function toggleWefEnabled(bid, enabled) {
+  try {
+    var r = await fetch('/admin/api/wef/bindings/' + encodeURIComponent(bid) + '/enabled', {
+      method:'PUT', credentials:'same-origin',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({enabled: enabled}),
+    });
+    var d = await r.json();
+    if (!r.ok) { toast((d.error || ('HTTP ' + r.status)), true); return; }
+    toast(enabled ? 'Started' : 'Stopped');
+    await loadWefBindings();
+  } catch(e) { toast('Toggle failed: ' + e, true); }
+}
+
+async function deleteWef(bid) {
+  var b = _wefList.find(function(x){return x.id === bid;});
+  var name = b ? b.name : bid;
+  if (!confirm('Delete binding "' + name + '" and its certificate (if any)? This cannot be undone.')) return;
+  try {
+    var r = await fetch('/admin/api/wef/bindings/' + encodeURIComponent(bid),
+                        {method:'DELETE', credentials:'same-origin'});
+    if (!r.ok) { var d = await r.json(); toast('Delete failed: ' + (d.error || r.status), true); return; }
+    toast('Deleted');
+    await loadWefBindings();
+  } catch(e) { toast('Delete failed: ' + e, true); }
+}
 </script>
 
 <!-- Profile editor modal -->
@@ -12555,3 +13065,271 @@ async def api_s1_import_rule(request: Request, ag_session: str | None = Cookie(N
         "enabled": True,
     })
     return JSONResponse(rule)
+
+
+# ── WEF bindings API (v5.2) ──────────────────────────────────────────
+#
+# Each binding row represents one Windows Event Collector this ApiGenie
+# instance will push synthesised WEF events to. Storage lives in
+# wef_bindings.py; the runner (wef_runner.py) consumes the rows on a
+# background loop. The routes below are the admin-UI / programmatic
+# CRUD surface. RBAC is gated centrally by _perm_requirement above
+# (Category.WEF_BINDINGS); per-route we just do auth + ownership.
+
+@router.get("/api/wef/bindings")
+async def api_wef_bindings_list(ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import wef_bindings
+    uid, is_admin = _session_identity(ag_session)
+    bindings = wef_bindings.list_bindings(owner_id=None if is_admin else uid)
+    items = list(bindings.values())
+    return JSONResponse({"bindings": items, "count": len(items)})
+
+
+@router.post("/api/wef/bindings")
+async def api_wef_bindings_create(request: Request,
+                                  ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import wef_bindings
+    try:
+        body = await request.json()
+    except Exception as exc:
+        return JSONResponse({"error": f"invalid JSON body: {exc}"},
+                            status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "body must be a JSON object"},
+                            status_code=400)
+    uid, is_admin = _session_identity(ag_session)
+    # Built-in admin (uid=None) writes a global/public-by-default
+    # binding; real users own their bindings privately.
+    owner = None if is_admin and uid is None else uid
+    try:
+        bnd = wef_bindings.create_binding(body, owner_id=owner)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return JSONResponse(bnd, status_code=201)
+
+
+@router.get("/api/wef/bindings/{bid}")
+async def api_wef_bindings_get(bid: str,
+                               ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import wef_bindings
+    bnd = wef_bindings.get_binding(bid)
+    if not bnd:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_see_obj(bnd, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    return JSONResponse(bnd)
+
+
+@router.put("/api/wef/bindings/{bid}")
+async def api_wef_bindings_update(bid: str, request: Request,
+                                  ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import wef_bindings
+    bnd = wef_bindings.get_binding(bid)
+    if not bnd:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_write_obj(bnd, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    try:
+        body = await request.json()
+    except Exception as exc:
+        return JSONResponse({"error": f"invalid JSON body: {exc}"},
+                            status_code=400)
+    try:
+        updated = wef_bindings.update_binding(bid, body)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    if updated is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    # Config edits invalidate the runner's cached emitter — reconcile
+    # immediately so the next push uses the new config without waiting
+    # for the supervisor tick.
+    try:
+        import wef_runner
+        wef_runner.get_runner().reconcile_sync()
+    except Exception:
+        pass
+    return JSONResponse(updated)
+
+
+@router.delete("/api/wef/bindings/{bid}")
+async def api_wef_bindings_delete(bid: str,
+                                  ag_session: str | None = Cookie(None)):
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import wef_bindings
+    bnd = wef_bindings.get_binding(bid)
+    if not bnd:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_write_obj(bnd, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    wef_bindings.delete_binding(bid)
+    # Drop the now-orphaned emitter from the runner cache.
+    try:
+        import wef_runner
+        wef_runner.get_runner().reconcile_sync()
+    except Exception:
+        pass
+    return JSONResponse({"ok": True, "id": bid})
+
+
+@router.post("/api/wef/bindings/{bid}/cert")
+async def api_wef_bindings_cert_upload(bid: str, request: Request,
+                                       ag_session: str | None = Cookie(None)):
+    """Upload a client-certificate PEM bundle for an mTLS binding.
+
+    JSON body shape: ``{"pem": "<base64-encoded combined cert+key PEM>"}``.
+    We accept the base64 wrapper (not raw multipart) so this endpoint
+    has no python-multipart dependency — the UI uses ``FileReader``
+    + ``btoa`` to encode before POSTing.
+    """
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import base64
+    import wef_bindings
+    from sources import windows_event_forwarding as _wef_src
+    bnd = wef_bindings.get_binding(bid)
+    if not bnd:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_write_obj(bnd, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"error": "expected JSON {'pem': '<base64 PEM bundle>'}"},
+            status_code=400,
+        )
+    b64 = (body or {}).get("pem", "")
+    if not b64:
+        return JSONResponse({"error": "missing 'pem' field"},
+                            status_code=400)
+    try:
+        pem_bytes = base64.b64decode(b64)
+    except Exception as exc:
+        return JSONResponse(
+            {"error": f"'pem' must be base64-encoded: {exc}"},
+            status_code=400,
+        )
+    if not pem_bytes or b"-----BEGIN" not in pem_bytes:
+        return JSONResponse(
+            {"error": "uploaded file does not look like a PEM bundle"},
+            status_code=400,
+        )
+    _wef_src.save_cert_bundle(bid, pem_bytes)
+    updated = wef_bindings.update_binding(
+        bid, {"config": {**bnd["config"], "cert_uploaded": True}},
+    )
+    # Drop any cached emitter so the next push re-resolves the cert.
+    try:
+        import wef_runner
+        wef_runner.get_runner().reconcile_sync()
+    except Exception:
+        pass
+    return JSONResponse(updated or bnd)
+
+
+@router.put("/api/wef/bindings/{bid}/enabled")
+async def api_wef_bindings_set_enabled(bid: str, request: Request,
+                                       ag_session: str | None = Cookie(None)):
+    """Start / stop a binding in the runner. Body: ``{"enabled": bool}``."""
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import wef_bindings
+    bnd = wef_bindings.get_binding(bid)
+    if not bnd:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_write_obj(bnd, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"error": "expected JSON {'enabled': bool}"},
+            status_code=400,
+        )
+    enabled = bool((body or {}).get("enabled"))
+    updated = wef_bindings.set_enabled(bid, enabled)
+    if updated is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    # Reconcile so the runner picks up the change within the
+    # round-trip rather than waiting for the next supervisor tick.
+    try:
+        import wef_runner
+        wef_runner.get_runner().reconcile_sync()
+    except Exception:
+        pass
+    return JSONResponse(updated)
+
+
+@router.post("/api/wef/bindings/{bid}/test")
+async def api_wef_bindings_test(bid: str,
+                                ag_session: str | None = Cookie(None)):
+    """One synchronous push cycle — the "Test push" admin button.
+
+    Doesn't require ``enabled=True`` so an operator can validate a
+    freshly-saved binding before flipping it live. The runner's
+    ``push_once`` swallows every emitter exception and records the
+    outcome via ``record_push_result``, so this endpoint always
+    returns a JSON result dict (never raises).
+    """
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import wef_bindings
+    bnd = wef_bindings.get_binding(bid)
+    if not bnd:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_write_obj(bnd, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    import wef_runner
+    result = wef_runner.get_runner().push_once(bid)
+    return JSONResponse(result)
+
+
+@router.get("/api/wef/history")
+async def api_wef_history_global(limit: int = 50,
+                                 ag_session: str | None = Cookie(None)):
+    """Cross-binding "Recent activity" feed (Phase F).
+
+    Each entry carries its ``binding_id`` + ``binding_name`` so the
+    UI can render which binding produced it without a second lookup.
+    Mirrors ``/admin/api/alerts/history`` — same auth model (session
+    cookie only, no per-row visibility gate because binding names
+    are not secrets and the feed is bounded to ``_HISTORY_MAX``
+    entries process-wide).
+    """
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import wef_runner
+    capped = max(1, min(int(limit or 50), wef_runner._HISTORY_MAX))
+    entries = wef_runner.get_history(limit=capped)
+    return JSONResponse({"history": entries, "count": len(entries)})
+
+
+@router.get("/api/wef/bindings/{bid}/history")
+async def api_wef_history_per_binding(bid: str,
+                                      limit: int = 50,
+                                      ag_session: str | None = Cookie(None)):
+    """Per-binding push history — the disclosure pane on each binding
+    card. Adds the standard get + ownership check on top of the
+    session cookie so a viewer can't peek into a private binding's
+    activity (the row itself is owner-gated, and so is its history)."""
+    if not _valid(ag_session):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import wef_bindings
+    bnd = wef_bindings.get_binding(bid)
+    if not bnd:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if not _can_see_obj(bnd, ag_session):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    import wef_runner
+    capped = max(1, min(int(limit or 50), wef_runner._HISTORY_MAX))
+    entries = wef_runner.get_history(bid, limit=capped)
+    return JSONResponse({"history": entries, "count": len(entries)})

@@ -80,6 +80,11 @@ class Category:
     LISTENERS = "listeners"
     SOURCE_BINDINGS = "source_bindings"
     WEBHOOKS = "webhooks"
+    # v5.2 — outbound Windows Event Forwarding bindings (per-binding
+    # auth material + start/stop lifecycle). Kept separate from
+    # SOURCE_BINDINGS because WEF rows store TLS / Basic credentials and
+    # talk to a real network destination, which warrants its own gate.
+    WEF_BINDINGS = "wef_bindings"
 
 
 ALL_CATEGORIES: tuple[str, ...] = (
@@ -90,6 +95,7 @@ ALL_CATEGORIES: tuple[str, ...] = (
     Category.LISTENERS,
     Category.SOURCE_BINDINGS,
     Category.WEBHOOKS,
+    Category.WEF_BINDINGS,
 )
 
 CATEGORY_LABELS: dict[str, str] = {
@@ -100,6 +106,7 @@ CATEGORY_LABELS: dict[str, str] = {
     Category.LISTENERS: "Custom Listeners",
     Category.SOURCE_BINDINGS: "Source Bindings",
     Category.WEBHOOKS: "Webhooks",
+    Category.WEF_BINDINGS: "WEF Bindings",
 }
 
 # Identifier kinds a user may register per source for pull-response matching.

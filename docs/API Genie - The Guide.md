@@ -177,7 +177,7 @@ You now have three sources answering your collectors with per-user telemetry, an
 
 4. **Set Visibility (and how the timing works).** Scenarios run **live**: phases activate over wall-clock and events fire as collectors poll inside each phase window — the attack unfolds as your audience watches, and timestamps are backdated across the configured duration so the campaign reads correctly on the timeline. The **Visibility** selector decides *who* sees it: **Private** *(default)* keeps the run scoped to your own collector token; **Public** lets every caller on the instance see it.
 
-   > **Note:** an earlier *Historical* mode (pre-stage the whole attack already in the past) was removed in v5.1.29 — SentinelOne AI-SIEM detections fire when telemetry is *ingested*, so the resulting alerts always landed at "now" regardless of the backdated event times. Realtime is now the only mode.
+   > **Note:** an earlier *Historical* mode (pre-stage the whole attack already in the past) was removed in v5.2.0 — SentinelOne AI-SIEM detections fire when telemetry is *ingested*, so the resulting alerts always landed at "now" regardless of the backdated event times. Realtime is now the only mode.
 
 5. **Check which collectors the scenario needs.** Every card has a **Setup notes ▾** disclosure that auto-lists, for each source the scenario touches, the collector you must point at API Genie for the story to land. For **BEC** that means **Proofpoint**, **Okta**, and **Microsoft 365** — configure those three collectors (see §2 and Part IV) with the source identifiers you registered, and the scenario plays out end-to-end.
 

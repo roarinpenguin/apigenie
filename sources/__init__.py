@@ -39,6 +39,9 @@ SOURCE_ID_ALIASES: dict[str, str] = {
     "entra_id": "azure_ad",
     # Microsoft Defender XDR (Defender for Endpoint + Identity + Cloud Apps).
     "defender": "microsoft_defender",
+    # WEF push source — admin UI uses the short product key, the module
+    # filename spells out Windows Event Forwarding (v5.2).
+    "wef": "windows_event_forwarding",
 }
 
 

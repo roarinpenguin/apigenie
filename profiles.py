@@ -473,3 +473,45 @@ def get_context(source: str) -> ProfileContext | None:
     if not profile:
         return None
     return ProfileContext(profile, source, binding.get("ratio", 70))
+
+
+def context_for_profile_id(profile_id: str,
+                           source: str = "wef",
+                           ratio: int = 100) -> ProfileContext | None:
+    """Return a ProfileContext built directly from a profile id.
+
+    The WEF v5.2 binding stores its log-profile reference inline (as
+    ``config.profile_id`` on the WEF binding row) rather than going
+    through the source→profile binding table that :func:`get_context`
+    walks for the 21 catalog-aware sources. This helper short-circuits
+    that lookup so the runner can build a context with the same
+    ``ProfileContext`` machinery the rest of the codebase uses.
+
+    Returns ``None`` when *profile_id* doesn't resolve to an existing
+    profile so callers can fall back to placeholder mode silently
+    rather than entering an error state when a profile is deleted out
+    from under a running binding.
+
+    Parameters
+    ----------
+    profile_id
+        The id of the target log profile. Empty / None handled as
+        "no binding" and returns None.
+    source
+        Cosmetic tag used by ``ProfileContext`` to seed per-source RNG
+        offsets. Defaults to ``"wef"`` since this helper exists for the
+        WEF runner; other callers (e.g. webhooks at template render
+        time) may pass their own source label for RNG locality.
+    ratio
+        0–100 blend ratio handed to ``ProfileContext`` — the same
+        semantics every catalog-aware source uses: at ratio=100 every
+        pick uses a profile entity, at ratio=0 every pick is "noise"
+        (placeholder values). Defaults to 100 because the WEF binding
+        is an explicit operator decision to use this profile.
+    """
+    if not profile_id:
+        return None
+    profile = get_profile(profile_id)
+    if not profile:
+        return None
+    return ProfileContext(profile, source, ratio)
