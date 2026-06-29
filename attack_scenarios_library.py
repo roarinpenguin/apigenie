@@ -12,7 +12,8 @@ TEMPLATES: dict[str, dict[str, Any]] = {}
 
 
 def _register(key: str, name: str, description: str, phases: list[dict],
-              recommended_duration: dict | None = None) -> None:
+              recommended_duration: dict | None = None,
+              hidden: bool = False) -> None:
     # ``recommended_duration`` ({"value": int, "unit": str}) lets a template
     # advertise the wall-clock run length it needs. It is pre-filled into the
     # Create-Scenario modal when the template is selected. apigenie imposes no
@@ -21,8 +22,13 @@ def _register(key: str, name: str, description: str, phases: list[dict],
     # collector's poll interval (commonly ~120s) so at least one poll lands in
     # it; the recommended duration sizes the M365-heavy phases comfortably
     # above that with a couple of poll opportunities to spare.
+    # ``hidden`` keeps a template defined and instantiable (existing scenarios
+    # and direct ``get_template(key)`` lookups keep working) but drops it from
+    # the selectable list the Create-Scenario modal renders. Used to retire a
+    # template that cannot be validated yet without deleting its engineering.
     TEMPLATES[key] = {"key": key, "name": name, "description": description,
-                      "phases": phases, "recommended_duration": recommended_duration}
+                      "phases": phases, "recommended_duration": recommended_duration,
+                      "hidden": hidden}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -340,6 +346,13 @@ _register("bec_phishing", "Business Email Compromise (BEC)",
 # 2. Ransomware via Lateral Movement
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# HIDDEN (v5.1.30): the SentinelOne XDR phases inject simulated EDR threat
+# telemetry that does not currently reach the data lake on the validation
+# tenant — the events need their AccountID / SiteID (and likely agent.uuid /
+# endpoint identity) aligned with the real tenant before any rule can fire.
+# Until that telemetry is reworked, the template is hidden from the selectable
+# list so operators don't pick a scenario that emits nothing. The full phase
+# engineering is preserved for when we revisit it.
 _register("ransomware_lateral", "Ransomware via Lateral Movement",
     "Exploitation → C2 callback → credential dumping → lateral movement → discovery → ransomware deployment (SentinelOne XDR)",
     [
@@ -483,7 +496,8 @@ _register("ransomware_lateral", "Ransomware via Lateral Movement",
                 "threatInfo.originatorProcess": "locker.exe",
             },
         },
-    ]
+    ],
+    hidden=True,
 )
 
 
@@ -969,6 +983,8 @@ def get_templates() -> list[dict[str, Any]]:
     """Return all templates as a list with summary info."""
     result = []
     for key, t in TEMPLATES.items():
+        if t.get("hidden"):
+            continue
         result.append({
             "key": key,
             "name": t["name"],

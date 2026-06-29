@@ -1205,6 +1205,16 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
           <button id="attack-filter-clear" class="btn-sm" style="display:none;padding:3px 10px;font-size:.72rem;background:rgba(120,30,40,.4);color:#ff8080" onclick="clearAttackFilter()">&#x2715; Clear</button>
           <span id="attack-filter-status" style="color:rgba(224,170,255,.5);font-style:italic"></span>
         </div>
+        <!-- "Only my identifiers" toggle. When on, the Recent calls table
+             keeps only the requests whose credential matched one of the
+             current user's registered source identifiers (honours act-as). -->
+        <div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding-top:10px;border-top:1px solid rgba(199,125,255,.15);font-size:.78rem">
+          <label style="display:flex;align-items:center;gap:7px;cursor:pointer;color:rgba(224,170,255,.7)">
+            <input id="req-mine-only" type="checkbox" onchange="toggleMineOnly()" style="accent-color:#c77dff;cursor:pointer"/>
+            <span>Only my identifiers</span>
+          </label>
+          <span style="color:rgba(224,170,255,.4)">show only calls authenticated as one of your registered source identifiers</span>
+        </div>
       </div>
       <div class="card">
         <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
@@ -2567,6 +2577,24 @@ async function banFromIntrusions(ip) {
 // mode and renders every trace entry tagged with this attack.id. Null/empty
 // means the classic per-source view driven by activeSource.
 var _activeAttackFilter = null;
+// "Only my identifiers" toggle. When true, loadRequests()/_loadRequestsByAttack()
+// pass ?mine=1 so the backend keeps only calls whose credential matched one of
+// the current (act-as-aware) user's registered source identifiers.
+var _mineOnly = false;
+
+function toggleMineOnly() {
+  var cb = document.getElementById('req-mine-only');
+  _mineOnly = !!(cb && cb.checked);
+  loadRequests();
+}
+
+// Render the resolved caller for a trace row: green when it's the current user,
+// muted dash when the call matched no registered identifier (shared/anon).
+function _callerCell(e) {
+  if (!e || !e.caller) return '<td style="color:rgba(224,170,255,.3)">—</td>';
+  var style = e.caller_is_me ? 'color:#90ee90;font-weight:600' : 'color:#e0aaff';
+  return '<td style="' + style + '">' + escHtml(e.caller) + '</td>';
+}
 
 function selectSource(id) {
   activeSource = id;
@@ -2639,12 +2667,12 @@ async function loadRequests() {
   }
 
   try {
-    const r = await fetch('/admin/api/requests/' + activeSource);
+    const r = await fetch('/admin/api/requests/' + activeSource + (_mineOnly ? '?mine=1' : ''));
     if (!r.ok) { wrap.innerHTML = busHtml + '<p class="empty">Error: ' + r.status + ' ' + r.statusText + ' — try signing in again.</p>'; return; }
     const data = await r.json();
     if (!data.length) { wrap.innerHTML = busHtml + '<p class="empty">No requests recorded yet — wait for the collector to call in.</p>'; return; }
     let html = `<table><thead><tr>
-      <th>Time</th><th>Method</th><th>Path</th><th>Status</th><th>ms</th><th>Client</th><th>Detail</th>
+      <th>Time</th><th>Method</th><th>Path</th><th>Status</th><th>ms</th><th>Client</th><th>Caller</th><th>Detail</th>
     </tr></thead><tbody>`;
     data.forEach((e, i) => {
       const bc = e.status < 300 ? 'b200' : e.status < 500 ? 'b4xx' : 'b5xx';
@@ -2665,6 +2693,7 @@ async function loadRequests() {
         '<td><span class="badge ' + bc + '">' + e.status + '</span></td>' +
         '<td class="dur">' + e.duration_ms + '</td>' +
         '<td class="ts">' + e.client + '</td>' +
+        _callerCell(e) +
         '<td><details><summary>▶ req' + (body ? '+body' : '') + respLabel + '</summary>' +
         '<pre style="color:rgba(224,170,255,.7)">' + detail + '</pre>' +
         '</details></td>' +
@@ -2728,7 +2757,8 @@ async function _loadRequestsByAttack(wrap) {
   wrap.innerHTML = '<p class="empty">Loading attack.id matches…</p>';
   try {
     var r = await fetch('/admin/api/requests/by-attack/' +
-                        encodeURIComponent(_activeAttackFilter) + '?limit=500',
+                        encodeURIComponent(_activeAttackFilter) + '?limit=500' +
+                        (_mineOnly ? '&mine=1' : ''),
                         {credentials:'same-origin'});
     if (!r.ok) {
       wrap.innerHTML = '<p class="empty">Error: HTTP ' + r.status + '</p>';
@@ -2749,7 +2779,7 @@ async function _loadRequestsByAttack(wrap) {
     var needle = _activeAttackFilter;
     var html = '<table><thead><tr>' +
       '<th>Time</th><th>Source</th><th>Method</th><th>Path</th>' +
-      '<th>Status</th><th>ms</th><th>Client</th><th>Detail</th>' +
+      '<th>Status</th><th>ms</th><th>Client</th><th>Caller</th><th>Detail</th>' +
       '</tr></thead><tbody>';
     rows.forEach(function(e) {
       var bc = e.status < 300 ? 'b200' : e.status < 500 ? 'b4xx' : 'b5xx';
@@ -2779,6 +2809,7 @@ async function _loadRequestsByAttack(wrap) {
         '<td><span class="badge ' + bc + '">' + escHtml(String(e.status)) + '</span></td>' +
         '<td class="dur">' + escHtml(String(e.duration_ms)) + '</td>' +
         '<td class="ts">' + escHtml(e.client || '') + '</td>' +
+        _callerCell(e) +
         '<td><details><summary>&#9654; req' + (body ? '+body' : '') + (rSizeKb ? ' &middot; resp ' + rSizeKb : '') + '</summary>' +
         '<pre style="color:rgba(224,170,255,.7);white-space:pre-wrap">' + detail + '</pre>' +
         '</details></td>' +
@@ -9268,16 +9299,46 @@ async def gcp_dummy_sa(ag_session: str | None = Cookie(None)):
     )
 
 
+def _decorate_requests(rows: list[dict], ag_session: str | None,
+                       mine: bool) -> list[dict]:
+    """Annotate trace rows with the resolved caller's username and a
+    ``caller_is_me`` flag, and (when ``mine``) drop every row whose credential
+    did not match one of the current session user's registered identifiers.
+
+    The "current user" honours the admin act-as switcher via _session_identity,
+    so an admin inspecting-as a user sees that user's own traffic. The built-in
+    admin has no identifiers, so ``mine`` returns nothing for it — expected.
+    """
+    uid, _is_admin = _session_identity(ag_session)
+    if mine:
+        rows = [r for r in rows if r.get("caller_id") and r.get("caller_id") == uid]
+    out: list[dict] = []
+    name_cache: dict[str, str] = {}
+    for r in rows:
+        cid = r.get("caller_id")
+        row = dict(r)
+        if cid:
+            if cid not in name_cache:
+                u = accounts.get_user(cid) or {}
+                name_cache[cid] = u.get("username") or u.get("email") or cid
+            row["caller"] = name_cache[cid]
+            row["caller_is_me"] = (cid == uid)
+        out.append(row)
+    return out
+
+
 @router.get("/api/requests/{source}")
-async def api_requests(source: str, ag_session: str | None = Cookie(None)):
+async def api_requests(source: str, mine: int = 0,
+                       ag_session: str | None = Cookie(None)):
     if not _valid(ag_session):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     data = list(REQUEST_TRACE.get(source, []))
+    data = _decorate_requests(data, ag_session, mine=bool(mine))
     return JSONResponse(data)
 
 
 @router.get("/api/requests/by-attack/{attack_id}")
-async def api_requests_by_attack(attack_id: str, limit: int = 200,
+async def api_requests_by_attack(attack_id: str, limit: int = 200, mine: int = 0,
                                   ag_session: str | None = Cookie(None)):
     """Cross-source attack.id lookup (Phase 3.2).
 
@@ -9285,12 +9346,14 @@ async def api_requests_by_attack(attack_id: str, limit: int = 200,
     attack.id in either the request body or the response preview. Returns a
     merged, newest-first list with the ``source`` field injected onto each
     row so the UI can render a sortable table that spans every collector
-    that observed an event from this scenario.
+    that observed an event from this scenario. ``mine=1`` restricts the result
+    to calls whose credential matched the current user's own identifiers.
     """
     if not _valid(ag_session):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     limit = max(1, min(int(limit or 200), 1000))
     results = find_by_attack(attack_id, limit=limit)
+    results = _decorate_requests(results, ag_session, mine=bool(mine))
     return JSONResponse({"attack_id": attack_id, "results": results,
                          "count": len(results)})
 

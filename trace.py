@@ -13,6 +13,7 @@ Both are per-process. A restart resets state — same as before.
 
 import collections
 import ipaddress
+import logging
 import os
 import threading
 import time
@@ -25,6 +26,8 @@ from starlette.requests import Request
 import bans
 import request_log
 import telemetry
+
+log = logging.getLogger(__name__)
 
 # source_id → deque of trace entries (newest first)
 REQUEST_TRACE: dict[str, collections.deque] = collections.defaultdict(
@@ -123,6 +126,87 @@ def get_source(path: str, body: str = "") -> str | None:
         if "securityevents" in body_lower or "security.read" in body_lower:
             return "defender"
         return "entra_id"
+    return None
+
+
+def _credential_candidates(request: Request, path: str, body_str: str) -> list[str]:
+    """Pull every value out of a request that a user could have registered as
+    a per-source identifier (accounts.IDENTIFIER_KINDS).
+
+    Mirrors auth.py's credential extraction so the caller we attribute here
+    matches the user auth.py resolves for the same request. Covers:
+      - bearer_token / api_key — token headers (Bearer/SSWS/Token/x-api-key…)
+      - basic_user             — username from a Basic Authorization header
+      - api_key                — accessKey/secretKey from Tenable's x-apikeys
+      - tenant_id              — leading path segment of /{tenant}/oauth2/…
+      - client_id / tenant_id  — form- or JSON-encoded OAuth body fields
+    Best-effort and order-independent: identifier values are globally unique
+    (accounts.add_identifier enforces it), so the first match wins.
+    """
+    import auth
+    cands: list[str] = []
+
+    for hdr in auth._TOKEN_HEADERS:
+        tok = auth._extract_bearer(request.headers.get(hdr))
+        # A real OAuth access token (JWT, "eyJ…") is not a registered
+        # identifier — skip it so the second OAuth hop doesn't go unattributed
+        # noise into the matcher.
+        if tok and not tok.startswith("eyJ"):
+            cands.append(tok)
+
+    authz = request.headers.get("authorization") or ""
+    if authz.lower().startswith("basic "):
+        try:
+            from base64 import b64decode
+            decoded = b64decode(authz[6:]).decode("utf-8", errors="replace")
+            user = decoded.split(":", 1)[0].strip()
+            if user:
+                cands.append(user)
+        except Exception:
+            pass
+
+    xak = request.headers.get("x-apikeys")
+    if xak:
+        for part in xak.split(";"):
+            _, sep, val = part.partition("=")
+            val = (val if sep else part).strip()
+            if val:
+                cands.append(val)
+
+    segs = [s for s in path.split("/") if s]
+    if len(segs) >= 2 and segs[1].startswith("oauth2"):
+        cands.append(segs[0])
+
+    if body_str:
+        import re
+        for key in ("client_id", "tenant_id", "tenant"):
+            m = re.search(key + r'["\s:=]+([A-Za-z0-9._\-]+)', body_str)
+            if m:
+                cands.append(m.group(1))
+
+    # De-dup, preserve order.
+    seen: set[str] = set()
+    out: list[str] = []
+    for c in cands:
+        if c and c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
+
+
+def resolve_caller_id(request: Request, path: str, body_str: str,
+                      source: str | None) -> str | None:
+    """Resolve a traced request to the user_id whose registered identifier its
+    credential matches, or None. Drives the "only my identifiers" filter in the
+    Request Inspector. Failure-safe: any error returns None."""
+    try:
+        import accounts
+        for value in _credential_candidates(request, path, body_str):
+            uid = accounts.match_user_by_identifier(value, source)
+            if uid:
+                return uid
+    except Exception as exc:  # DB not ready / transient — attribute to nobody
+        log.debug("caller resolution failed: %s", exc)
     return None
 
 
@@ -255,6 +339,11 @@ class TraceMiddleware(BaseHTTPMiddleware):
             media_type=response.media_type,
         )
 
+        # Attribute the call to the user whose registered identifier its
+        # credential matches (None = shared/anonymous). Powers the
+        # "only my identifiers" filter in the Request Inspector.
+        caller_id = resolve_caller_id(request, path, body_str, source)
+
         entry: dict[str, Any] = {
             "ts": ts_iso,
             "method": request.method,
@@ -267,6 +356,7 @@ class TraceMiddleware(BaseHTTPMiddleware):
             "req_body": body_str,
             "resp_size": resp_size,
             "resp_preview": resp_body_preview,
+            "caller_id": caller_id,
         }
         REQUEST_TRACE[source].appendleft(entry)
         _agg_observe(client_ip, source, response.status_code, ts_iso)
