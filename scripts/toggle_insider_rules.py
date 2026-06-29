@@ -21,10 +21,10 @@ import s1_detection_library as s1
 # (phase, rule name, rule id) — grounded against usea1-purple 2026-06-29.
 RULES: list[tuple[str, str, str]] = [
     ("collection",        "Office 365 Bulk File Download",                            "2426879488223447370"),
-    ("exfiltration",      "Office 365 New Mailbox Forwarding Rule",                   "2203626881637197243"),
+    ("exfiltration",      "Office 365 Creation of Mail Transport Rule",               "1948788857810956431"),
     ("exfiltration-2",    "Netskope Insider Threat Suspicious Activity",             "2193712804726176570"),
     ("persistence",       "Cisco Duo Authentication Attempt from Untrusted Endpoint", "2264071526218353464"),
-    ("defense-evasion",   "Office 365 Inbox Rule to Automatically Delete All Messages", "2477524499778162728"),
+    ("defense-evasion",   "Office 365 Mailbox Audit Logging Bypass",                  "1948788857802567820"),
     ("credential-access", "Okta High Severity Threat Detected",                      "2406746351552083042"),
 ]
 

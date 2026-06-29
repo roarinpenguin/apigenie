@@ -6,16 +6,21 @@ rules discovered on usea1-purple (detection-library catalog, 2026-06-29):
 
 * collection        → "Office 365 Bulk File Download" (threshold rule —
   reuses the validated {{seq}} ObjectId + UserType:0 + max_events 150 pattern).
-* exfiltration      → "Office 365 New Mailbox Forwarding Rule" (ForwardTo
-  parameter + ResultStatus='Succeeded').
+* exfiltration      → "Office 365 Creation of Mail Transport Rule"
+  (activity_name='New-TransportRule'). RE-TARGETED v5.2.1: the original
+  forwarding rule keyed on unmapped.Parameters, proven to never land on this
+  tenant (run att-20260629-2392); a mail transport rule that BCCs externally
+  is the same exfil intent on an array-free, top-level discriminator.
 * exfiltration-2    → "Netskope Insider Threat Suspicious Activity"
   (activity_name='Uba', scenario='Insider threat', activity='Upload',
-  count>1, file_size>1MB).
+  count>1, file_size>1MB). alert_type must be 'Uba' (capital U): the collector
+  maps alert_type→activity_name verbatim (case-preserving).
 * persistence       → "Cisco Duo Authentication Attempt from Untrusted
   Endpoint" (event_type='authentication', status_detail~endpoint_is_not_trusted,
   status='success').
-* defense-evasion   → "Office 365 Inbox Rule to Automatically Delete All
-  Messages" (DeleteMessage:True, no condition predicates).
+* defense-evasion   → "Office 365 Mailbox Audit Logging Bypass"
+  (activity_name='Set-MailboxAuditBypassAssociation'). RE-TARGETED v5.2.1 off
+  the array-dependent inbox-delete rule for the same reason as exfiltration.
 * credential-access → "Okta High Severity Threat Detected"
   (security.threat.detected + severity HIGH).
 
@@ -70,10 +75,10 @@ def test_template_passes_scenario_validation():
 
 @pytest.mark.parametrize("phase_id, rule_name, expected_in_s1ql", [
     ("collection",        "Office 365 Bulk File Download",                         None),
-    ("exfiltration",      "Office 365 New Mailbox Forwarding Rule",                "ForwardTo"),
+    ("exfiltration",      "Office 365 Creation of Mail Transport Rule",            "New-TransportRule"),
     ("exfiltration-2",    "Netskope Insider Threat Suspicious Activity",          "unmapped.scenario = 'Insider threat'"),
     ("persistence",       "Cisco Duo Authentication Attempt from Untrusted Endpoint", "endpoint_is_not_trusted"),
-    ("defense-evasion",   "Office 365 Inbox Rule to Automatically Delete All Messages", "DeleteMessage"),
+    ("defense-evasion",   "Office 365 Mailbox Audit Logging Bypass",               "Set-MailboxAuditBypassAssociation"),
     ("credential-access", "Okta High Severity Threat Detected",                   "security.threat.detected"),
 ])
 def test_phase_documents_target_rule(phase_id, rule_name, expected_in_s1ql):
@@ -99,19 +104,22 @@ def test_collection_is_bulk_download_threshold_shape():
     assert fo["Operation"] == "FileDownloaded"
 
 
-def test_forwarding_phase_carries_forwardto_and_succeeded():
+def test_exfiltration_phase_is_array_free_transport_rule():
     p = _phase("exfiltration")
     fo = p["field_overrides"]
-    assert fo["Operation"] in ("New-InboxRule", "Set-InboxRule", "Set-Mailbox")
+    # RE-TARGETED: array-free rule keys purely on activity_name='New-TransportRule'.
+    assert fo["Operation"] == "New-TransportRule"
     assert fo["Workload"] == "Exchange"
-    assert fo["ResultStatus"] == "Succeeded", "rule keys ResultStatus in ('Succeeded','True')"
-    assert "ForwardTo" in _params_json(p), "Parameters must carry a ForwardTo entry"
+    # Must NOT depend on the Parameters array (proven not to land on this tenant).
+    assert "Parameters" not in fo, "re-targeted rule must not rely on unmapped.Parameters"
+    assert "Parameters" not in p["target_rules"][0]["s1ql"]
 
 
 def test_netskope_phase_satisfies_insider_threat_rule():
     p = _phase("exfiltration-2")
     fo = p["field_overrides"]
-    assert fo["alert_type"] == "uba"
+    # alert_type maps to activity_name VERBATIM; the rule wants 'Uba' (capital U).
+    assert fo["alert_type"] == "Uba"
     assert fo["scenario"] == "Insider threat"
     assert fo["activity"] == "Upload"
     assert fo["count"] > 1, "rule requires count > 1"
@@ -127,16 +135,14 @@ def test_duo_phase_satisfies_untrusted_endpoint_rule():
         "collector maps reason→status_detail; rule needs status_detail~endpoint_is_not_trusted")
 
 
-def test_defense_evasion_deletes_without_conditions():
+def test_defense_evasion_is_array_free_audit_bypass():
     p = _phase("defense-evasion")
     fo = p["field_overrides"]
-    pj = _params_json(p)
-    assert fo["Operation"] in ("New-InboxRule", "Set-InboxRule")
-    assert '"DeleteMessage"' in pj and '"True"' in pj, "must set DeleteMessage:True"
-    # The High-severity rule excludes any condition predicate — none may appear.
-    for cond in ("FromAddressContainsWords", "SentTo", "SubjectContainsWords",
-                 "BodyContainsWords", "HasAttachment"):
-        assert cond not in pj, f"condition predicate {cond} would suppress the rule"
+    # RE-TARGETED: array-free rule keys purely on the audit-bypass cmdlet.
+    assert fo["Operation"] == "Set-MailboxAuditBypassAssociation"
+    assert fo["Workload"] == "Exchange"
+    assert "Parameters" not in fo, "re-targeted rule must not rely on unmapped.Parameters"
+    assert "Parameters" not in p["target_rules"][0]["s1ql"]
 
 
 def test_okta_phase_reuses_high_severity_threat_pattern():

@@ -936,43 +936,41 @@ _register("insider_threat", "Insider Threat — Disgruntled Employee",
             "phase_id": "exfiltration",
             "mitre_tactic": "Exfiltration",
             "mitre_technique": "T1114.003",
-            "name": "Mailbox rule auto-forwards mail to a personal account",
+            "name": "Mail transport rule silently BCCs all mail to an external address",
             "source": "m365",
             "time_offset_pct": 18,
             "duration_pct": 17,
-            "periodicity": 8,
-            # One discrete action — creating a forwarding inbox rule.
-            "max_events": 1,
-            # Fires the shipped "Office 365 New Mailbox Forwarding Rule". Its s1ql
-            # matches activity_name in (New-InboxRule/Set-InboxRule/Set-Mailbox)
-            # AND unmapped.Parameters carrying a 'ForwardTo' parameter (the second
-            # regex branch — simplest, order-independent) AND
-            # unmapped.ResultStatus in ('Succeeded','True'). Note ResultStatus is
-            # 'Succeeded' here, NOT the 'Success' used by other O365 rules.
+            "periodicity": 6,
+            # v5.2.1 — RE-TARGETED. The original "New Mailbox Forwarding Rule"
+            # target keys on unmapped.Parameters / unmapped.OperationProperties,
+            # which run att-20260629-2392 proved NEVER land on this tenant's O365
+            # ingestion: the Parameters array is dropped entirely (no scalar, no
+            # index-flattened children) and ZERO O365 events tenant-wide carry a
+            # non-null unmapped.Parameters. Re-pointed to the array-free shipped
+            # "Office 365 Creation of Mail Transport Rule" (activity_name=
+            # 'New-TransportRule' only). A transport rule that BCCs every message
+            # to an external address is the same exfiltration intent, and the
+            # discriminator is a top-level field that lands reliably (proven by
+            # the collection phase's Operation->activity_name mapping).
+            # max_events bumped 1->6 for activation-latency robustness (see Duo).
+            "max_events": 6,
             "field_overrides": {
-                "Operation": "New-InboxRule",
+                "Operation": "New-TransportRule",
                 "Workload": "Exchange",
                 "ResultStatus": "Succeeded",
-                "Parameters": [
-                    {"Name": "Name", "Value": "Auto-Forward to personal"},
-                    {"Name": "ForwardTo", "Value": "personal@gmail.com"},
-                    {"Name": "StopProcessingRules", "Value": "True"},
-                ],
+                "RuleName": "Journal all mail to personal archive",
             },
             "target_rules": [
                 {
-                    "name": "Office 365 New Mailbox Forwarding Rule",
+                    "name": "Office 365 Creation of Mail Transport Rule",
                     "source": "m365",
-                    "severity": "Info",
+                    "severity": "Medium",
                     "mitre": "T1114.003",
                     "shipped_status": "Disabled",  # must be ENABLED on the tenant
                     "s1ql": (
                         "dataSource.name = 'Microsoft O365' and "
                         "metadata.product.name = 'Exchange' and "
-                        "((activity_name in ('New-InboxRule', 'Set-InboxRule', 'Set-Mailbox') and "
-                        "unmapped.Parameters matches ('\"Value\":\\s*\"True\",\\s*\"Name\":\\s*\"DeliverToMailboxAndForward\"', '\"Name\":\\s*\"ForwardTo\"')) or "
-                        "(activity_name = 'UpdateInboxRules' and unmapped.OperationProperties contains 'Forward' and unmapped.OperationProperties contains 'Recipients')) and "
-                        "unmapped.ResultStatus in ('Succeeded', 'True')"
+                        "activity_name = 'New-TransportRule'"
                     ),
                 },
             ],
@@ -986,21 +984,27 @@ _register("insider_threat", "Insider Threat — Disgruntled Employee",
             "time_offset_pct": 35,
             "duration_pct": 15,
             "periodicity": 6,
-            "max_events": 3,
+            # max_events bumped 3->6 for activation-latency robustness (see Duo).
+            "max_events": 6,
             # Fires the shipped "Netskope Insider Threat Suspicious Activity" rule:
             #   activity_name='Uba' and unmapped.scenario='Insider threat'
             #   and unmapped.activity='Upload' and count>1 and unmapped.file_size>1000000
-            # The Netskope collector derives activity_name from the alert_type
-            # (the shipped "Netskope Malware Upload" rule keys activity_name='Malware'
-            # off the 'Malware' alert_type), so we set alert_type='uba'. scenario /
-            # activity / count / file_size are emitted as top-level fields the
-            # collector lifts into unmapped.*. file_size is forced above the 1MB
-            # threshold and count above 1.
-            # NEEDS LIVE CONFIRMATION: the exact activity_name casing ('Uba' vs
-            # 'uba') and that scenario/activity/count land under unmapped.* — verify
-            # in the lake on the first run and adjust if the rule doesn't trip.
+            # GROUNDED against the lake (run att-20260629-2392, raw OCSF inspection):
+            #   * activity_name = alert_type VERBATIM, case-preserving
+            #     ('Malware'->'Malware', 'uba'->'uba'). The rule wants 'Uba', so we
+            #     MUST send alert_type='Uba' (capital U). This was the primary
+            #     blocker on the first run (we sent 'uba' -> activity_name='uba').
+            #     Bonus: 'Uba' also uniquely tags OUR alert events vs the lowercase
+            #     'uba' background stream, so the lake check is unambiguous.
+            #   * The Netskope collector's unmapped.* is a near-complete pass-through
+            #     of non-null raw fields (instance, connection_id, organization_unit,
+            #     etc. all survive), so the raw 'activity' field -> unmapped.activity
+            #     (confirmed: background 'Download' alerts land as unmapped.activity=
+            #     'Download') and a raw 'scenario' field passes through to
+            #     unmapped.scenario. Raw 'count' -> OCSF top-level 'count'.
+            #     file_size -> unmapped.file_size (confirmed).
             "field_overrides": {
-                "alert_type": "uba",
+                "alert_type": "Uba",
                 "alert_name": "Insider Threat: Mass Download Before Resignation",
                 "scenario": "Insider threat",
                 "activity": "Upload",
@@ -1036,8 +1040,15 @@ _register("insider_threat", "Insider Threat — Disgruntled Employee",
             "source": "cisco_duo",
             "time_offset_pct": 50,
             "duration_pct": 15,
-            "periodicity": 5,
-            "max_events": 2,
+            "periodicity": 4,
+            # v5.2.1 — bumped 2->6. Live run att-20260629-2392 proved the rule
+            # is Active and our events satisfy its s1ql in PQ, yet it produced
+            # zero alerts: the 2-event burst was too thin to survive the
+            # platform rule's activation latency / streaming-eval cadence (the
+            # high-volume collection + late Okta phases fired; every thin phase
+            # missed). A wider burst gives the streaming rule several polls'
+            # worth of matching events to catch.
+            "max_events": 6,
             # Fires the shipped "Cisco Duo Authentication Attempt from Untrusted
             # Endpoint" rule (High):
             #   unmapped.event_type='authentication' and
@@ -1091,49 +1102,39 @@ _register("insider_threat", "Insider Threat — Disgruntled Employee",
         {
             "phase_id": "defense-evasion",
             "mitre_tactic": "Defense Evasion",
-            "mitre_technique": "T1070.008",
-            "name": "Evidence tampering — inbox rule auto-deletes all mail",
+            "mitre_technique": "T1562.008",
+            "name": "Evidence tampering — mailbox audit logging disabled",
             "source": "m365",
             "time_offset_pct": 65,
             "duration_pct": 20,
-            "periodicity": 8,
-            "max_events": 1,
-            # Fires the shipped "Office 365 Inbox Rule to Automatically Delete All
-            # Messages" rule (High):
-            #   activity_name in ('New-InboxRule','Set-InboxRule') and
-            #   unmapped.Parameters matches a DeleteMessage:True parameter and
-            #   NOT (Parameters carries any condition predicate — From/SentTo/
-            #   Subject/etc.)
-            # The natural {"Name":"DeleteMessage","Value":"True"} serialization
-            # matches the rule's Name-then-Value regex branch. We deliberately add
-            # ONLY non-condition params (StopProcessingRules, MarkAsRead) so the
-            # rule's exclusion clause does not suppress the match — a rule that
-            # silently deletes EVERY incoming message hides the forwarding above.
+            "periodicity": 6,
+            # v5.2.1 — RE-TARGETED. The original "Inbox Rule to Automatically
+            # Delete All Messages" target keys on unmapped.Parameters, which
+            # never lands on this tenant (see the exfiltration phase note + run
+            # att-20260629-2392). Re-pointed to the array-free shipped "Office
+            # 365 Mailbox Audit Logging Bypass" (activity_name=
+            # 'Set-MailboxAuditBypassAssociation' only). Bypassing mailbox audit
+            # logging is an even cleaner evidence-tampering / defense-evasion
+            # beat than the inbox auto-delete, and its discriminator is a
+            # top-level field that lands reliably.
+            # max_events bumped 1->6 for activation-latency robustness (see Duo).
+            "max_events": 6,
             "field_overrides": {
-                "Operation": "New-InboxRule",
+                "Operation": "Set-MailboxAuditBypassAssociation",
                 "Workload": "Exchange",
                 "ResultStatus": "Succeeded",
-                "Parameters": [
-                    {"Name": "Name", "Value": "."},
-                    {"Name": "DeleteMessage", "Value": "True"},
-                    {"Name": "StopProcessingRules", "Value": "True"},
-                    {"Name": "MarkAsRead", "Value": "True"},
-                ],
             },
             "target_rules": [
                 {
-                    "name": "Office 365 Inbox Rule to Automatically Delete All Messages",
+                    "name": "Office 365 Mailbox Audit Logging Bypass",
                     "source": "m365",
-                    "severity": "High",
-                    "mitre": "T1070.008",
+                    "severity": "Medium",
+                    "mitre": "T1562.008",
                     "shipped_status": "Disabled",  # must be ENABLED on the tenant
                     "s1ql": (
                         "dataSource.name = 'Microsoft O365' and "
                         "metadata.product.name = 'Exchange' and "
-                        "activity_name in ('New-InboxRule', 'Set-InboxRule') and "
-                        "(unmapped.Parameters matches '\"Value\":\\s*\"True\",\\s*\"Name\":\\s*\"DeleteMessage\"' or "
-                        "unmapped.Parameters matches '\"Name\":\\s*\"DeleteMessage\",\\s*\"Value\":\\s*\"True\"') and "
-                        "not (unmapped.Parameters matches '(\"From\"|\"FromAddressContainsWords\"|\"SentTo\"|\"SubjectContainsWords\"|\"SubjectOrBodyContainsWords\"|\"BodyContainsWords\"|\"HasAttachment\")')"
+                        "activity_name = 'Set-MailboxAuditBypassAssociation'"
                     ),
                 },
             ],
