@@ -50,7 +50,14 @@ _ALERT_TEMPLATES: dict[str, dict[str, Any]] = {
     "Malware": {
         "alert_type": "Malware",
         "alert_name": "Malware Detected in Upload",
-        "action": "block",
+        # Real Netskope malware alerts carry action='Detection' (the engine
+        # detected the file) and activity='Upload' on the wire; both flow through
+        # to unmapped.action / unmapped.activity (raw pass-through, NOT an enum
+        # lookup) so the shipped "Netskope Malware Upload" rule
+        # (activity_name='Malware' and unmapped.action='Detection' and
+        # unmapped.activity='Upload') matches every Malware event verbatim.
+        "action": "Detection",
+        "activity": "Upload",
         "category": "Cloud Storage",
         "severity": "critical",
         "malware_name": "Trojan.Generic.KD.123",

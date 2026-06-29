@@ -1034,67 +1034,61 @@ _register("insider_threat", "Insider Threat — Disgruntled Employee",
         },
         {
             "phase_id": "persistence",
-            "mitre_tactic": "Initial Access",
-            "mitre_technique": "T1078",
-            "name": "Successful login from an untrusted endpoint",
+            "mitre_tactic": "Persistence",
+            "mitre_technique": "T1556.006",
+            "name": "MFA login via admin-issued bypass code",
             "source": "cisco_duo",
             "time_offset_pct": 50,
             "duration_pct": 15,
             "periodicity": 4,
-            # GROUNDED v5.2.2 (runs att-20260629-2392 + -4397). This rule is
-            # Active and our injected events land in the lake matching its s1ql
-            # EXACTLY -- PQ confirms unmapped.event_type='authentication',
-            # status='success' and status_detail='endpoint_is_not_trusted' on the
-            # 6 events -- yet it produced ZERO alerts on BOTH runs.
-            #   * NOT a volume problem: the Okta phase fires reliably at
-            #     max_events=2, so a 6-event burst is plenty. (The earlier
-            #     "thin burst" theory is DISPROVEN.)
-            #   * Leading suspect: the real-time STAR engine matches case-
-            #     SENSITIVELY whereas PQ string-equality is case-INSENSITIVE, so a
-            #     value that "matches" in PQ need not match at eval time. Pending
-            #     console-side confirmation of rule scope + exact stored case.
-            #     apigenie's data side is provably correct, so do NOT code-churn
-            #     this phase on a volume theory.
+            # RE-TARGETED v5.2.3 (run att-20260629-7121). The previous target
+            # "Cisco Duo Authentication Attempt from Untrusted Endpoint" is
+            # UNFIREABLE here for two independently-fatal reasons proven on this
+            # run:
+            #   1. Its s1ql needs status='success' (lowercase) but the Duo
+            #      collector normalises result->status to UPPERCASE 'SUCCESS',
+            #      and S1 s1ql '=' is CASE-SENSITIVE (PQ proof on att-7121:
+            #      status='success' => 0 rows, status='SUCCESS' => match). So the
+            #      status clause can never match, regardless of anything else.
+            #   2. Its s1ql needs status_detail contains 'endpoint_is_not_trusted'
+            #      but the collector maps raw reason->status_detail via a lookup of
+            #      KNOWN Duo reason codes; 'endpoint_is_not_trusted' is not one, so
+            #      it is dropped (never lands; unmapped.reason is always null).
+            # Lesson: only use override VALUES that are in the collector's accepted
+            # vocabulary, in the exact case the lake stores.
+            #
+            # New target "Cisco Duo MFA Login via Bypass Code" keys ONLY on values
+            # apigenie provably lands (run att-7121, exact-case verified):
+            #   unmapped.event_type = 'authentication'  (every Duo auth event)
+            #   unmapped.factor      = 'bypass_code'     (in the generator _FACTORS)
+            #   status_detail        = 'valid_passcode'  (a SUCCESS reason that
+            #                          lands verbatim; the rule has NO status
+            #                          literal, so no case trap)
+            # PQ on this run already finds cohort events matching the full rule
+            # shape, so the rule will fire once enabled on the tenant. Narrative:
+            # an admin-provisioned bypass code is a stealth MFA backdoor.
             "max_events": 6,
-            # Shipped "Cisco Duo Authentication Attempt from Untrusted Endpoint"
-            # (High). The Duo collector maps raw result->status and reason->
-            # status_detail (confirmed in the lake: result='success'->status=
-            # 'success', reason='endpoint_is_not_trusted'->status_detail). A
-            # foreign access_device location reinforces the off-hours narrative.
             "field_overrides": {
                 "event_type": "authentication",
-                "result": "success",
-                "reason": "endpoint_is_not_trusted",
+                "result": "SUCCESS",
+                "reason": "valid_passcode",
+                "factor": "bypass_code",
                 "access_device.ip": "185.220.100.252",
                 "access_device.location.country": "RO",
                 "access_device.location.city": "Bucharest",
             },
             "target_rules": [
                 {
-                    "name": "Cisco Duo Authentication Attempt from Untrusted Endpoint",
+                    "name": "Cisco Duo MFA Login via Bypass Code",
                     "source": "cisco_duo",
-                    "severity": "High",
-                    "mitre": "T1078",
+                    "severity": "Low",
+                    "mitre": "T1556.006",
                     "shipped_status": "Disabled",  # must be ENABLED on the tenant
                     "s1ql": (
                         "dataSource.name = 'Cisco Duo' and "
                         "unmapped.event_type = 'authentication' and "
-                        "status_detail contains ('endpoint_is_not_trusted') and "
-                        "status = 'success'"
-                    ),
-                },
-                {
-                    "name": "Cisco Duo Successful Login from Anonymous IP Address",
-                    "source": "cisco_duo",
-                    "severity": "Info",
-                    "mitre": "T1090",
-                    "shipped_status": "Disabled",
-                    "note": "Alternative target — fires instead when reason/status_detail contains 'anonymous_ip' (set reason='anonymous_ip' to use this rule).",
-                    "s1ql": (
-                        "dataSource.name = 'Cisco Duo' and "
-                        "unmapped.event_type = 'authentication' and "
-                        "status_detail contains ('anonymous_ip') and "
-                        "status = 'success'"
+                        "unmapped.factor = 'bypass_code' and "
+                        "status_detail = 'valid_passcode'"
                     ),
                 },
             ],

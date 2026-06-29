@@ -5,15 +5,17 @@ Pulls the decrypted S1 console URL + API token from apigenie's saved
 settings IN-PROCESS (never printed), then drives the sentinelone-mgmt-console-api
 skill's pq.py + unified_alerts.py to:
 
-  A) confirm Netskope phase field-landing   (the unconfirmed activity_name='Uba'
-     + unmapped.scenario/activity + count/file_size shape),
-  B) confirm Cisco Duo phase field-landing  (status / status_detail),
-  C) confirm the 6 shipped rules produced alerts for the run.
+  0) bucket THIS run's events by phase + source (proves landing),
+  1) per-phase rule-shaped checks (does each shipped s1ql's discriminator land?),
+  2) confirm which of the 6 shipped rules produced alerts (UAM).
+
+All queries are scoped to a single run via unmapped.attack.id, so concurrent
+scenarios on the tenant don't pollute the result.
 
 Run from repo root (creds live under ./data):
 
   APIGENIE_DATA_ROOT="$(pwd)/data" .venv/bin/python scripts/verify_insider_lake.py \
-      --attack-id att-20260629-2392 --hours 6
+      --attack-id att-20260629-7121 --hours 6
 """
 from __future__ import annotations
 
@@ -29,14 +31,33 @@ sys.path.insert(0, str(SKILL))
 
 import s1_detection_library as s1  # noqa: E402
 
-# Phase -> (rule name) for the alert check. Order mirrors the kill chain.
+# v5.2.2 phase -> shipped rule names for the UAM alert check. Order = kill chain.
 RULE_NAMES = [
     "Office 365 Bulk File Download",
-    "Office 365 New Mailbox Forwarding Rule",
-    "Netskope Insider Threat Suspicious Activity",
-    "Cisco Duo Authentication Attempt from Untrusted Endpoint",
-    "Office 365 Inbox Rule to Automatically Delete All Messages",
+    "Office 365 Creation of Mail Transport Rule",
+    "Netskope Malware Upload",
+    "Cisco Duo MFA Login via Bypass Code",
+    "Office 365 Mailbox Audit Logging Bypass",
     "Okta High Severity Threat Detected",
+]
+
+# (label, phase.id, extra discriminator s1ql or None, extra columns or None).
+# Scoped by unmapped.attack.id + unmapped.phase.id so landing is provable even
+# if a discriminator field name drifts; the discriminator then proves the exact
+# shipped-rule s1ql is satisfiable for this run.
+PHASE_CHECKS = [
+    ("collection      — Office 365 Bulk File Download", "collection", None, None),
+    ("exfiltration    — Office 365 Creation of Mail Transport Rule", "exfiltration",
+     "activity_name = 'New-TransportRule'", "activity_name"),
+    ("exfiltration-2  — Netskope Malware Upload", "exfiltration-2",
+     "activity_name = 'Malware' and unmapped.action = 'Detection' and unmapped.activity = 'Upload'",
+     "activity_name, unmapped.action, unmapped.activity"),
+    ("persistence     — Cisco Duo MFA Login via Bypass Code", "persistence",
+     "unmapped.event_type = 'authentication' and unmapped.factor = 'bypass_code' and status_detail = 'valid_passcode'",
+     "unmapped.factor, status_detail, status"),
+    ("defense-evasion — Office 365 Mailbox Audit Logging Bypass", "defense-evasion",
+     "activity_name = 'Set-MailboxAuditBypassAssociation'", "activity_name, metadata.product.name"),
+    ("credential-access — Okta High Severity Threat Detected", "credential-access", None, None),
 ]
 
 
@@ -59,7 +80,7 @@ def _hr(title: str) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--attack-id", default="att-20260629-2392")
+    ap.add_argument("--attack-id", default="att-20260629-7121")
     ap.add_argument("--hours", type=int, default=6)
     args = ap.parse_args()
 
@@ -73,55 +94,41 @@ def main() -> int:
 
     aid = args.attack_id
 
-    # ── A) Netskope field-landing ────────────────────────────────────────────
-    _hr("A) Netskope — activity_name breakdown (does 'Uba' land?)")
-    r = run_pq(c, "dataSource.name = 'Netskope' "
-                  "| group n = count() by activity_name | sort -n", hours=args.hours)
+    # ── 0) Per-phase landing for THIS run ────────────────────────────────────
+    _hr("0) Events landed for this run, by phase + source")
+    r = run_pq(c, f"unmapped.attack.id = '{aid}' "
+                  f"| group n = count() by unmapped.phase.id, dataSource.name | sort -n",
+               hours=args.hours)
     print(f"matchCount={r.get('matchCount')} rows={r.get('row_count')}")
     for row in r.get("rows", []):
         print("  ", row)
 
-    _hr("A) Netskope — rule-shaped query (exact shipped s1ql discriminators)")
-    rq = ("dataSource.name = 'Netskope' and activity_name = 'Uba' and "
-          "unmapped.scenario = 'Insider threat' and unmapped.activity = 'Upload' and "
-          "count > 1 and unmapped.file_size > 1000000")
-    r = run_pq(c, rq + " | columns activity_name, unmapped.scenario, unmapped.activity, "
-                       "count, unmapped.file_size | limit 5", hours=args.hours)
-    print(f"RULE WOULD FIRE: {'YES' if r.get('row_count') else 'NO'}  "
-          f"(matchCount={r.get('matchCount')} rows={r.get('row_count')})")
-    for row in r.get("rows", []):
-        print("  ", row)
+    # ── 1) Per-phase rule-shaped checks (scoped to this run) ─────────────────
+    for label, phase_id, discr, cols in PHASE_CHECKS:
+        _hr(f"1) {label}")
+        q = f"unmapped.attack.id = '{aid}' and unmapped.phase.id = '{phase_id}'"
+        if discr:
+            q += " and " + discr
+        colspec = "unmapped.phase.id" + (", " + cols if cols else "")
+        r = run_pq(c, q + f" | columns {colspec} | limit 5", hours=args.hours)
+        n = r.get("row_count") or 0
+        verdict = "YES" if n else "NO"
+        tag = "rule-shaped events present" if discr else "phase events present"
+        print(f"{tag.upper()}: {verdict}  (matchCount={r.get('matchCount')} rows={n})")
+        for row in r.get("rows", [])[:5]:
+            print("  ", row)
 
-    _hr("A) Netskope — raw sample (where do scenario/activity/file_size land?)")
-    r = run_pq(c, f"dataSource.name = 'Netskope' | columns activity_name, "
-                  f"unmapped.scenario, unmapped.activity, unmapped.file_size, "
-                  f"count, unmapped.attack.id | limit 5", hours=args.hours)
-    for row in r.get("rows", []):
-        print("  ", row)
-
-    # ── B) Cisco Duo field-landing ───────────────────────────────────────────
-    _hr("B) Cisco Duo — rule-shaped query (status / status_detail)")
-    dq = ("dataSource.name = 'Cisco Duo' and unmapped.event_type = 'authentication' and "
-          "status_detail contains ('endpoint_is_not_trusted') and status = 'success'")
-    r = run_pq(c, dq + " | columns status, status_detail, unmapped.event_type | limit 5",
-               hours=args.hours)
-    print(f"RULE WOULD FIRE: {'YES' if r.get('row_count') else 'NO'}  "
-          f"(matchCount={r.get('matchCount')} rows={r.get('row_count')})")
-    for row in r.get("rows", []):
-        print("  ", row)
-
-    _hr("B) Cisco Duo — raw sample (auth events, status fields)")
-    r = run_pq(c, "dataSource.name = 'Cisco Duo' | columns unmapped.event_type, "
-                  "status, status_detail, unmapped.attack.id | limit 5", hours=args.hours)
-    for row in r.get("rows", []):
-        print("  ", row)
-
-    # ── C) Did the 6 alerts fire? ────────────────────────────────────────────
-    _hr("C) UAM alerts in window — matching the 6 shipped insider_threat rules")
+    # ── 2) Did the 6 shipped rules produce alerts? ───────────────────────────
+    _hr("2) UAM alerts — matching the 6 shipped insider_threat rules (newest first)")
     try:
         import unified_alerts as uam
-        page = uam.list_alerts(c, first=200)
+        page = uam.list_alerts(c, first=1000)
         edges = page.get("edges") or page.get("data", {}).get("edges") or []
+
+        def _ts(node):
+            return node.get("detectedAt") or node.get("createdAt") or ""
+
+        edges.sort(key=lambda e: _ts(e.get("node", e)), reverse=True)
         seen: dict[str, list] = {n: [] for n in RULE_NAMES}
         for e in edges:
             node = e.get("node", e)
@@ -135,12 +142,13 @@ def main() -> int:
             extra = ""
             if hits:
                 h = hits[0]
-                extra = f" e.g. status={h.get('status')} sev={h.get('severity')} at={h.get('createdAt') or h.get('detectedAt')}"
+                extra = f" latest={_ts(h)} status={h.get('status')} sev={h.get('severity')}"
             print(f"  [{mark}] {rn} (x{len(hits)}){extra}")
     except Exception as exc:
         print(f"  UAM check failed: {exc}")
 
-    print("\nDone. Lines marked 'NO' / '----' are the ones to investigate.")
+    print("\nDone. 'NO' = events/discriminators didn't land for this run;")
+    print("'----' = shipped rule produced no alert (the firing gap to chase).")
     return 0
 
 

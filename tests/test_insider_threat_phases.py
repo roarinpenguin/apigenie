@@ -17,9 +17,14 @@ rules discovered on usea1-purple (detection-library catalog, 2026-06-29):
   and rejects the unknown key 'Uba' outright — run att-20260629-4397). The
   Malware Upload rule keys on activity_name='Malware' + unmapped.action=
   'Detection' + unmapped.activity='Upload', all reliably emitted/passed through.
-* persistence       → "Cisco Duo Authentication Attempt from Untrusted
-  Endpoint" (event_type='authentication', status_detail~endpoint_is_not_trusted,
-  status='success').
+* persistence       → "Cisco Duo MFA Login via Bypass Code". RE-TARGETED
+  v5.2.3 (run att-20260629-7121): the "Untrusted Endpoint" rule is unfireable
+  here — its s1ql needs status='success' (lowercase) but the collector emits
+  UPPERCASE 'SUCCESS' and S1 s1ql '=' is CASE-SENSITIVE, and it needs
+  status_detail~'endpoint_is_not_trusted' which the collector's reason lookup
+  drops. The Bypass Code rule keys on event_type='authentication' +
+  unmapped.factor='bypass_code' + status_detail='valid_passcode', all of which
+  land verbatim with no status case-trap.
 * defense-evasion   → "Office 365 Mailbox Audit Logging Bypass"
   (activity_name='Set-MailboxAuditBypassAssociation'). RE-TARGETED v5.2.1 off
   the array-dependent inbox-delete rule for the same reason as exfiltration.
@@ -79,7 +84,7 @@ def test_template_passes_scenario_validation():
     ("collection",        "Office 365 Bulk File Download",                         None),
     ("exfiltration",      "Office 365 Creation of Mail Transport Rule",            "New-TransportRule"),
     ("exfiltration-2",    "Netskope Malware Upload",                              "unmapped.action = 'Detection'"),
-    ("persistence",       "Cisco Duo Authentication Attempt from Untrusted Endpoint", "endpoint_is_not_trusted"),
+    ("persistence",       "Cisco Duo MFA Login via Bypass Code",                   "unmapped.factor = 'bypass_code'"),
     ("defense-evasion",   "Office 365 Mailbox Audit Logging Bypass",               "Set-MailboxAuditBypassAssociation"),
     ("credential-access", "Okta High Severity Threat Detected",                   "security.threat.detected"),
 ])
@@ -129,13 +134,18 @@ def test_netskope_phase_satisfies_malware_upload_rule():
     assert fo["alert_type"] != "Uba"
 
 
-def test_duo_phase_satisfies_untrusted_endpoint_rule():
+def test_duo_phase_satisfies_bypass_code_rule():
     p = _phase("persistence")
     fo = p["field_overrides"]
+    # RE-TARGETED v5.2.3: only values in the collector's accepted vocabulary, in
+    # the exact case the lake stores. The Bypass Code rule has NO status literal.
     assert fo["event_type"] == "authentication"
-    assert fo["result"] == "success", "collector maps result→status; rule needs status='success'"
-    assert fo["reason"] == "endpoint_is_not_trusted", (
-        "collector maps reason→status_detail; rule needs status_detail~endpoint_is_not_trusted")
+    assert fo["factor"] == "bypass_code", "collector maps factor→unmapped.factor; rule needs 'bypass_code'"
+    assert fo["reason"] == "valid_passcode", (
+        "collector maps reason→status_detail; rule needs status_detail='valid_passcode'")
+    # The old unfireable discriminators must be gone.
+    assert fo["result"] != "success", "lowercase status='success' can never match UPPERCASE-normalised status"
+    assert fo["reason"] != "endpoint_is_not_trusted"
 
 
 def test_defense_evasion_is_array_free_audit_bypass():
