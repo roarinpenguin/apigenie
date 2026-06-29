@@ -871,8 +871,18 @@ _register("dns_exfiltration", "DNS Poisoning + Data Exfiltration",
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _register("insider_threat", "Insider Threat — Disgruntled Employee",
-    "Excessive data access → email exfiltration → cloud upload → off-hours VPN → evidence tampering → anomalous login",
+    "Mass SharePoint download → mailbox auto-forward → Netskope insider-threat upload → "
+    "login from untrusted endpoint → inbox rule auto-deletes mail → Okta high-severity threat",
     [
+        # v5.2 — every phase below is aligned against a REAL shipped SentinelOne
+        # platform rule discovered on usea1-purple (detection-library catalog,
+        # 2026-06-29). The two M365/Okta phases reuse field→lake mappings already
+        # PROVEN by the BEC + Cloud Account Takeover validations (Operation→
+        # activity_name, Workload→metadata.product.name, Parameters→
+        # unmapped.Parameters, ResultStatus→unmapped.ResultStatus, eventType→
+        # unmapped.eventType). The Netskope + Cisco Duo phases carry the real rule
+        # s1ql in target_rules; their field→unmapped mappings are best-inference
+        # and flagged for confirmation on the first live tenant run.
         {
             "phase_id": "collection",
             "mitre_tactic": "Collection",
@@ -881,99 +891,283 @@ _register("insider_threat", "Insider Threat — Disgruntled Employee",
             "source": "m365",
             "time_offset_pct": 0,
             "duration_pct": 18,
-            "periodicity": 3,
+            "periodicity": 1,
+            # Reuse the VALIDATED Cloud Account Takeover "collection" pattern: the
+            # shipped "Office 365 Bulk File Download" rule is a high-volume
+            # threshold rule (estimate_distinct(unmapped.ObjectId) >= 100 AND
+            # actor.user.type='User'). UserType:0 forces actor.user.type='User';
+            # the {{seq}} placeholder mints a UNIQUE ObjectId per event so the
+            # distinct count scales 1:1 with the burst; max_events 150 clears the
+            # >=100 threshold with margin for the HyperLogLog estimate error.
+            "max_events": 150,
             "field_overrides": {
                 "Operation": "FileDownloaded",
                 "Workload": "SharePoint",
+                "UserType": 0,
                 "SiteUrl": "https://contoso.sharepoint.com/sites/Finance",
-                "SourceFileName": "Customer-Data-Export.xlsx",
+                "SourceFileName": "Customer-Data-Export-{{seq}}.xlsx",
+                "ObjectId": (
+                    "https://contoso.sharepoint.com/sites/Finance/"
+                    "Confidential/Customer-Data-Export-{{seq}}.xlsx"
+                ),
                 "SourceRelativeUrl": "Shared Documents/Confidential/",
             },
+            "target_rules": [
+                {
+                    "name": "Office 365 Bulk File Download",
+                    "source": "m365",
+                    "severity": "Medium",
+                    "mitre": "T1567.003",
+                    "shipped_status": "Disabled",  # must be ENABLED on the tenant
+                    "note": "High-volume threshold rule: estimate_distinct(unmapped.ObjectId) >= 100 AND actor.user.type='User'. Needs unique ObjectId per event ({{seq}}) + UserType:0 — same pattern validated by Cloud Account Takeover.",
+                },
+            ],
         },
         {
             "phase_id": "exfiltration",
             "mitre_tactic": "Exfiltration",
-            "mitre_technique": "T1048.003",
-            "name": "Email forwarding to personal account",
+            "mitre_technique": "T1114.003",
+            "name": "Mailbox rule auto-forwards mail to a personal account",
             "source": "m365",
             "time_offset_pct": 18,
             "duration_pct": 17,
-            "periodicity": 4,
+            "periodicity": 8,
+            # One discrete action — creating a forwarding inbox rule.
+            "max_events": 1,
+            # Fires the shipped "Office 365 New Mailbox Forwarding Rule". Its s1ql
+            # matches activity_name in (New-InboxRule/Set-InboxRule/Set-Mailbox)
+            # AND unmapped.Parameters carrying a 'ForwardTo' parameter (the second
+            # regex branch — simplest, order-independent) AND
+            # unmapped.ResultStatus in ('Succeeded','True'). Note ResultStatus is
+            # 'Succeeded' here, NOT the 'Success' used by other O365 rules.
             "field_overrides": {
-                "Operation": "Set-Mailbox",
+                "Operation": "New-InboxRule",
                 "Workload": "Exchange",
-                "Parameters": [{"Name": "ForwardingSmtpAddress", "Value": "smtp:personal@gmail.com"},
-                               {"Name": "DeliverToMailboxAndForward", "Value": "True"}],
+                "ResultStatus": "Succeeded",
+                "Parameters": [
+                    {"Name": "Name", "Value": "Auto-Forward to personal"},
+                    {"Name": "ForwardTo", "Value": "personal@gmail.com"},
+                    {"Name": "StopProcessingRules", "Value": "True"},
+                ],
             },
+            "target_rules": [
+                {
+                    "name": "Office 365 New Mailbox Forwarding Rule",
+                    "source": "m365",
+                    "severity": "Info",
+                    "mitre": "T1114.003",
+                    "shipped_status": "Disabled",  # must be ENABLED on the tenant
+                    "s1ql": (
+                        "dataSource.name = 'Microsoft O365' and "
+                        "metadata.product.name = 'Exchange' and "
+                        "((activity_name in ('New-InboxRule', 'Set-InboxRule', 'Set-Mailbox') and "
+                        "unmapped.Parameters matches ('\"Value\":\\s*\"True\",\\s*\"Name\":\\s*\"DeliverToMailboxAndForward\"', '\"Name\":\\s*\"ForwardTo\"')) or "
+                        "(activity_name = 'UpdateInboxRules' and unmapped.OperationProperties contains 'Forward' and unmapped.OperationProperties contains 'Recipients')) and "
+                        "unmapped.ResultStatus in ('Succeeded', 'True')"
+                    ),
+                },
+            ],
         },
         {
             "phase_id": "exfiltration-2",
             "mitre_tactic": "Exfiltration",
             "mitre_technique": "T1567",
-            "name": "Cloud upload with sensitive data",
+            "name": "Netskope insider-threat: large upload to personal cloud",
             "source": "netskope",
             "time_offset_pct": 35,
             "duration_pct": 15,
-            "periodicity": 4,
+            "periodicity": 6,
+            "max_events": 3,
+            # Fires the shipped "Netskope Insider Threat Suspicious Activity" rule:
+            #   activity_name='Uba' and unmapped.scenario='Insider threat'
+            #   and unmapped.activity='Upload' and count>1 and unmapped.file_size>1000000
+            # The Netskope collector derives activity_name from the alert_type
+            # (the shipped "Netskope Malware Upload" rule keys activity_name='Malware'
+            # off the 'Malware' alert_type), so we set alert_type='uba'. scenario /
+            # activity / count / file_size are emitted as top-level fields the
+            # collector lifts into unmapped.*. file_size is forced above the 1MB
+            # threshold and count above 1.
+            # NEEDS LIVE CONFIRMATION: the exact activity_name casing ('Uba' vs
+            # 'uba') and that scenario/activity/count land under unmapped.* — verify
+            # in the lake on the first run and adjust if the rule doesn't trip.
             "field_overrides": {
-                "alert_type": "DLP",
-                "alert_name": "Sensitive data uploaded to personal cloud",
+                "alert_type": "uba",
+                "alert_name": "Insider Threat: Mass Download Before Resignation",
+                "scenario": "Insider threat",
+                "activity": "Upload",
+                "count": 5,
+                "file_size": 5242880,
                 "app": "Dropbox",
                 "object_type": "File",
                 "severity": "critical",
-                "dlp_rule": "PCI-DSS Credit Card Numbers",
-                "activity": "Upload",
+                "category": "UEBA",
             },
+            "target_rules": [
+                {
+                    "name": "Netskope Insider Threat Suspicious Activity",
+                    "source": "netskope",
+                    "severity": "Low",
+                    "mitre": "T1567",
+                    "shipped_status": "Disabled",  # must be ENABLED on the tenant
+                    "s1ql": (
+                        "dataSource.name = 'Netskope' and "
+                        "activity_name = 'Uba' and "
+                        "unmapped.scenario = 'Insider threat' and "
+                        "unmapped.activity = 'Upload' and "
+                        "count > 1 and unmapped.file_size > 1000000"
+                    ),
+                },
+            ],
         },
         {
             "phase_id": "persistence",
-            "mitre_tactic": "Persistence",
-            "mitre_technique": "T1133",
-            "name": "Off-hours VPN access from foreign IP",
+            "mitre_tactic": "Initial Access",
+            "mitre_technique": "T1078",
+            "name": "Successful login from an untrusted endpoint",
             "source": "cisco_duo",
             "time_offset_pct": 50,
             "duration_pct": 15,
             "periodicity": 5,
+            "max_events": 2,
+            # Fires the shipped "Cisco Duo Authentication Attempt from Untrusted
+            # Endpoint" rule (High):
+            #   unmapped.event_type='authentication' and
+            #   status_detail contains ('endpoint_is_not_trusted') and status='success'
+            # The Duo auth-log generator already emits event_type='authentication';
+            # the collector maps the raw 'result' field to status and 'reason' to
+            # status_detail (mirrors the shipped fraud rule keying status='fraud').
+            # So result='success' → status='success' and reason='endpoint_is_not_trusted'
+            # → status_detail. A foreign access_device location reinforces the
+            # off-hours / out-of-country narrative on the alert detail.
+            # NEEDS LIVE CONFIRMATION: that result→status and reason→status_detail
+            # is how this tenant's Duo collector maps the fields.
             "field_overrides": {
-                "eventtype": "authentication",
-                "result": "SUCCESS",
-                "reason": "Valid passcode",
+                "event_type": "authentication",
+                "result": "success",
+                "reason": "endpoint_is_not_trusted",
                 "access_device.ip": "185.220.100.252",
-                "access_device.location.country": "Romania",
-                "timestamp": "2026-05-26T03:15:00Z",
+                "access_device.location.country": "RO",
+                "access_device.location.city": "Bucharest",
             },
+            "target_rules": [
+                {
+                    "name": "Cisco Duo Authentication Attempt from Untrusted Endpoint",
+                    "source": "cisco_duo",
+                    "severity": "High",
+                    "mitre": "T1078",
+                    "shipped_status": "Disabled",  # must be ENABLED on the tenant
+                    "s1ql": (
+                        "dataSource.name = 'Cisco Duo' and "
+                        "unmapped.event_type = 'authentication' and "
+                        "status_detail contains ('endpoint_is_not_trusted') and "
+                        "status = 'success'"
+                    ),
+                },
+                {
+                    "name": "Cisco Duo Successful Login from Anonymous IP Address",
+                    "source": "cisco_duo",
+                    "severity": "Info",
+                    "mitre": "T1090",
+                    "shipped_status": "Disabled",
+                    "note": "Alternative target — fires instead when reason/status_detail contains 'anonymous_ip' (set reason='anonymous_ip' to use this rule).",
+                    "s1ql": (
+                        "dataSource.name = 'Cisco Duo' and "
+                        "unmapped.event_type = 'authentication' and "
+                        "status_detail contains ('anonymous_ip') and "
+                        "status = 'success'"
+                    ),
+                },
+            ],
         },
         {
             "phase_id": "defense-evasion",
             "mitre_tactic": "Defense Evasion",
-            "mitre_technique": "T1070",
-            "name": "Evidence tampering — audit search and inbox rule deletion",
+            "mitre_technique": "T1070.008",
+            "name": "Evidence tampering — inbox rule auto-deletes all mail",
             "source": "m365",
             "time_offset_pct": 65,
             "duration_pct": 20,
-            "periodicity": 6,
+            "periodicity": 8,
+            "max_events": 1,
+            # Fires the shipped "Office 365 Inbox Rule to Automatically Delete All
+            # Messages" rule (High):
+            #   activity_name in ('New-InboxRule','Set-InboxRule') and
+            #   unmapped.Parameters matches a DeleteMessage:True parameter and
+            #   NOT (Parameters carries any condition predicate — From/SentTo/
+            #   Subject/etc.)
+            # The natural {"Name":"DeleteMessage","Value":"True"} serialization
+            # matches the rule's Name-then-Value regex branch. We deliberately add
+            # ONLY non-condition params (StopProcessingRules, MarkAsRead) so the
+            # rule's exclusion clause does not suppress the match — a rule that
+            # silently deletes EVERY incoming message hides the forwarding above.
             "field_overrides": {
-                "Operation": "Remove-InboxRule",
+                "Operation": "New-InboxRule",
                 "Workload": "Exchange",
-                "RuleName": "Auto-Forward",
+                "ResultStatus": "Succeeded",
+                "Parameters": [
+                    {"Name": "Name", "Value": "."},
+                    {"Name": "DeleteMessage", "Value": "True"},
+                    {"Name": "StopProcessingRules", "Value": "True"},
+                    {"Name": "MarkAsRead", "Value": "True"},
+                ],
             },
+            "target_rules": [
+                {
+                    "name": "Office 365 Inbox Rule to Automatically Delete All Messages",
+                    "source": "m365",
+                    "severity": "High",
+                    "mitre": "T1070.008",
+                    "shipped_status": "Disabled",  # must be ENABLED on the tenant
+                    "s1ql": (
+                        "dataSource.name = 'Microsoft O365' and "
+                        "metadata.product.name = 'Exchange' and "
+                        "activity_name in ('New-InboxRule', 'Set-InboxRule') and "
+                        "(unmapped.Parameters matches '\"Value\":\\s*\"True\",\\s*\"Name\":\\s*\"DeleteMessage\"' or "
+                        "unmapped.Parameters matches '\"Name\":\\s*\"DeleteMessage\",\\s*\"Value\":\\s*\"True\"') and "
+                        "not (unmapped.Parameters matches '(\"From\"|\"FromAddressContainsWords\"|\"SentTo\"|\"SubjectContainsWords\"|\"SubjectOrBodyContainsWords\"|\"BodyContainsWords\"|\"HasAttachment\")')"
+                    ),
+                },
+            ],
         },
         {
             "phase_id": "credential-access",
-            "mitre_tactic": "Credential Access",
-            "mitre_technique": "T1078",
-            "name": "Anomalous login from new device",
+            "mitre_tactic": "Command and Control",
+            "mitre_technique": "T1071.001",
+            "name": "Okta high-severity threat on the account",
             "source": "okta",
             "time_offset_pct": 85,
             "duration_pct": 15,
             "periodicity": 5,
+            "max_events": 2,
+            # Reuse the VALIDATED Cloud Account Takeover Okta pattern: the shipped
+            # "Okta High Severity Threat Detected" rule keys on
+            # unmapped.eventType contains 'security.threat.detected' and
+            # NOT unmapped.severity in ('INFO','WARN'). The Okta collector maps
+            # eventType→unmapped.eventType, severity→unmapped.severity,
+            # outcome.result→status (proven in the lake). Background noise NEVER
+            # emits security.threat.detected, so this is a clean discriminator.
             "field_overrides": {
-                "eventType": "user.session.start",
+                "eventType": "security.threat.detected",
+                "severity": "HIGH",
                 "outcome.result": "SUCCESS",
-                "client.geographicalContext.country": "Thailand",
-                "debugContext.debugData.risk": "HIGH",
-                "debugContext.debugData.behaviors": "NEW_DEVICE,ANOMALOUS_LOCATION",
+                "displayMessage": "Okta ThreatInsight: high-severity threat on disgruntled-employee account",
+                "client.geographicalContext.country": "TH",
             },
+            "target_rules": [
+                {
+                    "name": "Okta High Severity Threat Detected",
+                    "source": "okta",
+                    "severity": "High",
+                    "mitre": "T1071.001",
+                    "shipped_status": "Disabled",  # must be ENABLED on the tenant
+                    "s1ql": (
+                        "dataSource.name = 'Okta' and "
+                        "(unmapped.eventType contains ('security.threat.detected', 'security.attack.start')) "
+                        "and not (status_detail = 'DENY' or status = 'DENY') "
+                        "and not (unmapped.severity in ('INFO', 'WARN'))"
+                    ),
+                },
+            ],
         },
     ]
 )
