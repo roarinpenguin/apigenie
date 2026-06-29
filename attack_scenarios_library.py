@@ -335,10 +335,10 @@ _register("bec_phishing", "Business Email Compromise (BEC)",
     # The back-half phases are all M365 (privilege-escalation / defense-evasion
     # / persistence). apigenie emits on demand, so the only timing constraint is
     # that each phase window be wider than the collector's poll interval
-    # (commonly ~120s). At 30 min the narrowest M365 window (defense-evasion,
-    # 15%) is ~4.5 min — ~2 poll opportunities at 120s. Much shorter runs can
-    # let Phase 3/4 fall between polls and emit nothing.
-    recommended_duration={"value": 30, "unit": "minutes"},
+    # (commonly ~120s). At 40 min the narrowest phase window (10%) is ~4 min —
+    # ~2 poll opportunities at 120s. Much shorter runs can let a narrow phase
+    # fall between polls and emit nothing.
+    recommended_duration={"value": 40, "unit": "minutes"},
 )
 
 
@@ -497,6 +497,9 @@ _register("ransomware_lateral", "Ransomware via Lateral Movement",
             },
         },
     ],
+    # Hidden, but advertise a safe duration anyway: narrowest phase window is
+    # 8% — needs ~50 min for that window to span ~2 collector polls (~120s).
+    recommended_duration={"value": 50, "unit": "minutes"},
     hidden=True,
 )
 
@@ -744,7 +747,10 @@ _register("cloud_account_takeover", "Cloud Account Takeover",
                 },
             ],
         },
-    ]
+    ],
+    # Narrowest phase window is 12% — ~35 min lets it span ~2 collector polls
+    # (~120s) so even the tightest phase reliably overlaps a poll.
+    recommended_duration={"value": 35, "unit": "minutes"},
 )
 
 
@@ -862,7 +868,10 @@ _register("dns_exfiltration", "DNS Poisoning + Data Exfiltration",
                 "ResultCount": 0,
             },
         },
-    ]
+    ],
+    # Narrowest phase window is 12% — ~35 min lets it span ~2 collector polls
+    # (~120s) so even the tightest phase reliably overlaps a poll.
+    recommended_duration={"value": 35, "unit": "minutes"},
 )
 
 
@@ -1169,7 +1178,11 @@ _register("insider_threat", "Insider Threat — Disgruntled Employee",
                 },
             ],
         },
-    ]
+    ],
+    # Narrowest phase window is 15% — ~30 min lets it span ~2 collector polls
+    # (~120s); also gives the collection burst (150 distinct events) 2-3 poll
+    # opportunities to clear the rule's estimate_distinct >= 100 threshold.
+    recommended_duration={"value": 30, "unit": "minutes"},
 )
 
 
