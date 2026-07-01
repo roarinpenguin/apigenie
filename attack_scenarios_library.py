@@ -13,7 +13,7 @@ TEMPLATES: dict[str, dict[str, Any]] = {}
 
 def _register(key: str, name: str, description: str, phases: list[dict],
               recommended_duration: dict | None = None,
-              hidden: bool = False) -> None:
+              hidden: bool = False, experimental: bool = False) -> None:
     # ``recommended_duration`` ({"value": int, "unit": str}) lets a template
     # advertise the wall-clock run length it needs. It is pre-filled into the
     # Create-Scenario modal when the template is selected. apigenie imposes no
@@ -26,9 +26,13 @@ def _register(key: str, name: str, description: str, phases: list[dict],
     # and direct ``get_template(key)`` lookups keep working) but drops it from
     # the selectable list the Create-Scenario modal renders. Used to retire a
     # template that cannot be validated yet without deleting its engineering.
+    # ``experimental`` keeps the template fully selectable but lets the UI badge
+    # it (and the docs caveat it) as not-yet-fully-validated end-to-end. Used
+    # for templates whose engineering is complete but whose telemetry/pipeline
+    # firing is still being hardened (e.g. insider_threat in v5.2).
     TEMPLATES[key] = {"key": key, "name": name, "description": description,
                       "phases": phases, "recommended_duration": recommended_duration,
-                      "hidden": hidden}
+                      "hidden": hidden, "experimental": experimental}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1182,6 +1186,13 @@ _register("insider_threat", "Insider Threat — Disgruntled Employee",
     # (~120s); also gives the collection burst (150 distinct events) 2-3 poll
     # opportunities to clear the rule's estimate_distinct >= 100 threshold.
     recommended_duration={"value": 30, "unit": "minutes"},
+    # EXPERIMENTAL (v5.2): phase engineering is complete and every phase targets
+    # a real shipped rule, but end-to-end firing is still being hardened — two
+    # sources under-deliver on the validation tenant (Netskope "Malware Upload"
+    # needs unmapped.activity, which the collector never lands; the early M365
+    # phases can miss the collector poll cadence). Selectable + badged so the
+    # operator knows it is not yet as reliable as BEC / Cloud Account Takeover.
+    experimental=True,
 )
 
 
@@ -1199,6 +1210,7 @@ def get_templates() -> list[dict[str, Any]]:
             "sources": list(set(p["source"] for p in t["phases"])),
             "mitre_tactics": list(dict.fromkeys(p["mitre_tactic"] for p in t["phases"])),
             "recommended_duration": t.get("recommended_duration"),
+            "experimental": t.get("experimental", False),
         })
     return result
 

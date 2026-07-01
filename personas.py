@@ -43,6 +43,7 @@ from __future__ import annotations
 import hashlib
 import random
 import string
+import threading
 import uuid
 from typing import Any
 
@@ -302,6 +303,60 @@ def derive_neighbor_bundle(bundle: dict[str, Any] | None) -> dict[str, dict[str,
     out["victim_user"] = neighbor_user
     out["victim_host"] = neighbor_host
     return out
+
+
+# ── "Other" entity for background (non-scenario) alerts ─────────────
+#
+# Standing detection rules inject onto random benign base logs whose
+# device/user fields are re-rolled every poll, so each background alert
+# lands on a *different* unknown device in SentinelOne and nothing
+# correlates. ``other_bundle`` returns one STABLE bundle per source so
+# every background alert for a source ties back to the same recognisable
+# (if not-in-inventory) "Other Device" / "Other User". Deterministic
+# (seeded by source) so it survives process restarts and is identical
+# across workers; distinct per source (the operator chose per-source
+# correlation, not one global entity).
+_OTHER_CACHE: dict[str, dict[str, dict[str, Any]]] = {}
+_OTHER_LOCK = threading.Lock()
+
+
+def other_bundle(source: str) -> dict[str, dict[str, Any]]:
+    """Return the stable per-source "Other" persona bundle.
+
+    Only the ``victim_user`` / ``victim_host`` slots are populated — those
+    are the identity a background alert otherwise leaves as "unknown device".
+    ``attacker`` / ``malicious`` are left to the rule's own overrides, so a
+    projection that references them simply falls through (``resolve_path``
+    returns ``None``) and the rule-authored value stands.
+    """
+    key = (source or "unknown").strip().lower()
+    with _OTHER_LOCK:
+        cached = _OTHER_CACHE.get(key)
+        if cached is not None:
+            return cached
+
+    rnd = random.Random(f"apigenie-other::{key}")
+    tag = hashlib.sha1(key.encode("utf-8")).hexdigest()[:4].upper()
+    email = f"other.user@{key}.other-assets.test"
+    bundle = {
+        "victim_user": {
+            "name":      "Other User",
+            "username":  "other.user",
+            "email":     email,
+            "upn":       email,
+            "object_id": str(uuid.UUID(int=rnd.getrandbits(128))),
+        },
+        "victim_host": {
+            "hostname":   f"OTHER-DEVICE-{tag}",
+            "ip":         f"10.99.{rnd.randint(0, 254)}.{rnd.randint(1, 254)}",
+            "os":         "Windows 11",
+            "agent_uuid": uuid.UUID(int=rnd.getrandbits(128)).hex,
+        },
+    }
+    with _OTHER_LOCK:
+        # Another thread may have populated it meanwhile — first writer wins so
+        # the value stays stable for the life of the process.
+        return _OTHER_CACHE.setdefault(key, bundle)
 
 
 def resolve_path(bundle: dict[str, Any] | None, path: str) -> Any | None:

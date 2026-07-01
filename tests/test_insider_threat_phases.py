@@ -65,6 +65,16 @@ def test_insider_threat_is_selectable():
     assert "insider_threat" in keys, "insider_threat must stay in the picker"
 
 
+def test_insider_threat_is_flagged_experimental():
+    # v5.2: shipped selectable but badged EXPERIMENTAL until end-to-end firing
+    # is hardened. The flag must round-trip through get_templates so the UI can
+    # render the badge; other validated templates must NOT be flagged.
+    by_key = {t["key"]: t for t in L.get_templates()}
+    assert by_key["insider_threat"]["experimental"] is True
+    assert by_key["bec_phishing"]["experimental"] is False
+    assert by_key["cloud_account_takeover"]["experimental"] is False
+
+
 def test_template_passes_scenario_validation():
     import attack_scenarios
 

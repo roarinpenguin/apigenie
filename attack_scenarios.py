@@ -1087,6 +1087,16 @@ def _scheduler_loop(scenario_id: str) -> None:
                         rule_id = _create_temp_rule(pw, attack_id, scenario_id,
                                                      total_seconds, start_time)
                         pw["_rule_id"] = rule_id
+                        # v5.2 #2 — take ownership of this phase's source so the
+                        # base engine suppresses its background telemetry and
+                        # standing rules for the phase's lifetime (only the
+                        # scenario's own events flow for that source).
+                        try:
+                            import scenario_state
+                            scenario_state.acquire(pw.get("source", ""))
+                            pw["_source_owned"] = True
+                        except Exception:
+                            pass
                         _update_phase_status(scenario_id, phase_id, status="active")
                         log.info("Phase '%s' activated on %s", pw.get("name", phase_id), pw.get("source"))
 
@@ -1101,6 +1111,15 @@ def _scheduler_loop(scenario_id: str) -> None:
                 elif now >= pw["_abs_end"] and pw.get("_rule_id"):
                     _delete_temp_rule(pw["_rule_id"])
                     pw["_rule_id"] = None
+                    # v5.2 #2 — release source ownership so the base engine
+                    # resumes normal background telemetry for this source.
+                    if pw.get("_source_owned"):
+                        try:
+                            import scenario_state
+                            scenario_state.release(pw.get("source", ""))
+                        except Exception:
+                            pass
+                        pw["_source_owned"] = False
                     _update_phase_status(scenario_id, phase_id, status="completed")
                     log.info("Phase '%s' completed", pw.get("name", phase_id))
 
@@ -1122,6 +1141,17 @@ def _scheduler_loop(scenario_id: str) -> None:
             time.sleep(5)
 
     finally:
+        # v5.2 #2 — release any source ownership still held (scenario stopped
+        # mid-phase, or an unexpected exit) so a source is never left with its
+        # background telemetry permanently suppressed.
+        for pw in phases:
+            if pw.get("_source_owned"):
+                try:
+                    import scenario_state
+                    scenario_state.release(pw.get("source", ""))
+                except Exception:
+                    pass
+                pw["_source_owned"] = False
         # Cleanup: delete all scenario rules and stop push profiles
         _cleanup_scenario_rules(scenario_id)
         for push_pid in active_push_profiles.values():

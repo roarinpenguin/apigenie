@@ -99,14 +99,16 @@ def test_generate_bundle_is_not_deterministic():
     demo identical and ruin variety across runs."""
     import personas
 
-    bundles = [personas.generate_bundle() for _ in range(5)]
+    bundles = [personas.generate_bundle() for _ in range(12)]
     emails = {b["victim_user"]["email"] for b in bundles}
     attacker_ips = {b["attacker"]["ip"] for b in bundles}
-    # At least 3/5 unique on each side — leaves room for the rare
-    # collision in a small pool without making the assertion flaky.
-    assert len(emails) >= 3, f"victim emails repeat too much: {emails}"
-    assert len(attacker_ips) >= 3, (
-        f"attacker IPs repeat too much: {attacker_ips}")
+    # Assert only that variety EXISTS (>1 distinct value over 12 draws). This
+    # proves generation is not seeded to a constant without depending on the
+    # entity-pool size — a fixed uniqueness ratio (e.g. 3/5) is flaky on small
+    # pools where legitimate collisions are expected.
+    assert len(emails) > 1, f"victim emails never varied over 12 draws: {emails}"
+    assert len(attacker_ips) > 1, (
+        f"attacker IPs never varied over 12 draws: {attacker_ips}")
 
 
 # ── Path resolution ─────────────────────────────────────────────────

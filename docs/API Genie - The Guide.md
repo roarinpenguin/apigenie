@@ -14,7 +14,7 @@ a:hover { color: #9D4EDD; }
 
 ### A use-case guide to generating realistic security telemetry
 
-**Version 5.1** · Updated June 12th, 2026
+**Version 5.2.0** · Updated July 1st, 2026
 
 </div>
 
@@ -435,7 +435,11 @@ The built-in templates are:
 - **Ransomware via Lateral Movement** — exploitation → C2 → credential dumping → lateral movement → discovery → ransomware (Palo Alto, SentinelOne, Entra ID).
 - **Cloud Account Takeover** — token theft → illicit consent → discovery → privilege escalation → data theft → persistence (Okta, M365, Entra ID).
 - **DNS Poisoning + Data Exfiltration** — DNS manipulation → C2 over DNS → recon → evasion → exfiltration → cleanup (Infoblox, FortiGate, Zscaler, M365).
-- **Insider Threat — Disgruntled Employee** — excessive access → email exfil → cloud upload → off-hours VPN → tampering → anomalous login (M365, Netskope, Cisco Duo, Okta).
+- **Insider Threat — Disgruntled Employee** ⚠ *EXPERIMENTAL* — mass download → mail auto-forward → insider upload (CASB) → untrusted-endpoint login → mailbox-audit bypass → high-severity identity threat (M365, Netskope, Cisco Duo, Okta).
+
+> **Experimental templates** carry an **EXPERIMENTAL** badge on the picker. Their phase engineering is complete and each phase targets a real shipped SentinelOne rule, but end-to-end alert firing is still being hardened on some sources — use **BEC** or **Cloud Account Takeover** as the fully-validated references. Recommended run length for `insider_threat` is **30 min**.
+>
+> **Alerts need their shipped rules enabled.** A scenario only produces an alert when the target SentinelOne platform rule is *enabled* on your tenant; several ship Disabled by default. Enable them from the console, or run the runbook scripts `scripts/toggle_insider_rules.py` / `scripts/toggle_bec_ct_rules.py` (`--status` to inspect, no flag to enable, `--disable` to roll back). See [`docs/ATTACK_SCENARIOS.md`](ATTACK_SCENARIOS.md) for the per-scenario rule list.
 
 Set a **Name** and **Duration**, tune the per-phase **Source / MITRE tactic / technique / timing / field overrides** if you wish, and click **Create & Start**. Each start generates a fresh `attack.id`.
 

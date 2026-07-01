@@ -2,8 +2,10 @@
 """Enable (or disable) the 6 shipped S1 platform rules targeted by the
 insider_threat scenario, using the saved admin-global console settings.
 
-  Enable  (default):  .venv/bin/python scripts/toggle_insider_rules.py
-  Disable (teardown):  .venv/bin/python scripts/toggle_insider_rules.py --disable
+Run inside the ApiGenie container (settings come from the mounted data volume):
+
+  Enable  (default):  docker exec apigenie python scripts/toggle_insider_rules.py
+  Disable (teardown):  docker exec apigenie python scripts/toggle_insider_rules.py --disable
 
 Reversible: --disable restores every rule to its shipped Disabled state.
 No secrets are printed.

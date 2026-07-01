@@ -210,6 +210,41 @@ def _apply_overrides(log_entry: dict[str, Any], overrides: dict[str, Any]) -> di
     return entry
 
 
+def _apply_other_identity(event: dict[str, Any], source: str,
+                          overrides: dict[str, Any]) -> dict[str, Any]:
+    """Stamp a STABLE per-source "Other" identity onto a background alert.
+
+    Standing (non-scenario) rules inject onto random benign base logs whose
+    device/user fields are re-rolled every poll, so each background alert lands
+    on a *different* unknown device in SentinelOne and nothing correlates.
+    Using the source's ``PERSONA_PROJECTION`` we overwrite the projected
+    identity fields with ``personas.other_bundle(source)`` — deterministic and
+    stable — so every background alert for a source ties back to the same
+    recognisable (if not-in-inventory) "Other Device" / "Other User".
+
+    Fields the rule itself authored win: we skip any ``event_field`` that the
+    rule's own ``overrides`` already set. Sources without a projection are left
+    untouched (best-effort; no worse than the previous behaviour).
+    """
+    try:
+        import personas
+        import sources
+        projection = sources.get_persona_projection(source)
+    except Exception:
+        projection = None
+    if not projection:
+        return event
+    bundle = personas.other_bundle(source)
+    for event_field, slot_path in projection.items():
+        if event_field in overrides:
+            continue
+        val = personas.resolve_path(bundle, slot_path)
+        if val is None or val == "":
+            continue
+        _set_nested(event, event_field, val)
+    return event
+
+
 # ── Injection into log batches ───────────────────────────────────────────────
 
 def _rule_visible_to_caller(rule: dict[str, Any], caller_id: str | None) -> bool:
@@ -263,16 +298,39 @@ def inject_detection_events(source: str, logs: list[dict[str, Any]]) -> list[dic
         def _canon(s):
             return s
     _src_c = _canon(source)
+    # v5.2 — scenario source ownership. While an attack-scenario phase is live
+    # on this source the base engine must step aside: standing/user rules are
+    # silenced (a single "malware upload" rule would otherwise fire thousands
+    # of times an hour off the constant background stream) and the benign base
+    # batch is dropped, so the collector sees ONLY the scenario's telemetry
+    # (+ persona narrative). See scenario_state / attack_scenarios scheduler.
+    try:
+        import scenario_state
+        _scenario_owned = scenario_state.is_active(_src_c)
+    except Exception:
+        _scenario_owned = False
+
     rules = [r for r in _load_rules()
              if _canon(r["source"]) == _src_c
              and r.get("enabled", True)
              and _rule_visible_to_caller(r, caller_id)]
-    if not rules or not logs:
+    if _scenario_owned:
+        # Only the scenario's own temp rules (tagged _scenario_id) may inject.
+        rules = [r for r in rules if r.get("_scenario_id")]
+
+    if not logs:
         return logs
+    if not rules:
+        # Owned-but-idle (between phases): still drop the benign background for
+        # this source so nothing leaks; otherwise fall back to normal flow.
+        return [] if _scenario_owned else logs
 
     import random
     now = time.time()
-    result = list(logs)
+    # When the source is scenario-owned we start from an EMPTY batch so the
+    # benign base logs are suppressed — only the scenario's injected events
+    # (and any persona narrative below) survive. Otherwise keep the base logs.
+    result = [] if _scenario_owned else list(logs)
     injected_count = 0
 
     # Lazy-imported recorder; only used for rules created by the attack
@@ -318,6 +376,10 @@ def inject_detection_events(source: str, logs: list[dict[str, Any]]) -> list[dic
             # Fire once
             base = random.choice(logs)
             detection_event = _apply_overrides(base, overrides)
+            if not rule_scenario_id:
+                # v5.2 #3 — background alerts land on a stable per-source
+                # "Other Device"/"Other User" instead of a fresh unknown device.
+                detection_event = _apply_other_identity(detection_event, _src_c, overrides)
             detection_event["_detection_rule"] = rule["name"]
             pos = random.randint(0, len(result))
             result.insert(pos, detection_event)
@@ -338,6 +400,9 @@ def inject_detection_events(source: str, logs: list[dict[str, Any]]) -> list[dic
             for _ in range(count):
                 base = random.choice(logs)
                 detection_event = _apply_overrides(base, overrides)
+                if not rule_scenario_id:
+                    # v5.2 #3 — stable per-source "Other" identity (see above).
+                    detection_event = _apply_other_identity(detection_event, _src_c, overrides)
                 detection_event["_detection_rule"] = rule["name"]
                 pos = random.randint(0, len(result))
                 result.insert(pos, detection_event)

@@ -8,7 +8,7 @@ The deployment hostname is fully parameterised: pick any domain, run `./scripts/
 
 **Multi-tenant by design.** One ApiGenie deployment can host many isolated users — each with their own log profiles, detection rules, source identifiers, SentinelOne console, avatar and recovery flow. Admins drive the platform from `/admin`; users drive their own corner from `/portal`. Same TLS port, two distinct portals, role-aware UI, owner-scoped APIs. See **[Multi-user & RBAC](#multi-user--rbac)** below for the model, and the two companion guides in [`docs/`](docs/) for hands-on labs.
 
-**Current release: v5.1** — *Security hardening + richer attack stories*. Per-user SentinelOne console URL + API token moved out of the server entirely — they now live exclusively in the operator's browser `localStorage` and ride on every request as `X-S1-Console-URL` / `X-S1-Console-Token` headers. The admin-global S1 token is **Fernet-encrypted at rest** (key from `APIGENIE_SECRET_KEY` or auto-generated `data/secret.key`). Attack scenarios gain a **Visibility** switch (private = only the launching user's collector token sees the run's injected events; public = every caller). Every scenario now also carries an auto-generated, expandable **Setup notes** card explaining which collectors / push profiles to configure for the run to play out end-to-end. *(A short-lived `historical` pre-staging mode was removed in v5.1.29 — SentinelOne AI-SIEM detections fire at telemetry-ingest time, so backdated events still alerted at "now"; realtime is the only mode.)* See [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the full v4.0 → v5.1 chronology and the (container-only) upgrade path.
+**Current release: v5.2** — *Windows Event Forwarding as a first-class push source*. WEF/WEC joins the push side: SOAP / WS-Eventing delivery to a real Windows Event Collector, ~200 Event IDs across Security · System · Directory Service · DNS Server · Windows-PowerShell-Operational · Sysmon, per-binding Basic-over-TLS or mTLS (Fernet-encrypted PEM bundle on disk), and profile-aware substitution so WEF events correlate with the rest of the simulated environment. This release also lands an **`insider_threat` attack scenario (EXPERIMENTAL)** — a 6-phase disgruntled-employee kill chain wired to real shipped SentinelOne platform rules — plus a **tenant rule-enablement runbook** (`scripts/toggle_insider_rules.py`, `scripts/toggle_bec_ct_rules.py`), since several target rules ship Disabled by default and alerts only fire when they are enabled. The short-lived `historical` pre-staging mode was removed (SentinelOne AI-SIEM detections fire at telemetry-ingest time, so backdated events still alerted at "now"; realtime is the only mode). See [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the full v4.0 → v5.2 chronology and the (container-only) upgrade path.
 
 ---
 
@@ -713,7 +713,7 @@ Via the Admin UI *Log Profiles* tab → *Detection Rules* section, or `POST /adm
 
 ### Coverage
 
-Detection rules apply to **all 14 HTTP sources** plus the **Kafka publisher** (source key `azure_platform`) and **Pub/Sub publisher** (source key `gcp_audit`). Injected events carry a `_detection_rule` field with the rule name for easy identification.
+Detection rules apply to **all HTTP pull sources** plus the **Kafka publisher** (source key `azure_platform`) and **Pub/Sub publisher** (source key `gcp_audit`). Injected events carry a `_detection_rule` field with the rule name for easy identification.
 
 ### Example
 
@@ -791,6 +791,8 @@ Full reference: [`docs/WEBHOOKS.md`](docs/WEBHOOKS.md).
 - **Phase 3.1 — Per-scenario event log.** Every event the scenario emitted (with its `attack.id` + `phase.id`) shows up in a dedicated event log panel scoped to that scenario run.
 - **Phase 3.2 — Cross-source `attack.id` search + reveal nav.** Search by an `attack.id` anywhere and the UI jumps to the originating scenario / phase, with deep-links into the source's hit pane.
 - **Phase 3.3 — Exportable attack timeline.** A chronological timeline export (JSON) that joins every emitted event with its phase metadata, ready to drop into a post-mortem deck or a SIEM hunt.
+- **v5.2 — `insider_threat` scenario (EXPERIMENTAL).** A 6-phase disgruntled-employee kill chain across M365 · Netskope · Cisco Duo · Okta, each phase wired to a real shipped SentinelOne platform rule. Selectable but **badged EXPERIMENTAL** in the Create-Scenario modal while end-to-end firing is hardened on two sources (see [`docs/ATTACK_SCENARIOS.md`](docs/ATTACK_SCENARIOS.md)). **BEC** and **Cloud Account Takeover** remain the fully-validated reference scenarios.
+- **Scenarios require their shipped rules ENABLED on the tenant.** Alerts fire only when the target SentinelOne platform rule is enabled; several ship Disabled by default. Runbook scripts `scripts/toggle_insider_rules.py` and `scripts/toggle_bec_ct_rules.py` (`--status` / enable / `--disable`) toggle the relevant rule ids.
 
 Full guide: [`docs/ATTACK_SCENARIOS.md`](docs/ATTACK_SCENARIOS.md).
 

@@ -7943,7 +7943,8 @@ function openScenarioCreator() {
   sel.innerHTML = '<option value="">&mdash; Empty (build from scratch) &mdash;</option>';
   _scenarioTemplates.forEach(function(t) {
     sel.innerHTML += '<option value="' + escHtml(t.key) + '">'
-      + escHtml(t.name) + ' (' + t.phase_count + ' phases, ' + t.sources.join(', ') + ')</option>';
+      + escHtml(t.name) + (t.experimental ? ' \u26A0 EXPERIMENTAL' : '')
+      + ' (' + t.phase_count + ' phases, ' + t.sources.join(', ') + ')</option>';
   });
   sel.value = '';
   document.getElementById('scenario-template-desc').textContent = '';
@@ -8070,7 +8071,17 @@ function onScenarioTemplateChange() {
   // that template\u2019s phases. The user can then tweak / remove / extend them.
   var key = document.getElementById('scenario-template').value;
   var t = _scenarioTemplates.find(function(x) { return x.key === key; });
-  document.getElementById('scenario-template-desc').textContent = t ? t.description : '';
+  var descEl = document.getElementById('scenario-template-desc');
+  if (t && t.experimental) {
+    descEl.innerHTML = '<span style="display:inline-block;background:rgba(255,176,112,.18);'
+      + 'border:1px solid rgba(255,176,112,.5);color:#ffb070;font-size:.62rem;font-weight:600;'
+      + 'letter-spacing:.04em;padding:1px 6px;border-radius:5px;margin-right:6px;vertical-align:middle">'
+      + '\u26A0 EXPERIMENTAL</span>' + escHtml(t.description)
+      + '<div style="margin-top:4px;color:rgba(255,176,112,.75);font-size:.66rem">'
+      + 'Engineering complete, but end-to-end alert firing is still being hardened on some sources.</div>';
+  } else {
+    descEl.textContent = t ? t.description : '';
+  }
   // Pre-fill the duration with the template's recommended run length when it
   // advertises one (M365-heavy templates need >= the connector poll cadence so
   // every phase window overlaps a poll). Empty selection resets to the short

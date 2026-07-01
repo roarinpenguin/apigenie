@@ -297,6 +297,51 @@ feel like one product:
   calls, and a new **Caller** column shows who each call resolved to
   (honours the admin act-as switcher).
 
+### New attack scenario — `insider_threat` (EXPERIMENTAL)
+
+- **Disgruntled-employee kill chain, 6 phases across 4 sources.** Mass
+  SharePoint download (M365) → mail auto-forward via transport rule
+  (M365) → insider-threat upload flagged by Netskope → login from an
+  untrusted endpoint (Cisco Duo) → mailbox audit-logging bypass (M365)
+  → Okta high-severity threat. Every phase's `field_overrides` carry the
+  exact discriminators of a **real shipped SentinelOne platform rule**
+  discovered on the validation tenant, and `target_rules` document each
+  rule's `s1ql`, id, and shipped status.
+- **Shipped selectable but flagged `experimental`.** A new
+  `experimental` flag on scenario-library templates (sibling to
+  `hidden`) keeps the template fully usable while the Create-Scenario
+  modal renders an **EXPERIMENTAL** badge on both the dropdown option and
+  the description. Rationale: the phase engineering is complete and
+  validated field-by-field, but **end-to-end alert firing is still being
+  hardened on two sources** — the Netskope "Malware Upload" rule keys on
+  `unmapped.activity`, which the customer's collector does not land, and
+  the earliest M365 phases can fall between collector polls on short
+  runs. BEC and Cloud Account Takeover remain the fully-validated
+  reference scenarios.
+- **Reusable S1 grounding.** S1QL string `=` is **case-sensitive**;
+  `unmapped.*` fields are raw pass-through (emit the exact value+case to
+  match), while **mapped** fields (e.g. Cisco Duo `result→status`,
+  `reason→status_detail`) go through known-value lookups that
+  uppercase/drop out-of-vocabulary values. Phase values were chosen
+  accordingly.
+
+### Attack scenarios require their shipped rules ENABLED on the tenant
+
+- **Alerts only fire if the target platform rule is enabled.** Several
+  BEC / Cloud Account Takeover / insider_threat target rules ship
+  **Disabled** by default on a SentinelOne tenant (e.g. *Proofpoint
+  Impostor Email Unblocked*, *Okta Impersonation Session Initiated*,
+  *Azure User Added to a Highly Privileged Built-in Role*, *Office 365
+  Service Principal Addition*). If they are Disabled, the matching
+  telemetry lands in the lake but produces **no alert** — this is a
+  tenant configuration state, not an ApiGenie regression.
+- **Runbook scripts.** `scripts/toggle_insider_rules.py` and
+  `scripts/toggle_bec_ct_rules.py` enable (default), `--disable`
+  (rollback), or `--status` (read-only) the relevant shipped rule ids
+  using the saved console settings. See
+  [`docs/ATTACK_SCENARIOS.md`](docs/ATTACK_SCENARIOS.md) for the full
+  per-scenario rule list and enablement steps.
+
 ---
 
 ## v5.1 — *Security hardening + time-shifted attack stories*

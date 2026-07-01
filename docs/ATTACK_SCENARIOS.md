@@ -183,20 +183,79 @@ The Attack Scenario Builder allows users to simulate **multi-source, multi-phase
 
 ---
 
-### Scenario 5: Insider Threat — Disgruntled Employee
+### Scenario 5: Insider Threat — Disgruntled Employee  ⚠ EXPERIMENTAL (v5.2)
 
-**Story:** Employee accesses sensitive data → email exfiltration → VPN from unusual location → evidence tampering.
+**Story:** Employee mass-downloads sensitive data → auto-forwards mail out →
+insider upload flagged by the CASB → logs in from an untrusted endpoint →
+disables mailbox auditing to cover tracks → identity flags a high-severity
+threat.
 
-| Phase | MITRE | Source | Key events |
-|-------|-------|--------|------------|
-| 1. Excessive access | T1530 Collection | **M365** | Mass SharePoint file downloads, sensitive folder access |
-| 2. Email exfiltration | T1048.003 Exfiltration | **M365** | Forward rule to personal email, large attachments |
-| 3. DLP trigger | T1567 Exfiltration | **Netskope** | Cloud upload with sensitive data, DLP policy match |
-| 4. Off-hours VPN | T1133 Persistence | **Cisco Duo** | VPN login at 3am from foreign IP, MFA approved |
-| 5. Evidence tampering | T1070 Defense Evasion | **M365** | Audit log search, quarantine release, inbox rule deleted |
-| 6. Account anomaly | T1078 Credential Access | **Okta** | Impossible travel, session from new device |
+> **EXPERIMENTAL.** Selectable in the Create-Scenario modal (badged
+> **EXPERIMENTAL** via the template `experimental` flag), and every phase is
+> wired to a **real shipped SentinelOne platform rule**. However, end-to-end
+> alert firing is still being hardened on two sources: the **Netskope "Malware
+> Upload"** rule keys on `unmapped.activity`, which the customer collector does
+> not land, and the **earliest M365 phases** can fall between collector polls on
+> short runs. Use **BEC** or **Cloud Account Takeover** as the fully-validated
+> reference scenarios. Recommended run length **30 min**.
 
-**Sources used:** M365, Netskope, Cisco Duo, Okta
+Each phase's `field_overrides` carry the exact rule discriminators; the template's
+`target_rules` document each rule's real `s1ql`, id, and shipped status
+(grounded on the validation tenant, 2026-06-29):
+
+| Phase | MITRE | Source | Shipped rule | Firing |
+|-------|-------|--------|--------------|--------|
+| 1. collection | T1530 Collection | **M365** | Office 365 Bulk File Download | fires (needs `estimate_distinct(ObjectId) ≥ 100`; sized by `max_events=150`) |
+| 2. exfiltration | T1114.003 Exfiltration | **M365** | Office 365 Creation of Mail Transport Rule (`activity_name='New-TransportRule'`) | fires |
+| 3. exfiltration-2 | T1567 Exfiltration | **Netskope** | Netskope Malware Upload (`activity_name='Malware'` + `unmapped.action='Detection'` + `unmapped.activity='Upload'`) | **pending** — collector does not land `unmapped.activity` |
+| 4. persistence | T1133 Persistence | **Cisco Duo** | Cisco Duo MFA Login via Bypass Code (`event_type='authentication'` + `unmapped.factor='bypass_code'` + `status_detail='valid_passcode'`) | fires |
+| 5. defense-evasion | T1562.001 Defense Evasion | **M365** | Office 365 Mailbox Audit Logging Bypass (`activity_name='Set-MailboxAuditBypassAssociation'`) | events land; alert pending platform-side eval |
+| 6. credential-access | T1078 Credential Access | **Okta** | Okta High Severity Threat Detected (`security.threat.detected` + severity HIGH) | fires |
+
+**Sources used:** M365, Netskope, Cisco Duo, Okta.
+
+**S1 grounding (reusable):** S1QL string `=` is **case-sensitive**; `unmapped.*`
+fields are **raw pass-through** (emit the exact value + case to match a rule),
+while **mapped** fields (e.g. Cisco Duo `result→status`, `reason→status_detail`)
+go through known-value lookups that uppercase / drop out-of-vocabulary values.
+
+---
+
+## Shipped rules must be ENABLED on the tenant (required)
+
+Attack-scenario telemetry only produces an **alert** when the target
+SentinelOne **platform rule is enabled** on the tenant. Several BEC / Cloud
+Account Takeover / insider_threat target rules ship **Disabled** by default —
+if they are Disabled, the events land in the lake but **no alert fires**. This
+is a tenant configuration state, **not** an ApiGenie regression.
+
+Rules that commonly ship **Disabled** and must be enabled before a run:
+
+- *Proofpoint Impostor Email Unblocked* (BEC phase 1)
+- *Okta Impersonation Session Initiated* (BEC phase 2)
+- *Azure User Added to a Highly Privileged Built-in Role* (Cloud Takeover phase 4)
+- *Office 365 Service Principal Addition* (Cloud Takeover phase 6)
+- the six insider_threat rules listed above
+
+**Runbook scripts** run inside the ApiGenie container (the console URL + token
+come from the saved settings on the mounted data volume; no secrets printed).
+Rebuild the local container first so it carries the latest scripts
+(`docker compose up -d --build apigenie`), then:
+
+```bash
+# read-only status of the six insider_threat rules
+docker exec apigenie python scripts/toggle_insider_rules.py --status
+
+# enable them (default); --disable to roll back
+docker exec apigenie python scripts/toggle_insider_rules.py
+
+# the BEC + Cloud Takeover rules that ship Disabled
+docker exec apigenie python scripts/toggle_bec_ct_rules.py --status
+docker exec apigenie python scripts/toggle_bec_ct_rules.py
+```
+
+Newly enabled rules briefly show status `Activating` before `Active`; give S1 a
+few minutes before starting the scenario.
 
 ---
 
