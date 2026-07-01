@@ -24,6 +24,11 @@ log = logging.getLogger(__name__)
 _DATA_ROOT = Path(os.getenv("APIGENIE_DATA_ROOT", "/var/lib/apigenie"))
 _SETTINGS_FILE = _DATA_ROOT / "s1_settings.json"
 
+# Max platform-rule IDs per scoped-status lookup. The browse drawer can fetch
+# up to 1000 catalog rows at once (console-status filter), so _enrich_scoped_status
+# batches the /platform-rules reads to keep each request URL a sane length.
+_ENRICH_CHUNK = 100
+
 # Map ApiGenie source keys to S1 detection library data source names
 SOURCE_KEY_TO_S1 = {
     "okta": "Okta",
@@ -591,28 +596,39 @@ def _enrich_scoped_status(result: dict[str, Any], *, context: str = "browse"
         return _normalize_all_statuses(result)
     # ``platformRuleIds`` accepts a comma-separated list per the swagger,
     # and ``limit`` must be ≥ the number of IDs we expect back or the
-    # response pagination would silently drop some.
-    scoped = _api_get(
-        "/web/api/v2.1/detection-library/platform-rules",
-        {
-            "platformRuleIds": ",".join(rule_ids),
-            "scopeLevel":      scope_level,
-            "scopeId":         scope_id,
-            "limit":           str(max(len(rule_ids), 10)),
-        },
-    )
-    if "error" in scoped:
-        log.info("%s: scoped status enrich failed (%s) — using "
-                 "catalog status", context, scoped.get("error"))
-        return _normalize_all_statuses(result)
-    data_list = scoped.get("data", []) or []
-    if not data_list:
+    # response pagination would silently drop some. The browse drawer can
+    # now request up to 1000 catalog rows (so an "All sources + Enabled on
+    # console" filter isn't limited to the first page), which would make a
+    # single comma-joined ``platformRuleIds`` URL far too long — so batch
+    # the scoped lookup into chunks and merge. Fail-soft PER CHUNK: a chunk
+    # that errors just leaves those rules on their catalog status.
+    by_id: dict[str, Any] = {}
+    for i in range(0, len(rule_ids), _ENRICH_CHUNK):
+        chunk = rule_ids[i:i + _ENRICH_CHUNK]
+        scoped = _api_get(
+            "/web/api/v2.1/detection-library/platform-rules",
+            {
+                "platformRuleIds": ",".join(chunk),
+                "scopeLevel":      scope_level,
+                "scopeId":         scope_id,
+                "limit":           str(max(len(chunk), 10)),
+            },
+        )
+        if "error" in scoped:
+            log.info("%s: scoped status enrich failed (%s) — using "
+                     "catalog status for %d ids", context,
+                     scoped.get("error"), len(chunk))
+            continue
+        for r in scoped.get("data", []) or []:
+            rid = str(r.get("id"))
+            if rid:
+                by_id[rid] = r
+    if not by_id:
         log.info("%s: /platform-rules scope=%s:%s returned 0 "
                  "entries for ids=%s — site has no per-scope override "
                  "for these rules yet",
                  context, scope_level, scope_id, ",".join(rule_ids[:3]))
         return _normalize_all_statuses(result)
-    by_id = {str(r.get("id")): r for r in data_list}
     for rule in result["rules"]:
         scoped_rule = by_id.get(str(rule.get("id")))
         if not scoped_rule or "status" not in scoped_rule:

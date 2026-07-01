@@ -616,6 +616,74 @@ class TestEnrichScopedStatus:
         # "Active" catalog value normalised to the UI contract "Enabled".
         assert out["rules"][0]["status"] == "Enabled"
 
+    def test_enrich_batches_large_id_sets_and_merges(self, s1, fake_api):
+        """v5.2 — the browse drawer can fetch up to 1000 catalog rows for the
+        "Enabled on console" filter, so enrichment must batch the scoped read
+        (chunks of _ENRICH_CHUNK) and merge the per-site statuses across every
+        chunk, not just the first one."""
+        routes, calls = fake_api
+        n = s1._ENRICH_CHUNK * 2 + 5   # spans 3 chunks
+
+        def _scoped(params):
+            ids = [i for i in params.get("platformRuleIds", "").split(",") if i]
+            # Odd-indexed rules are Active (Enabled) at the site scope.
+            return {"data": [{"id": rid, "status": "Active"}
+                             for rid in ids
+                             if int(rid.split("-")[1]) % 2 == 1]}
+        routes["/web/api/v2.1/detection-library/platform-rules"] = _scoped
+        tok = s1.set_request_override(
+            "https://alice.sentinelone.net", "alice-token",
+            account_id="ACCT", site_id="SITE",
+        )
+        try:
+            result = {"rules": [{"id": f"rule-{i}", "name": "X",
+                                 "status": "Disabled"} for i in range(n)],
+                      "total": n}
+            out = s1._enrich_scoped_status(result, context="browse")
+        finally:
+            s1.clear_request_override(tok)
+        gets = [c for c in calls if c[0] == "GET"
+                and c[1] == "/web/api/v2.1/detection-library/platform-rules"]
+        assert len(gets) == 3, "expected one scoped GET per chunk"
+        # Every chunk merged: all odd rules Enabled, all even rules Disabled.
+        by_id = {r["id"]: r["status"] for r in out["rules"]}
+        assert by_id["rule-1"] == "Enabled"
+        assert by_id["rule-0"] == "Disabled"
+        assert by_id[f"rule-{n - 1}"] == ("Enabled" if (n - 1) % 2 else "Disabled")
+        enabled = sum(1 for v in by_id.values() if v == "Enabled")
+        assert enabled == len([i for i in range(n) if i % 2 == 1])
+
+    def test_enrich_is_failsoft_per_chunk(self, s1, fake_api):
+        """A single failing chunk must not blank out the whole result — the
+        other chunks still enrich; the failed chunk keeps catalog status."""
+        routes, calls = fake_api
+        n = s1._ENRICH_CHUNK + 3       # spans 2 chunks
+
+        def _scoped(params):
+            ids = [i for i in params.get("platformRuleIds", "").split(",") if i]
+            # Fail the SECOND chunk only (the one containing the last ids).
+            if any(int(i.split("-")[1]) >= s1._ENRICH_CHUNK for i in ids):
+                return {"error": "HTTP 500"}
+            return {"data": [{"id": rid, "status": "Active"} for rid in ids]}
+        routes["/web/api/v2.1/detection-library/platform-rules"] = _scoped
+        tok = s1.set_request_override(
+            "https://alice.sentinelone.net", "alice-token",
+            account_id="ACCT", site_id="SITE",
+        )
+        try:
+            result = {"rules": [{"id": f"rule-{i}", "name": "X",
+                                 "status": "Disabled"} for i in range(n)],
+                      "total": n}
+            out = s1._enrich_scoped_status(result, context="browse")
+        finally:
+            s1.clear_request_override(tok)
+        by_id = {r["id"]: r["status"] for r in out["rules"]}
+        # First chunk enriched to Enabled…
+        assert by_id["rule-0"] == "Enabled"
+        # …failed chunk keeps catalog status (normalised) instead of vanishing.
+        assert by_id[f"rule-{n - 1}"] == "Disabled"
+        assert len(out["rules"]) == n
+
 
 # ── platform-rule settings: inheritance lock ─────────────────────────
 

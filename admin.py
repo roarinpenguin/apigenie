@@ -5832,7 +5832,13 @@ async function loadS1DrawerRules() {
       var r = await fetch(url, {credentials:'same-origin'});
       data = await r.json();
     } else {
-      url = '/admin/api/s1/rules?limit=30';
+      // v5.2 — the console-status filter is applied client-side on the
+      // scope-effective rule.status, so a small page would only ever reveal
+      // the enabled rules inside the first 30 catalog hits ("All sources"
+      // then shows just one). When that filter is set, widen the catalog
+      // window to the API's 1000 cap; the server chunk-enriches the statuses.
+      var fetchLimit = document.getElementById('s1d-status').value ? 1000 : 30;
+      url = '/admin/api/s1/rules?limit=' + fetchLimit;
       if (source) url += '&source=' + encodeURIComponent(source);
       if (tactic) url += '&mitre_tactic=' + encodeURIComponent(tactic);
       if (query) url += '&query=' + encodeURIComponent(query);
