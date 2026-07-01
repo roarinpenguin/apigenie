@@ -279,6 +279,18 @@ def create_scenario(data: dict[str, Any]) -> dict[str, Any]:
         "status": "stopped",
         "profile_id": data.get("profile_id"),
         "duration": data.get("duration", {"value": 4, "unit": "hours"}),
+        # v5.2 F1 — quiet lead-in. Seconds to wait AFTER Start before the
+        # first phase's telemetry begins. While > 0 the scheduler acquires
+        # EVERY source the scenario touches up-front (background noise stops
+        # instantly and stays silenced for the whole run), then shifts all
+        # phase windows by this amount so an operator gets a clean, empty gap
+        # between "noise stopped" and "attack telemetry starts". 0 (default)
+        # preserves the legacy per-phase behaviour with no gap.
+        "lead_in_seconds": max(0, int(data.get("lead_in_seconds", 0) or 0)),
+        # v5.2 F2 — opt-in auto-enable of each phase's target platform rule(s)
+        # on the tenant at Start (via the saved admin-global S1 console). Rules
+        # that ApiGenie flips ON are restored (disabled) at scenario teardown.
+        "auto_enable_rules": bool(data.get("auto_enable_rules", False)),
         "phases": data.get("phases", []),
         "events_injected": 0,
         "started_at": "",
@@ -336,6 +348,7 @@ def update_scenario(scenario_id: str, data: dict[str, Any]) -> dict[str, Any] | 
         if not s:
             return None
         for key in ("name", "duration", "phases", "profile_id",
+                    "lead_in_seconds", "auto_enable_rules",
                     "visibility", "owner_id",
                     # v5.3 — allow the operator to replace the persona
                     # bundle from the UI editor. When ``personas`` is
@@ -344,6 +357,11 @@ def update_scenario(scenario_id: str, data: dict[str, Any]) -> dict[str, Any] | 
                     "personas"):
             if key in data:
                 s[key] = data[key]
+        # Normalise the v5.2 knobs so the scheduler never sees garbage.
+        if "lead_in_seconds" in data:
+            s["lead_in_seconds"] = max(0, int(data.get("lead_in_seconds", 0) or 0))
+        if "auto_enable_rules" in data:
+            s["auto_enable_rules"] = bool(data.get("auto_enable_rules"))
         # Regenerate setup_notes if anything that affects them changed.
         if "phases" in data or "duration" in data:
             s["setup_notes"] = _generate_setup_notes(
@@ -424,6 +442,12 @@ def validate_scenario_payload(data: Any) -> list[str]:
             errors.append("'duration.value' must be a positive number")
         if duration.get("unit") not in ("seconds", "minutes", "hours", "days", "weeks"):
             errors.append("'duration.unit' must be one of seconds|minutes|hours|days|weeks")
+    # v5.2 — optional quiet lead-in (seconds). Must be a non-negative number
+    # when present; the scheduler clamps/coerces it anyway.
+    if "lead_in_seconds" in data:
+        lis = data.get("lead_in_seconds")
+        if not isinstance(lis, (int, float)) or isinstance(lis, bool) or lis < 0:
+            errors.append("'lead_in_seconds' must be a non-negative number")
     phases = data.get("phases")
     if not isinstance(phases, list) or not phases:
         errors.append("'phases' must be a non-empty array")
@@ -485,6 +509,8 @@ def export_scenario(scenario_id: str) -> dict[str, Any] | None:
         "name": s.get("name", ""),
         "description": s.get("description", ""),
         "duration": s.get("duration", {"value": 4, "unit": "hours"}),
+        "lead_in_seconds": s.get("lead_in_seconds", 0),
+        "auto_enable_rules": s.get("auto_enable_rules", False),
         "profile_id": s.get("profile_id"),
         "phases": [],
         "_apigenie_schema": "attack_scenario/v1",
@@ -1006,6 +1032,129 @@ def _update_phase_status(scenario_id: str, phase_id: str, **kwargs) -> None:
             _save_scenarios(scenarios)
 
 
+def _resolve_target_rule(s1, target_rule: dict[str, Any],
+                         phase_source: str) -> tuple[str | None, str | None]:
+    """Resolve a phase ``target_rule`` to ``(platform_rule_id, scoped_status)``.
+
+    An explicit ``platform_rule_id`` on the target rule wins. Otherwise the
+    rule is located by NAME through the detection-library catalog (scoped to
+    the token's site/account), preferring an exact case-insensitive name match
+    and falling back to the first hit. The returned status is the rule's
+    SCOPE-EFFECTIVE state (normalised to ``"Enabled"``/``"Disabled"``) read via
+    ``get_platform_rule`` — the same surface the toggle runbook uses — so we
+    never act on the (often different) catalog-default status.
+    """
+    rid = str(target_rule.get("platform_rule_id") or "").strip() or None
+    name = str(target_rule.get("name") or "").strip()
+    source = target_rule.get("source") or phase_source
+    if not rid:
+        if not name:
+            return None, None
+        res = s1.query_rules(source=source, query=name, limit=20)
+        rules = res.get("rules", []) if isinstance(res, dict) else []
+        match = next((r for r in rules
+                      if str(r.get("name", "")).strip().lower() == name.lower()),
+                     None)
+        if match is None and rules:
+            match = rules[0]
+        if match is None:
+            return None, None
+        rid = str(match.get("id") or "").strip() or None
+        if not rid:
+            return None, None
+    rule = s1.get_platform_rule(rid) or {}
+    status = s1._normalize_rule_status(rule.get("status")) if rule else None
+    return rid, status
+
+
+def _ensure_target_rules_enabled(scenario: dict[str, Any]) -> list[str]:
+    """Enable every phase's target platform rule that is currently Disabled.
+
+    Runs on the saved admin-global S1 console settings (no request context in
+    the scheduler thread). Best-effort and non-fatal: any resolution / API
+    failure is logged and skipped so a mis-configured console never blocks a
+    scenario. Returns the list of platform-rule ids ApiGenie actually flipped
+    ON (were Disabled → now Enabled) so the caller can restore them at
+    teardown.
+    """
+    enabled_by_us: list[str] = []
+    try:
+        import s1_detection_library as s1
+    except Exception as exc:                       # pragma: no cover
+        log.warning("auto_enable_rules: S1 client unavailable: %s", exc)
+        return enabled_by_us
+    if not s1.is_configured():
+        log.info("auto_enable_rules: S1 console not configured — skipping")
+        return enabled_by_us
+
+    seen: set[str] = set()
+    for phase in scenario.get("phases", []):
+        phase_source = phase.get("source", "")
+        for tr in phase.get("target_rules", []) or []:
+            if not isinstance(tr, dict):
+                continue
+            key = str(tr.get("platform_rule_id") or tr.get("name") or "").strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            try:
+                rid, status = _resolve_target_rule(s1, tr, phase_source)
+            except Exception as exc:               # pragma: no cover
+                log.warning("auto_enable_rules: resolve error for '%s': %s",
+                            tr.get("name"), exc)
+                continue
+            if not rid:
+                log.warning("auto_enable_rules: could not resolve rule '%s' "
+                            "(source=%s) on the console",
+                            tr.get("name"), phase_source)
+                continue
+            if status == "Enabled":
+                log.info("auto_enable_rules: '%s' (%s) already Enabled",
+                         tr.get("name"), rid)
+                continue
+            resp = s1.enable_rule(rid)
+            if isinstance(resp, dict) and resp.get("error"):
+                log.warning("auto_enable_rules: enable FAILED for '%s' (%s): "
+                            "%s", tr.get("name"), rid, resp.get("error"))
+                continue
+            enabled_by_us.append(rid)
+            log.info("auto_enable_rules: ENABLED '%s' (%s)", tr.get("name"), rid)
+    return enabled_by_us
+
+
+def _restore_auto_enabled_rules(rule_ids: list[str]) -> None:
+    """Re-disable the platform rules ApiGenie enabled at Start (teardown).
+
+    Only ids in *rule_ids* — rules that were Disabled before this scenario ran
+    — are touched, so a rule an operator had already enabled is never disabled
+    out from under them. Best-effort; failures are logged, never raised.
+    """
+    if not rule_ids:
+        return
+    try:
+        import s1_detection_library as s1
+    except Exception as exc:                       # pragma: no cover
+        log.warning("auto_enable_rules restore: S1 client unavailable: %s", exc)
+        return
+    if not s1.is_configured():
+        return
+    restored = 0
+    for rid in rule_ids:
+        try:
+            resp = s1.disable_rule(rid)
+        except Exception as exc:                    # pragma: no cover
+            log.warning("auto_enable_rules restore: error disabling %s: %s",
+                        rid, exc)
+            continue
+        if isinstance(resp, dict) and resp.get("error"):
+            log.warning("auto_enable_rules restore: disable FAILED for %s: %s",
+                        rid, resp.get("error"))
+            continue
+        restored += 1
+    log.info("auto_enable_rules: restored (disabled) %d/%d rules at teardown",
+             restored, len(rule_ids))
+
+
 def _scheduler_loop(scenario_id: str) -> None:
     """Main scheduler loop for a scenario."""
     scenario = get_scenario(scenario_id)
@@ -1033,6 +1182,40 @@ def _scheduler_loop(scenario_id: str) -> None:
 
     total_injected = 0
     active_push_profiles: dict[str, str] = {}  # phase_id → push_profile_id
+
+    # v5.2 F2 — opt-in: enable each phase's Disabled target platform rule on
+    # the tenant BEFORE any telemetry flows. Done here (scheduler thread, not
+    # the API call) so a slow console never blocks the Start request; the
+    # quiet lead-in below doubles as propagation time for the freshly-enabled
+    # rules. The returned ids are restored (disabled) in the finally block.
+    rules_enabled_by_us: list[str] = []
+    if scenario.get("auto_enable_rules"):
+        rules_enabled_by_us = _ensure_target_rules_enabled(scenario)
+        _update_scenario_status(scenario_id,
+                                rules_auto_enabled=list(rules_enabled_by_us))
+
+    # v5.2 F1 — quiet lead-in / total silence. When lead_in_seconds > 0 (and
+    # this is a fresh start, not a resume with prior elapsed), take ownership
+    # of EVERY source the scenario touches up-front so their background
+    # telemetry stops instantly and stays silenced for the whole run, then
+    # shift every phase window by the lead-in so the attack telemetry only
+    # begins after a clean, empty gap. Released in the finally block.
+    lead_in = max(0, int(scenario.get("lead_in_seconds", 0) or 0))
+    lead_hold_sources: list[str] = []
+    if lead_in > 0 and elapsed_prior == 0:
+        for pw in phases:
+            pw["_abs_start"] += lead_in
+            pw["_abs_end"] += lead_in
+        try:
+            import scenario_state
+            for src in {pw.get("source", "") for pw in phases if pw.get("source")}:
+                scenario_state.acquire(src)
+                lead_hold_sources.append(src)
+        except Exception:
+            pass
+        log.info("Scenario %s quiet lead-in %ds — %d source(s) silenced "
+                 "up-front for the whole run", scenario_id[:8], lead_in,
+                 len(lead_hold_sources))
 
     try:
         while True:
@@ -1152,10 +1335,26 @@ def _scheduler_loop(scenario_id: str) -> None:
                 except Exception:
                     pass
                 pw["_source_owned"] = False
+        # v5.2 F1 — release the up-front "total silence" hold so the base
+        # engine resumes background telemetry for these sources once the
+        # scenario is over (or was stopped mid-run).
+        if lead_hold_sources:
+            try:
+                import scenario_state
+                for src in lead_hold_sources:
+                    scenario_state.release(src)
+            except Exception:
+                pass
+            lead_hold_sources = []
         # Cleanup: delete all scenario rules and stop push profiles
         _cleanup_scenario_rules(scenario_id)
         for push_pid in active_push_profiles.values():
             _auto_stop_push(push_pid)
+
+        # v5.2 F2 — restore (disable) the platform rules we auto-enabled at
+        # Start so the tenant returns to its prior state.
+        if rules_enabled_by_us:
+            _restore_auto_enabled_rules(rules_enabled_by_us)
 
         status = "stopped" if (stop_event and stop_event.is_set()) else "completed"
         _update_scenario_status(scenario_id, status=status)

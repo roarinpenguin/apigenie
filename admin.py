@@ -1774,6 +1774,8 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
                 </select>
               </div>
             </div>
+            <div><label style="font-size:.72rem;color:rgba(224,170,255,.5)" title="Seconds to wait after Start before attack telemetry begins. While &gt; 0, ALL of this scenario's sources are silenced up-front (background noise stops instantly) so you get a clean, empty gap before the attack.">Quiet lead-in (s)</label>
+              <input id="scenario-lead-in" type="number" min="0" value="0" style="width:74px;background:rgba(90,24,154,.2);border:1px solid rgba(199,125,255,.35);border-radius:8px;padding:8px 10px;color:var(--mist);font-size:.82rem"/></div>
           </div>
           <!-- Visibility controls whether other users' collectors see this
                scenario's injected events: private = only the owner's caller
@@ -1786,6 +1788,14 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
                 <option value="public">Public &mdash; visible to every caller</option>
               </select>
             </div>
+          </div>
+          <!-- v5.2 F2 — opt-in auto-enable of each phase's target platform
+               rule on the tenant at Start (uses the saved S1 console). Rules
+               ApiGenie flips ON are restored (disabled) when the scenario
+               stops/completes. -->
+          <div style="display:flex;gap:8px;align-items:center;padding:2px 0">
+            <input id="scenario-auto-enable-rules" type="checkbox" style="width:15px;height:15px;accent-color:#c77dff"/>
+            <label for="scenario-auto-enable-rules" style="font-size:.74rem;color:rgba(224,170,255,.72);cursor:pointer" title="On Start, enable any phase target platform rule that is currently Disabled on the connected SentinelOne console, so the scenario is guaranteed to raise its alerts. Rules enabled this way are automatically restored (disabled) at teardown. Requires S1 console settings to be configured.">Auto-enable target detection rules on Start (restored at teardown)</label>
           </div>
           <!-- Persona details (v5.1.19): auto-populated but editable. The
                bundle anchors the victim / attacker / host / payload identity
@@ -2192,6 +2202,18 @@ details pre{background:rgba(0,0,0,.3);border-radius:8px;padding:10px;font-size:.
               <option value="">All logic</option>
               <option value="visible">Visible (importable)</option>
               <option value="hidden">Hidden (browse only)</option>
+            </select>
+          </div>
+          <!-- v5.2 — filter by the rule's scope-effective (console) state.
+               The rows shown already carry the per-site Enabled/Disabled
+               status via _enrich_scoped_status, so this filter is applied
+               client-side to match the green/grey dot and the Enable/Disable
+               button exactly. -->
+          <div style="display:flex;gap:6px;margin-top:6px">
+            <select id="s1d-status" onchange="loadS1DrawerRules()" style="flex:1;background:rgba(90,24,154,.25);border:1px solid rgba(199,125,255,.35);border-radius:6px;padding:7px 8px;color:#e0d0f8;font-size:.82rem">
+              <option value="">Any console status</option>
+              <option value="Enabled">Enabled on SentinelOne Console</option>
+              <option value="Disabled">Disabled on SentinelOne Console</option>
             </select>
           </div>
           <div style="margin-top:6px">
@@ -5822,12 +5844,23 @@ async function loadS1DrawerRules() {
     var logicFilter = document.getElementById('s1d-logic').value;
     if (logicFilter === 'visible') rules = rules.filter(function(r) { return r.s1ql || (r.correlationParams && r.correlationParams.subQueries && r.correlationParams.subQueries.length) || (r.scheduledParams && r.scheduledParams.query) || r.hideLogic === false; });
     if (logicFilter === 'hidden') rules = rules.filter(function(r) { return !r.s1ql && !(r.correlationParams && r.correlationParams.subQueries && r.correlationParams.subQueries.length) && !(r.scheduledParams && r.scheduledParams.query) && r.hideLogic !== false; });
+    // v5.2 — scope-effective console-status filter. rule.status is already the
+    // per-site Enabled/Disabled state (server enriched it via
+    // _enrich_scoped_status), so matching 'Enabled' exactly / anything-else as
+    // Disabled mirrors the green/grey dot and the Enable/Disable button.
+    var statusFilter = document.getElementById('s1d-status').value;
+    if (statusFilter === 'Enabled') rules = rules.filter(function(r) { return r.status === 'Enabled'; });
+    if (statusFilter === 'Disabled') rules = rules.filter(function(r) { return r.status !== 'Enabled'; });
     if (!rules.length) {
       var hint = (logicSel.value === 'visible' && ruleType === 'custom') ? ' All catalog rules have hidden logic \u2014 only custom rules with visible logic are shown.' : '';
       box.innerHTML = '<p class="empty" style="font-size:.82rem">No rules found for the selected filters.' + hint + '</p>'; return;
     }
 
-    var h = '<div style="font-size:.78rem;color:rgba(224,170,255,.7);margin-bottom:8px">' + (data.total || rules.length) + ' rules found</div>';
+    // When a client-side filter (logic / console status) is active the server
+    // total no longer reflects what's rendered, so report the shown count.
+    var clientFiltered = !!logicFilter || !!statusFilter;
+    var shownCount = clientFiltered ? rules.length : (data.total || rules.length);
+    var h = '<div style="font-size:.78rem;color:rgba(224,170,255,.7);margin-bottom:8px">' + shownCount + ' rules found</div>';
     rules.forEach(function(rule) {
       var hidden = !rule.s1ql && !(rule.correlationParams && rule.correlationParams.subQueries && rule.correlationParams.subQueries.length) && !(rule.scheduledParams && rule.scheduledParams.query) && rule.hideLogic !== false;
       var sevColor = rule.severity === 'Critical' ? '#ff5050' : rule.severity === 'High' ? '#ff8c00' : rule.severity === 'Medium' ? '#f0c040' : 'rgba(224,170,255,.7)';
@@ -7935,6 +7968,9 @@ function openScenarioCreator() {
   document.getElementById('scenario-name').value = '';
   document.getElementById('scenario-dur-val').value = '4';
   document.getElementById('scenario-dur-unit').value = 'hours';
+  // Reset the v5.2 knobs to their safe defaults (no gap, no auto-enable).
+  document.getElementById('scenario-lead-in').value = '0';
+  document.getElementById('scenario-auto-enable-rules').checked = false;
   // Reset Visibility to the safe default (private).
   document.getElementById('scenario-visibility').value = 'private';
   document.getElementById('scenario-validation-errors').textContent = '';
@@ -7988,6 +8024,9 @@ async function openScenarioEditor(id) {
     var dur = s.duration || {};
     document.getElementById('scenario-dur-val').value = dur.value || 4;
     document.getElementById('scenario-dur-unit').value = dur.unit || 'hours';
+    // Hydrate the v5.2 knobs from the persisted scenario.
+    document.getElementById('scenario-lead-in').value = s.lead_in_seconds || 0;
+    document.getElementById('scenario-auto-enable-rules').checked = !!s.auto_enable_rules;
     // Hydrate Visibility from the persisted scenario.
     document.getElementById('scenario-visibility').value = s.visibility || 'private';
     // Hydrate the persona editor from the saved bundle; if a legacy
@@ -8270,12 +8309,18 @@ function _collectScenarioPayload() {
   // tolerates an omitted value (defaults to private) so an old client
   // that doesn't render it stays compatible.
   var visEl  = document.getElementById('scenario-visibility');
+  var leadEl = document.getElementById('scenario-lead-in');
+  var autoEl = document.getElementById('scenario-auto-enable-rules');
   return {
     name: document.getElementById('scenario-name').value.trim(),
     duration: {
       value: parseFloat(document.getElementById('scenario-dur-val').value) || 4,
       unit: document.getElementById('scenario-dur-unit').value
     },
+    // v5.2 F1 — quiet lead-in (seconds); F2 — opt-in auto-enable of target
+    // platform rules on Start. Both tolerated-when-omitted by the backend.
+    lead_in_seconds: leadEl ? (parseInt(leadEl.value, 10) || 0) : 0,
+    auto_enable_rules: autoEl ? !!autoEl.checked : false,
     visibility: visEl  ? visEl.value  : 'private',
     personas: _collectPersonaBundle(),
     phases: _scenarioPhases.map(function(p) {
