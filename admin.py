@@ -10009,6 +10009,7 @@ async def api_bus_status(ag_session: str | None = Cookie(None)):
     result = {"kafka": None, "pubsub": None}
 
     # Kafka consumer groups via kafka-python
+    admin = None
     try:
         from kafka.admin import KafkaAdminClient
         from kafka import TopicPartition
@@ -10017,6 +10018,7 @@ async def api_bus_status(ag_session: str | None = Cookie(None)):
         group_ids = admin.list_consumer_groups()
         kafka_info = {"groups": []}
         for gid, _ in group_ids[:10]:
+            c = None
             try:
                 offsets = admin.list_consumer_group_offsets(gid)
                 # Get end offsets for lag calculation
@@ -10024,7 +10026,6 @@ async def api_bus_status(ag_session: str | None = Cookie(None)):
                 c = KafkaConsumer(bootstrap_servers=bootstrap)
                 tps = list(offsets.keys())
                 end_offsets = c.end_offsets(tps) if tps else {}
-                c.close()
                 members = admin.describe_consumer_groups([gid])
                 active = len(members[0].members) > 0 if members else False
                 for tp, om in offsets.items():
@@ -10037,10 +10038,24 @@ async def api_bus_status(ag_session: str | None = Cookie(None)):
                     })
             except Exception:
                 kafka_info["groups"].append({"group": gid, "active": False, "topic": "?", "lag": "?"})
-        admin.close()
+            finally:
+                # Per-group consumer holds its own broker socket; close it even
+                # when end_offsets/describe raise, or this endpoint leaks one
+                # consumer per group per poll while the admin UI auto-refreshes.
+                if c is not None:
+                    try:
+                        c.close()
+                    except Exception:
+                        pass
         result["kafka"] = kafka_info
     except Exception as exc:
         result["kafka"] = {"error": str(exc)}
+    finally:
+        if admin is not None:
+            try:
+                admin.close()
+            except Exception:
+                pass
 
     # Pub/Sub subscriptions
     try:
@@ -10065,6 +10080,7 @@ async def api_delete_consumer_group(group_id: str, ag_session: str | None = Cook
     """Delete a Kafka consumer group (must have no active members)."""
     if not _valid(ag_session):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+    admin = None
     try:
         from kafka.admin import KafkaAdminClient
         bootstrap = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092")
@@ -10072,13 +10088,17 @@ async def api_delete_consumer_group(group_id: str, ag_session: str | None = Cook
         # Check if group has active members first
         desc = admin.describe_consumer_groups([group_id])
         if desc and len(desc[0].members) > 0:
-            admin.close()
             return JSONResponse({"error": "Group has active members — disconnect consumers first"}, status_code=409)
         admin.delete_consumer_groups([group_id])
-        admin.close()
         return JSONResponse({"ok": True, "deleted": group_id})
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
+    finally:
+        if admin is not None:
+            try:
+                admin.close()
+            except Exception:
+                pass
 
 
 # ── Sankey + GeoMap data feeds ──────────────────────────────────────────────

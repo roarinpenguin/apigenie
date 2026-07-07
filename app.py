@@ -151,7 +151,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="ApiGenie",
     description="Mock HTTP server for 19 security platform APIs",
-    version="5.2.0",
+    version="5.2.1",
     lifespan=lifespan,
 )
 

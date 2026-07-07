@@ -24,6 +24,7 @@ KAFKA_BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092")
 def _poll_kafka() -> list[tuple[str, str]]:
     """Return [(client_ip, consumer_group), ...] for active Kafka consumers."""
     results = []
+    admin = None
     try:
         from kafka.admin import KafkaAdminClient
         admin = KafkaAdminClient(
@@ -45,11 +46,20 @@ def _poll_kafka() -> list[tuple[str, str]]:
                         results.append((host, gid))
             except Exception:
                 pass
-        admin.close()
     except ImportError:
         pass
     except Exception as exc:
         logger.debug("bus_monitor: Kafka poll error: %s", exc)
+    finally:
+        # Always release the admin client — it owns a broker socket + a
+        # background metadata thread. Missing this on the exception path leaked
+        # one client every poll (30 s), exhausting the process FD limit and
+        # taking the whole server to 502. See fix/kafka-admin-fd-leak.
+        if admin is not None:
+            try:
+                admin.close()
+            except Exception:
+                pass
     return results
 
 

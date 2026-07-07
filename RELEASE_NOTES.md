@@ -2,6 +2,44 @@
 
 ---
 
+## v5.2.1 — *Fix: Kafka admin-client FD leak that took the server to 502*
+
+> *Released July 2026.* A hotfix for a file-descriptor leak that would
+> gradually exhaust the uvicorn process and return **502 on every route**
+> (portal and admin included) — not just the bus surface.
+
+### The bug
+
+`KafkaAdminClient` / `KafkaConsumer` instances were closed with a bare
+`.close()` sitting **inside the `try` block** rather than in a `finally`.
+Any exception raised by an intervening Kafka call (`list_consumer_groups`,
+`describe_consumer_groups`, `end_offsets`, …) skipped the close, leaking a
+client — and with it a broker socket, an epoll selector, and a live
+background metadata-refresh thread — on every occurrence.
+
+The dominant source was `bus_monitor._poll_kafka()`, which runs
+unattended every 30 s: over ~5 days it accumulated ~24 k leaked sockets +
+~8 k epoll fds, hit the process open-files limit (32 768), and started
+resetting upstream connections. nginx surfaced this as
+`recv() failed (104: Connection reset by peer) … 502`. The tell-tale
+symptom was a flood of `Updated metadata: brokers:1, topics:0` log lines —
+thousands of orphaned clients each refreshing metadata.
+
+### The fix
+
+Every Kafka admin/consumer lifecycle now closes in a `finally`, in all
+four sites that had the pattern:
+
+- `bus_monitor.py` — `_poll_kafka()` *(primary, background every 30 s)*
+- `admin.py` — `/admin/api/bus-status` (both the admin client and the
+  per-group `KafkaConsumer`)
+- `admin.py` — `/admin/api/bus-group` DELETE
+- `publishers/kafka_publisher.py` — the one-shot topic-creation admin
+
+No behavioural change to any endpoint; purely resource-lifecycle hardening.
+
+---
+
 ## v5.2.0 — *Windows Event Forwarding as a first-class push source*
 
 > *Released June 2026.* One body of work in this release: **a complete

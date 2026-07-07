@@ -34,6 +34,7 @@ def _publisher_loop() -> None:
         from kafka.errors import TopicAlreadyExistsError
 
         # Create topic if it doesn't exist
+        admin = None
         try:
             admin = KafkaAdminClient(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS, request_timeout_ms=5000)
             admin.create_topics([NewTopic(name=KAFKA_TOPIC, num_partitions=1, replication_factor=1)])
@@ -42,6 +43,12 @@ def _publisher_loop() -> None:
             logger.info(f"[kafka] Topic already exists: {KAFKA_TOPIC}")
         except Exception as exc:
             logger.warning(f"[kafka] Topic create warning: {exc}")
+        finally:
+            if admin is not None:
+                try:
+                    admin.close()
+                except Exception:
+                    pass
 
         producer = KafkaProducer(
             bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
